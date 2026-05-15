@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 400" width="1000" height="400">
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#333"/>
+    </marker>
+    <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#4A90D9;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#5BA3E8;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="grad2" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#52C41A;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#73D13D;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="grad3" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#FA8C16;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#FFA940;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- 背景 -->
+  <rect width="1000" height="400" fill="#fafafa"/>
+  
+  <!-- 标题 -->
+  <text x="500" y="30" text-anchor="middle" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="#333">租房主业务流程图</text>
+  
+  <!-- 流程节点 -->
+  <!-- 浏览房源 -->
+  <rect x="50" y="80" width="120" height="50" rx="8" fill="url(#grad1)" stroke="#2E7AD1" stroke-width="2"/>
+  <text x="110" y="110" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" fill="white">1. 浏览房源</text>
+  
+  <!-- 箭头 -->
+  <line x1="170" y1="105" x2="210" y2="105" stroke="#333" stroke-width="2" marker-end="url(#arrowhead)"/>
+  
+  <!-- 提交订单 -->
+  <rect x="210" y="80" width="120" height="50" rx="8" fill="url(#grad1)" stroke="#2E7AD1" stroke-width="2"/>
+  <text x="270" y="110" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" fill="white">2. 提交订单</text>
+  
+  <!-- 箭头 -->
+  <line x1="330" y1="105" x2="370" y2="105" stroke="#333" stroke-width="2" marker-end="url(#arrowhead)"/>
+  
+  <!-- 订单审核 -->
+  <rect x="370" y="80" width="120" height="50" rx="8" fill="url(#grad3)" stroke="#D46B08" stroke-width="2"/>
+  <text x="430" y="110" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" fill="white">3. 订单审核</text>
+  
+  <!-- 审核判断 -->
+  <polygon points="550,80 620,105 550,130 480,105" fill="#FFF2E8" stroke="#D46B08" stroke-width="2"/>
+  <text x="550" y="109" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#D46B08">审核通过?</text>
+  
+  <!-- 拒绝分支 -->
+  <line x1="480" y1="105" x2="430" y2="160" stroke="#999" stroke-width="1.5" stroke-dasharray="5,5"/>
+  <text x="440" y="150" font-family="Arial, sans-serif" font-size="11" fill="#999">拒绝</text>
+  
+  <!-- 通过箭头 -->
+  <line x1="620" y1="105" x2="670" y2="105" stroke="#333" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <text x="645" y="95" font-family="Arial, sans-serif" font-size="11" fill="#52C41A">通过</text>
+  
+  <!-- 生成合同 -->
+  <rect x="670" y="80" width="120" height="50" rx="8" fill="url(#grad1)" stroke="#2E7AD1" stroke-width="2"/>
+  <text x="730" y="110" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" fill="white">4. 生成合同</text>
+  
+  <!-- 箭头 -->
+  <line x1="790" y1="105" x2="830" y2="105" stroke="#333" stroke-width="2" marker-end="url(#arrowhead)"/>
+  
+  <!-- 租客确认 -->
+  <rect x="830" y="80" width="120" height="50" rx="8" fill="url(#grad1)" stroke="#2E7AD1" stroke-width="2"/>
+  <text x="890" y="110" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" fill="white">5. 租客确认</text>
+  
+  <!-- 下行箭头 -->
+  <line x1="890" y1="130" x2="890" y2="170" stroke="#333" stroke-width="2" marker-end="url(#arrowhead)"/>
+  
+  <!-- 完成支付 -->
+  <rect x="830" y="170" width="120" height="50" rx="8" fill="url(#grad2)" stroke="#389E0D" stroke-width="2"/>
+  <text x="890" y="200" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" fill="white">6. 完成支付</text>
+  
+  <!-- 左行箭头 -->
+  <line x1="830" y1="195" x2="790" y2="195" stroke="#333" stroke-width="2" marker-end="url(#arrowhead)"/>
+  
+  <!-- 合同生效 -->
+  <rect x="670" y="170" width="120" height="50" rx="8" fill="url(#grad2)" stroke="#389E0D" stroke-width="2"/>
+  <text x="730" y="200" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" fill="white">7. 合同生效</text>
+  
+  <!-- 左行箭头 -->
+  <line x1="670" y1="195" x2="630" y2="195" stroke="#333" stroke-width="2" marker-end="url(#arrowhead)"/>
+  
+  <!-- 住建报备 -->
+  <rect x="510" y="170" width="120" height="50" rx="8" fill="#F5F5F5" stroke="#999" stroke-width="2"/>
+  <text x="570" y="200" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" fill="#666">8. 住建报备</text>
+  
+  <!-- 说明框 -->
+  <rect x="50" y="260" width="900" height="120" rx="8" fill="#F6FFED" stroke="#B7EB8F" stroke-width="1"/>
+  <text x="70" y="285" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="#52C41A">流程说明：</text>
+  <text x="70" y="310" font-family="Arial, sans-serif" font-size="12" fill="#333">• 租客在H5端浏览已发布房源，选择心仪房源后提交租房申请订单</text>
+  <text x="70" y="330" font-family="Arial, sans-serif" font-size="12" fill="#333">• 店长在管理后台审核订单，审核通过后自动生成待支付合同</text>
+  <text x="70" y="350" font-family="Arial, sans-serif" font-size="12" fill="#333">• 租客确认合同条款并完成押金+首月租金支付后，合同正式生效</text>
+  <text x="70" y="370" font-family="Arial, sans-serif" font-size="12" fill="#333">• 系统每日自动对生效合同执行住建报备（模拟），满足监管合规要求</text>
+</svg>

@@ -1,0 +1,8 @@
+-- AlterTable
+ALTER TABLE "House" ADD COLUMN "address" TEXT;
+ALTER TABLE "House" ADD COLUMN "geoLat" REAL;
+ALTER TABLE "House" ADD COLUMN "geoLng" REAL;
+ALTER TABLE "House" ADD COLUMN "nearbySubwayJson" TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE "House" ADD COLUMN "nearbySchoolsJson" TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE "House" ADD COLUMN "nearbyBusStopsJson" TEXT NOT NULL DEFAULT '[]';
+

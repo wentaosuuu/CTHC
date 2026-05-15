@@ -1,0 +1,24 @@
+{
+  "name": "cthc",
+  "private": true,
+  "version": "0.0.0",
+  "workspaces": [
+    "packages/*"
+  ],
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "docx": "^9.6.1"
+  },
+  "scripts": {
+    "dev": "concurrently -n server,mobile,admin -c auto \"npm -w server run dev\" \"npm -w mobile run dev\" \"npm -w admin run dev\"",
+    "dev:mobile": "concurrently -n server,mobile -c auto \"npm -w server run dev\" \"npm -w mobile run dev\"",
+    "dev:admin": "concurrently -n server,admin -c auto \"npm -w server run dev\" \"npm -w admin run dev\"",
+    "dev:server": "npm -w server run dev",
+    "build:mobile": "npm -w mobile run build",
+    "build:admin": "npm -w admin run build",
+    "build:server": "npm -w server run build",
+    "db:migrate": "npm -w server run db:migrate",
+    "db:seed": "npm -w server run db:seed",
+    "lint": "npm -w mobile run lint && npm -w admin run lint"
+  }
+}

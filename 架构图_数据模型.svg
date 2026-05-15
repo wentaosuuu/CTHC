@@ -1,0 +1,299 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 750" width="1100" height="750">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#999"/>
+    </marker>
+    <linearGradient id="storeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#E3F2FD"/>
+      <stop offset="100%" style="stop-color:#BBDEFB"/>
+    </linearGradient>
+    <linearGradient id="houseGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#E8F5E9"/>
+      <stop offset="100%" style="stop-color:#C8E6C9"/>
+    </linearGradient>
+    <linearGradient id="tenantGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#FFF3E0"/>
+      <stop offset="100%" style="stop-color:#FFE0B2"/>
+    </linearGradient>
+    <linearGradient id="contractGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#F3E5F5"/>
+      <stop offset="100%" style="stop-color:#E1BEE7"/>
+    </linearGradient>
+    <linearGradient id="billGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#E0F2F1"/>
+      <stop offset="100%" style="stop-color:#B2DFDB"/>
+    </linearGradient>
+    <linearGradient id="adminGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#FFEBEE"/>
+      <stop offset="100%" style="stop-color:#FFCDD2"/>
+    </linearGradient>
+  </defs>
+  
+  <rect width="1100" height="750" fill="#fafafa"/>
+  
+  <!-- 标题 -->
+  <text x="550" y="30" text-anchor="middle" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="#333">数据模型实体关系图（ER Diagram）</text>
+  
+  <!-- ========== Store 门店 ========== -->
+  <g transform="translate(50, 70)">
+    <rect width="160" height="90" rx="6" fill="url(#storeGrad)" stroke="#1976D2" stroke-width="2"/>
+    <rect width="160" height="28" rx="6" fill="#1976D2"/>
+    <rect y="22" width="160" height="6" fill="#1976D2"/>
+    <text x="80" y="19" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="white">Store（门店）</text>
+    <text x="10" y="45" font-family="Arial, sans-serif" font-size="10" fill="#333">PK id: String</text>
+    <text x="10" y="60" font-family="Arial, sans-serif" font-size="10" fill="#333">name: String</text>
+    <text x="10" y="75" font-family="Arial, sans-serif" font-size="10" fill="#333">wecomQrUrl: String</text>
+  </g>
+  
+  <!-- ========== Apartment 公寓 ========== -->
+  <g transform="translate(280, 70)">
+    <rect width="160" height="90" rx="6" fill="url(#storeGrad)" stroke="#1976D2" stroke-width="2"/>
+    <rect width="160" height="28" rx="6" fill="#1976D2"/>
+    <rect y="22" width="160" height="6" fill="#1976D2"/>
+    <text x="80" y="19" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="white">Apartment（公寓）</text>
+    <text x="10" y="45" font-family="Arial, sans-serif" font-size="10" fill="#333">PK id: String</text>
+    <text x="10" y="60" font-family="Arial, sans-serif" font-size="10" fill="#333">FK storeId: String</text>
+    <text x="10" y="75" font-family="Arial, sans-serif" font-size="10" fill="#333">name: String</text>
+  </g>
+  
+  <!-- ========== House 房源 ========== -->
+  <g transform="translate(510, 60)">
+    <rect width="170" height="130" rx="6" fill="url(#houseGrad)" stroke="#388E3C" stroke-width="2"/>
+    <rect width="170" height="28" rx="6" fill="#388E3C"/>
+    <rect y="22" width="170" height="6" fill="#388E3C"/>
+    <text x="85" y="19" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="white">House（房源）</text>
+    <text x="10" y="45" font-family="Arial, sans-serif" font-size="10" fill="#333">PK id: String</text>
+    <text x="10" y="60" font-family="Arial, sans-serif" font-size="10" fill="#333">FK apartmentId: String</text>
+    <text x="10" y="75" font-family="Arial, sans-serif" font-size="10" fill="#333">houseNo: String</text>
+    <text x="10" y="90" font-family="Arial, sans-serif" font-size="10" fill="#333">rentMonthly: Int</text>
+    <text x="10" y="105" font-family="Arial, sans-serif" font-size="10" fill="#333">status: HouseStatus</text>
+    <text x="10" y="120" font-family="Arial, sans-serif" font-size="10" fill="#333">isPublished: Boolean</text>
+  </g>
+  
+  <!-- ========== Tenant 租客 ========== -->
+  <g transform="translate(50, 200)">
+    <rect width="160" height="100" rx="6" fill="url(#tenantGrad)" stroke="#F57C00" stroke-width="2"/>
+    <rect width="160" height="28" rx="6" fill="#F57C00"/>
+    <rect y="22" width="160" height="6" fill="#F57C00"/>
+    <text x="80" y="19" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="white">Tenant（租客）</text>
+    <text x="10" y="45" font-family="Arial, sans-serif" font-size="10" fill="#333">PK id: String</text>
+    <text x="10" y="60" font-family="Arial, sans-serif" font-size="10" fill="#333">name: String</text>
+    <text x="10" y="75" font-family="Arial, sans-serif" font-size="10" fill="#333">idNumber: String</text>
+    <text x="10" y="90" font-family="Arial, sans-serif" font-size="10" fill="#333">phone: String</text>
+  </g>
+  
+  <!-- ========== Order 订单 ========== -->
+  <g transform="translate(280, 200)">
+    <rect width="160" height="110" rx="6" fill="url(#tenantGrad)" stroke="#F57C00" stroke-width="2"/>
+    <rect width="160" height="28" rx="6" fill="#F57C00"/>
+    <rect y="22" width="160" height="6" fill="#F57C00"/>
+    <text x="80" y="19" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="white">Order（订单）</text>
+    <text x="10" y="45" font-family="Arial, sans-serif" font-size="10" fill="#333">PK id: String</text>
+    <text x="10" y="60" font-family="Arial, sans-serif" font-size="10" fill="#333">FK houseId: String</text>
+    <text x="10" y="75" font-family="Arial, sans-serif" font-size="10" fill="#333">FK tenantId: String</text>
+    <text x="10" y="90" font-family="Arial, sans-serif" font-size="10" fill="#333">status: OrderStatus</text>
+    <text x="10" y="105" font-family="Arial, sans-serif" font-size="10" fill="#333">leaseMonths: Int</text>
+  </g>
+  
+  <!-- ========== Contract 合同 ========== -->
+  <g transform="translate(510, 230)">
+    <rect width="180" height="160" rx="6" fill="url(#contractGrad)" stroke="#7B1FA2" stroke-width="2"/>
+    <rect width="180" height="28" rx="6" fill="#7B1FA2"/>
+    <rect y="22" width="180" height="6" fill="#7B1FA2"/>
+    <text x="90" y="19" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="white">Contract（合同）</text>
+    <text x="10" y="45" font-family="Arial, sans-serif" font-size="10" fill="#333">PK id: String</text>
+    <text x="10" y="60" font-family="Arial, sans-serif" font-size="10" fill="#333">contractNo: String (Unique)</text>
+    <text x="10" y="75" font-family="Arial, sans-serif" font-size="10" fill="#333">FK houseId: String</text>
+    <text x="10" y="90" font-family="Arial, sans-serif" font-size="10" fill="#333">FK tenantId: String</text>
+    <text x="10" y="105" font-family="Arial, sans-serif" font-size="10" fill="#333">FK orderId: String</text>
+    <text x="10" y="120" font-family="Arial, sans-serif" font-size="10" fill="#333">status: ContractStatus</text>
+    <text x="10" y="135" font-family="Arial, sans-serif" font-size="10" fill="#333">startDate/endDate: Date</text>
+    <text x="10" y="150" font-family="Arial, sans-serif" font-size="10" fill="#333">rentMonthly/deposit: Int</text>
+  </g>
+  
+  <!-- ========== Bill 账单 ========== -->
+  <g transform="translate(740, 230)">
+    <rect width="160" height="130" rx="6" fill="url(#billGrad)" stroke="#00796B" stroke-width="2"/>
+    <rect width="160" height="28" rx="6" fill="#00796B"/>
+    <rect y="22" width="160" height="6" fill="#00796B"/>
+    <text x="80" y="19" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="white">Bill（账单）</text>
+    <text x="10" y="45" font-family="Arial, sans-serif" font-size="10" fill="#333">PK id: String</text>
+    <text x="10" y="60" font-family="Arial, sans-serif" font-size="10" fill="#333">FK contractId: String</text>
+    <text x="10" y="75" font-family="Arial, sans-serif" font-size="10" fill="#333">period: String</text>
+    <text x="10" y="90" font-family="Arial, sans-serif" font-size="10" fill="#333">totalAmount: Int</text>
+    <text x="10" y="105" font-family="Arial, sans-serif" font-size="10" fill="#333">status: BillStatus</text>
+    <text x="10" y="120" font-family="Arial, sans-serif" font-size="10" fill="#333">kind: BillKind</text>
+  </g>
+  
+  <!-- ========== BillItem 账单项 ========== -->
+  <g transform="translate(740, 400)">
+    <rect width="160" height="80" rx="6" fill="url(#billGrad)" stroke="#00796B" stroke-width="2"/>
+    <rect width="160" height="28" rx="6" fill="#00796B"/>
+    <rect y="22" width="160" height="6" fill="#00796B"/>
+    <text x="80" y="19" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="white">BillItem（账单项）</text>
+    <text x="10" y="45" font-family="Arial, sans-serif" font-size="10" fill="#333">PK id: String</text>
+    <text x="10" y="60" font-family="Arial, sans-serif" font-size="10" fill="#333">FK billId: String</text>
+    <text x="10" y="75" font-family="Arial, sans-serif" font-size="10" fill="#333">name/amount</text>
+  </g>
+  
+  <!-- ========== Payment 支付 ========== -->
+  <g transform="translate(510, 430)">
+    <rect width="160" height="90" rx="6" fill="url(#contractGrad)" stroke="#7B1FA2" stroke-width="2"/>
+    <rect width="160" height="28" rx="6" fill="#7B1FA2"/>
+    <rect y="22" width="160" height="6" fill="#7B1FA2"/>
+    <text x="80" y="19" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="white">Payment（支付）</text>
+    <text x="10" y="45" font-family="Arial, sans-serif" font-size="10" fill="#333">PK id: String</text>
+    <text x="10" y="60" font-family="Arial, sans-serif" font-size="10" fill="#333">FK contractId: String</text>
+    <text x="10" y="75" font-family="Arial, sans-serif" font-size="10" fill="#333">amount: Int</text>
+    <text x="10" y="90" font-family="Arial, sans-serif" font-size="10" fill="#333">status: PaymentStatus</text>
+  </g>
+  
+  <!-- ========== Arrears 逾期 ========== -->
+  <g transform="translate(280, 350)">
+    <rect width="160" height="80" rx="6" fill="#FFEBEE" stroke="#C62828" stroke-width="2"/>
+    <rect width="160" height="28" rx="6" fill="#C62828"/>
+    <rect y="22" width="160" height="6" fill="#C62828"/>
+    <text x="80" y="19" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="white">Arrears（逾期）</text>
+    <text x="10" y="45" font-family="Arial, sans-serif" font-size="10" fill="#333">PK id: String</text>
+    <text x="10" y="60" font-family="Arial, sans-serif" font-size="10" fill="#333">FK billId: String</text>
+    <text x="10" y="75" font-family="Arial, sans-serif" font-size="10" fill="#333">daysOverdue/penalty</text>
+  </g>
+  
+  <!-- ========== Admin 管理员 ========== -->
+  <g transform="translate(50, 350)">
+    <rect width="160" height="100" rx="6" fill="url(#adminGrad)" stroke="#C62828" stroke-width="2"/>
+    <rect width="160" height="28" rx="6" fill="#C62828"/>
+    <rect y="22" width="160" height="6" fill="#C62828"/>
+    <text x="80" y="19" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="white">Admin（管理员）</text>
+    <text x="10" y="45" font-family="Arial, sans-serif" font-size="10" fill="#333">PK id: String</text>
+    <text x="10" y="60" font-family="Arial, sans-serif" font-size="10" fill="#333">email: String (Unique)</text>
+    <text x="10" y="75" font-family="Arial, sans-serif" font-size="10" fill="#333">name: String</text>
+    <text x="10" y="90" font-family="Arial, sans-serif" font-size="10" fill="#333">roleCode: AdminRole</text>
+  </g>
+  
+  <!-- ========== AdminStore 关联表 ========== -->
+  <g transform="translate(50, 480)">
+    <rect width="160" height="70" rx="6" fill="#F5F5F5" stroke="#757575" stroke-width="2"/>
+    <rect width="160" height="28" rx="6" fill="#757575"/>
+    <rect y="22" width="160" height="6" fill="#757575"/>
+    <text x="80" y="19" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="white">AdminStore</text>
+    <text x="10" y="45" font-family="Arial, sans-serif" font-size="10" fill="#333">FK adminId: String</text>
+    <text x="10" y="60" font-family="Arial, sans-serif" font-size="10" fill="#333">FK storeId: String</text>
+  </g>
+  
+  <!-- ========== HousingReport 住建报备 ========== -->
+  <g transform="translate(280, 470)">
+    <rect width="180" height="90" rx="6" fill="#E8EAF6" stroke="#3F51B5" stroke-width="2"/>
+    <rect width="180" height="28" rx="6" fill="#3F51B5"/>
+    <rect y="22" width="180" height="6" fill="#3F51B5"/>
+    <text x="90" y="19" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="white">HousingReport（报备）</text>
+    <text x="10" y="45" font-family="Arial, sans-serif" font-size="10" fill="#333">PK id: String</text>
+    <text x="10" y="60" font-family="Arial, sans-serif" font-size="10" fill="#333">FK contractId: String</text>
+    <text x="10" y="75" font-family="Arial, sans-serif" font-size="10" fill="#333">status: String</text>
+  </g>
+  
+  <!-- ========== RentReminder 催租 ========== -->
+  <g transform="translate(510, 560)">
+    <rect width="180" height="100" rx="6" fill="#FFF8E1" stroke="#F9A825" stroke-width="2"/>
+    <rect width="180" height="28" rx="6" fill="#F9A825"/>
+    <rect y="22" width="180" height="6" fill="#F9A825"/>
+    <text x="90" y="19" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="white">RentReminder（催租）</text>
+    <text x="10" y="45" font-family="Arial, sans-serif" font-size="10" fill="#333">PK id: String</text>
+    <text x="10" y="60" font-family="Arial, sans-serif" font-size="10" fill="#333">FK billId/contractId</text>
+    <text x="10" y="75" font-family="Arial, sans-serif" font-size="10" fill="#333">message: String</text>
+    <text x="10" y="90" font-family="Arial, sans-serif" font-size="10" fill="#333">sentAt: DateTime</text>
+  </g>
+  
+  <!-- ========== BillChangeLog 变更日志 ========== -->
+  <g transform="translate(740, 520)">
+    <rect width="180" height="100" rx="6" fill="#F3E5F5" stroke="#7B1FA2" stroke-width="2"/>
+    <rect width="180" height="28" rx="6" fill="#7B1FA2"/>
+    <rect y="22" width="180" height="6" fill="#7B1FA2"/>
+    <text x="90" y="19" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="white">BillChangeLog（日志）</text>
+    <text x="10" y="45" font-family="Arial, sans-serif" font-size="10" fill="#333">PK id: String</text>
+    <text x="10" y="60" font-family="Arial, sans-serif" font-size="10" fill="#333">FK billId/adminId</text>
+    <text x="10" y="75" font-family="Arial, sans-serif" font-size="10" fill="#333">beforeJson/afterJson</text>
+    <text x="10" y="90" font-family="Arial, sans-serif" font-size="10" fill="#333">changedAt: DateTime</text>
+  </g>
+  
+  <!-- ========== 关系连线 ========== -->
+  <!-- Store -> Apartment -->
+  <line x1="210" y1="115" x2="280" y2="115" stroke="#666" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="245" y="108" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" fill="#666">1:N</text>
+  
+  <!-- Apartment -> House -->
+  <line x1="440" y1="115" x2="510" y2="115" stroke="#666" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="475" y="108" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" fill="#666">1:N</text>
+  
+  <!-- House -> Order -->
+  <line x1="595" y1="190" x2="440" y2="240" stroke="#666" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="520" y="210" font-family="Arial, sans-serif" font-size="9" fill="#666">1:N</text>
+  
+  <!-- Tenant -> Order -->
+  <line x1="210" y1="250" x2="280" y2="250" stroke="#666" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="245" y="243" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" fill="#666">1:N</text>
+  
+  <!-- Order -> Contract -->
+  <line x1="440" y1="270" x2="510" y2="290" stroke="#666" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="475" y="275" font-family="Arial, sans-serif" font-size="9" fill="#666">1:1</text>
+  
+  <!-- House -> Contract -->
+  <line x1="595" y1="190" x2="580" y2="230" stroke="#666" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="590" y="210" font-family="Arial, sans-serif" font-size="9" fill="#666">1:N</text>
+  
+  <!-- Tenant -> Contract -->
+  <line x1="210" y1="270" x2="510" y2="300" stroke="#666" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="360" y="280" font-family="Arial, sans-serif" font-size="9" fill="#666">1:N</text>
+  
+  <!-- Contract -> Bill -->
+  <line x1="690" y1="310" x2="740" y2="295" stroke="#666" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="715" y="298" font-family="Arial, sans-serif" font-size="9" fill="#666">1:N</text>
+  
+  <!-- Bill -> BillItem -->
+  <line x1="820" y1="360" x2="820" y2="400" stroke="#666" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="830" y="380" font-family="Arial, sans-serif" font-size="9" fill="#666">1:N</text>
+  
+  <!-- Contract -> Payment -->
+  <line x1="600" y1="390" x2="590" y2="430" stroke="#666" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="600" y="410" font-family="Arial, sans-serif" font-size="9" fill="#666">1:N</text>
+  
+  <!-- Bill -> Arrears -->
+  <line x1="740" y1="360" x2="440" y2="390" stroke="#666" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="590" y="370" font-family="Arial, sans-serif" font-size="9" fill="#666">1:1</text>
+  
+  <!-- Admin -> AdminStore -->
+  <line x1="130" y1="450" x2="130" y2="480" stroke="#666" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="140" y="465" font-family="Arial, sans-serif" font-size="9" fill="#666">1:N</text>
+  
+  <!-- Store -> AdminStore -->
+  <line x1="130" y1="160" x2="130" y2="480" stroke="#666" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="100" y="320" font-family="Arial, sans-serif" font-size="9" fill="#666">1:N</text>
+  
+  <!-- Contract -> HousingReport -->
+  <line x1="600" y1="390" x2="460" y2="470" stroke="#666" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="530" y="430" font-family="Arial, sans-serif" font-size="9" fill="#666">1:1</text>
+  
+  <!-- Contract -> RentReminder -->
+  <line x1="600" y1="390" x2="600" y2="560" stroke="#666" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="610" y="475" font-family="Arial, sans-serif" font-size="9" fill="#666">1:N</text>
+  
+  <!-- Bill -> RentReminder -->
+  <line x1="820" y1="360" x2="600" y2="580" stroke="#666" stroke-width="1.5" marker-end="url(#arrow)"/>
+  
+  <!-- Bill -> BillChangeLog -->
+  <line x1="820" y1="360" x2="830" y2="520" stroke="#666" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="835" y="440" font-family="Arial, sans-serif" font-size="9" fill="#666">1:N</text>
+  
+  <!-- Admin -> BillChangeLog -->
+  <line x1="210" y1="400" x2="740" y2="560" stroke="#666" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="475" y="480" font-family="Arial, sans-serif" font-size="9" fill="#666">1:N</text>
+  
+  <!-- 图例 -->
+  <rect x="50" y="600" width="1000" height="130" rx="6" fill="#f5f5f5" stroke="#ddd" stroke-width="1"/>
+  <text x="70" y="625" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#333">枚举类型说明：</text>
+  <text x="70" y="645" font-family="Arial, sans-serif" font-size="10" fill="#333">HouseStatus: VACANT(空置), RESERVED(预约), ORDERED(已订), SIGNED(已签), TERMINATED(已终止)</text>
+  <text x="70" y="662" font-family="Arial, sans-serif" font-size="10" fill="#333">OrderStatus: PENDING_REVIEW(待审核), APPROVED(已通过), REJECTED(已拒绝), CANCELLED(已取消)</text>
+  <text x="70" y="679" font-family="Arial, sans-serif" font-size="10" fill="#333">ContractStatus: WAIT_TENANT_SIGN(待签字), WAIT_STAMP(待盖章), PENDING_PAYMENT(待支付), ACTIVE(生效), VOID(作废), TERMINATED(已终止)</text>
+  <text x="70" y="696" font-family="Arial, sans-serif" font-size="10" fill="#333">BillStatus: UNPAID(未支付), PAID(已支付), OVERDUE(已逾期) | BillKind: BASE(基础), ADJUSTMENT(补缴)</text>
+  <text x="70" y="713" font-family="Arial, sans-serif" font-size="10" fill="#333">AdminRoleCode: SYSTEM_ADMIN(系统管理员), STORE_MANAGER(店长)</text>
+</svg>

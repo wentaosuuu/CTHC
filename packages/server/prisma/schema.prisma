@@ -1,0 +1,414 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum HouseStatus {
+  VACANT
+  RESERVED
+  ORDERED
+  SIGNED
+  TERMINATED
+}
+
+enum OrderStatus {
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum ContractStatus {
+  WAIT_TENANT_SIGN
+  WAIT_STAMP
+  PENDING_PAYMENT
+  ACTIVE
+  VOID
+  TERMINATED
+}
+
+enum ContractSource {
+  /// 系统正常流程生成（订单/续签/换房等）
+  SYSTEM
+  /// 管理员手动创建或导入
+  MANUAL_IMPORT
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  CANCELLED
+}
+
+enum BillStatus {
+  UNPAID
+  PAID
+  OVERDUE
+}
+
+enum BillKind {
+  /// 合同生成时一次性预生成（租金明确，水电等不确定费用可为 0）
+  BASE
+  /// 管理员后续导入产生的补缴情单（如水费/电费等）
+  ADJUSTMENT
+}
+
+enum AdminRoleCode {
+  SYSTEM_ADMIN
+  STORE_MANAGER
+}
+
+/// 组织架构（总部 / 区域 / 门店等）：预约看房电话与二维码在门店级部门上配置，并与 Store 可选关联
+model Department {
+  id        String   @id @default(cuid())
+  /// 唯一编码，便于导入与种子数据关联
+  code      String   @unique
+  name      String
+  parentId  String?
+  remark    String   @default("")
+  /// 门店预约电话（H5 预约看房展示）
+  contactPhone String?
+  /// 企业微信等二维码：可填完整图片 URL，或上传后写入的 /api/public/dept-qr/... 路径
+  wecomQrUrl   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  parent   Department?  @relation("DeptTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children Department[]  @relation("DeptTree")
+  store    Store?
+
+  @@index([parentId])
+}
+
+model Store {
+  id        String   @id @default(cuid())
+  externalId String? @unique
+  name      String
+  /// 店家企业微信二维码图片 URL（可填图片托管地址或后台上传后的链接）
+  wecomQrUrl String?
+  /// 绑定的组织部门（门店级）：预约看房优先使用部门上的电话与二维码
+  departmentId String? @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  department  Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  apartments Apartment[]
+  adminStores AdminStore[]
+  billPeriods BillPeriod[]
+}
+
+model Apartment {
+  id        String   @id @default(cuid())
+  externalId String? @unique
+  name      String
+  storeId   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  store Store @relation(fields: [storeId], references: [id])
+  houses House[]
+
+  @@unique([name, storeId])
+}
+
+model House {
+  id            String      @id @default(cuid())
+  externalId    String?     @unique
+  apartmentId   String
+  houseNo       String
+  houseType     String
+  area          Float
+  rentMonthly   Int
+  deposit       Int
+  status        HouseStatus @default(VACANT)
+  /// 房源图片轮播（保存为 JSON 数组字符串：["url1","url2",...]）
+  houseImagesJson String @default("[]")
+  /// 运营补录信息：具体地址（非必填）
+  address         String?
+  /// 运营补录信息：地图坐标（非必填）
+  geoLat          Float?
+  geoLng          Float?
+  /// 运营补录信息：附近地铁站 JSON（非必填，默认空数组）
+  nearbySubwayJson   String @default("[]")
+  /// 运营补录信息：附近学校 JSON（非必填，默认空数组）
+  nearbySchoolsJson  String @default("[]")
+  /// 运营补录信息：附近公交站/线路 JSON（非必填，默认空数组）
+  nearbyBusStopsJson String @default("[]")
+  /// 是否“已发布/上架”（H5 仅展示已发布房源）
+  isPublished      Boolean @default(false)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  apartment Apartment @relation(fields: [apartmentId], references: [id])
+  orders    Order[]
+  contracts Contract[]
+
+  @@unique([apartmentId, houseNo])
+}
+
+model Tenant {
+  id           String   @id @default(cuid())
+  name         String
+  idNumber     String
+  phone        String
+  wechat       String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  orders    Order[]
+  contracts Contract[]
+
+  @@index([phone])
+}
+
+model Order {
+  id            String      @id @default(cuid())
+  houseId       String
+  tenantId      String
+  leaseMonths   Int
+  moveInDate    DateTime
+  status        OrderStatus @default(PENDING_REVIEW)
+  reviewReason  String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  house   House   @relation(fields: [houseId], references: [id])
+  tenant  Tenant  @relation(fields: [tenantId], references: [id])
+  contract Contract?
+}
+
+model Contract {
+  id              String         @id @default(cuid())
+  contractNo      String         @unique
+  houseId         String
+  tenantId        String
+  orderId         String         @unique
+  status          ContractStatus @default(PENDING_PAYMENT)
+  source          ContractSource @default(SYSTEM)
+  startDate       DateTime
+  endDate         DateTime
+  rentMonthly     Int
+  deposit         Int
+  depositMultiple Float          @default(1)
+  rentCycle       String         @default("MONTHLY") // MONTHLY/QUARTERLY/YEARLY
+  penaltyFormula  String         @default("amount*0.1%*days")
+  /// 已废弃：原「最晚交租固定日期」，请使用 latestRentGraceDays
+  latestRentDueDate DateTime?
+  /// 最晚交租宽限期（天）：相对每期应付日的规则，适配按月/按季/按年交付
+  latestRentGraceDays Int?
+  /// 合同配置备注（富文本 HTML）
+  configRemarkHtml String?
+  /// JSON: [{ "id": "...", "name": "文件名", "file": "磁盘文件名" }]
+  attachmentsJson  String?      @default("[]")
+  /// 续签时指向上一份合同
+  renewedFromId    String?
+  /// 换房时指向上一份（旧房）合同
+  changeHouseFromId String?
+  confirmedAt     DateTime?
+  signedAt        DateTime?
+  stampedAt       DateTime?
+  voidedAt        DateTime?
+  terminatedAt    DateTime?
+  modificationRequestedAt DateTime?  // 租客申请修改合同时写入，管理员处理/驳回后可清空
+  modificationRejectedAt  DateTime?  // 管理员驳回修改申请时写入，管理员重新配置并保存后清空；有值时也显示「修改配置合同信息」按钮
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  house    House   @relation(fields: [houseId], references: [id])
+  tenant   Tenant  @relation(fields: [tenantId], references: [id])
+  order    Order   @relation(fields: [orderId], references: [id])
+  renewedFrom Contract?  @relation("ContractRenewal", fields: [renewedFromId], references: [id], onDelete: SetNull)
+  renewedTo   Contract[] @relation("ContractRenewal")
+  changeHouseFrom Contract?  @relation("ContractHouseChange", fields: [changeHouseFromId], references: [id], onDelete: SetNull)
+  changeHouseNew  Contract[] @relation("ContractHouseChange")
+  payments Payment[]
+  bills    Bill[]
+  refunds  Refund[]
+  housingReport HousingReport?
+  rentReminders RentReminder[]
+}
+
+model Payment {
+  id          String        @id @default(cuid())
+  contractId  String
+  amount      Int
+  status      PaymentStatus @default(PENDING)
+  paidAt      DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  contract Contract @relation(fields: [contractId], references: [id])
+}
+
+model HousingReport {
+  id            String   @id @default(cuid())
+  contractId    String   @unique
+  status        String   @default("PENDING") // PENDING/SUCCESS/FAILED
+  receiptPdfPath String?
+  lastError     String?
+  reportedAt    DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  contract Contract @relation(fields: [contractId], references: [id])
+}
+
+model Bill {
+  id          String     @id @default(cuid())
+  contractId  String
+  period      String     // e.g. 2026-03
+  dueDate     DateTime
+  totalAmount Int
+  status      BillStatus @default(UNPAID)
+  kind        BillKind   @default(BASE)
+  paidAt      DateTime?
+  /// 线下核销：管理员确认已线下收款的时间
+  offlineVerifiedAt DateTime?
+  /// 线下核销：操作者（Admin.id），用于审计/追溯
+  offlineVerifiedByAdminId String?
+  /// 线下核销：备注（如收款方式/流水号等）
+  offlineVerifiedRemark String?
+  /// 线下核销：凭证附件 JSON [{ "id": "...", "name": "文件名", "file": "磁盘文件名" }]
+  offlineVerifyAttachmentsJson String? @default("[]")
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  contract Contract   @relation(fields: [contractId], references: [id])
+  items    BillItem[]
+  arrears  Arrears?
+  rentReminders RentReminder[]
+  changeLogs BillChangeLog[]
+
+  @@unique([contractId, period, kind])
+}
+
+/// 账期汇总锁定（按门店+账期）：锁定后该账期数据不可再变更，且汇总以快照为准
+model BillPeriod {
+  id        String   @id @default(cuid())
+  storeId   String
+  period    String   // e.g. 2026-03
+  lockedAt  DateTime?
+  lockedByAdminId String?
+
+  // 锁定快照（用于保证锁定后汇总不变）
+  snapshotContractCount Int?
+  snapshotBillCount     Int?
+  snapshotTotalAmount   Int?
+  snapshotDueDateFrom   DateTime?
+  snapshotDueDateTo     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  store Store @relation(fields: [storeId], references: [id])
+
+  @@unique([storeId, period])
+  @@index([period])
+  @@index([lockedAt])
+}
+
+model BillItem {
+  id       String @id @default(cuid())
+  billId   String
+  name     String
+  amount   Int
+  createdAt DateTime @default(now())
+
+  bill Bill @relation(fields: [billId], references: [id])
+}
+
+model Arrears {
+  id        String   @id @default(cuid())
+  billId    String   @unique
+  daysOverdue Int
+  penalty    Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  bill Bill @relation(fields: [billId], references: [id])
+}
+
+model Refund {
+  id        String   @id @default(cuid())
+  contractId String
+  amount    Int
+  reason    String
+  createdAt DateTime @default(now())
+
+  contract Contract @relation(fields: [contractId], references: [id])
+}
+
+/// 催租短信台账（演示：仅记录发送内容与时间，不对接真实短信网关）
+model RentReminder {
+  id           String   @id @default(cuid())
+  billId       String
+  contractId   String
+  period       String
+  dueDate      DateTime
+  billAmount   Int
+  penalty      Int      @default(0)
+  totalDue     Int
+  tenantName   String
+  tenantPhone  String
+  storeName    String
+  apartmentName String
+  houseNo      String
+  message      String
+  sentAt       DateTime @default(now())
+  sentByAdminId String?
+  createdAt    DateTime @default(now())
+
+  bill     Bill     @relation(fields: [billId], references: [id])
+  contract Contract @relation(fields: [contractId], references: [id])
+
+  @@index([billId])
+  @@index([contractId])
+  @@index([sentAt])
+}
+
+/// 账单变更记录（审计用）：记录修改前后快照
+model BillChangeLog {
+  id        String   @id @default(cuid())
+  billId    String
+  adminId   String?
+  changedAt DateTime @default(now())
+  beforeJson String
+  afterJson  String
+  remark    String?
+
+  bill  Bill   @relation(fields: [billId], references: [id])
+  admin Admin? @relation(fields: [adminId], references: [id])
+
+  @@index([billId])
+  @@index([changedAt])
+}
+
+model Admin {
+  id        String        @id @default(cuid())
+  email     String        @unique
+  name      String
+  passwordHash String
+  roleCode  AdminRoleCode
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  adminStores AdminStore[]
+  billChangeLogs BillChangeLog[]
+}
+
+model AdminStore {
+  id       String @id @default(cuid())
+  adminId  String
+  storeId  String
+
+  admin Admin @relation(fields: [adminId], references: [id])
+  store Store @relation(fields: [storeId], references: [id])
+
+  @@unique([adminId, storeId])
+}
+

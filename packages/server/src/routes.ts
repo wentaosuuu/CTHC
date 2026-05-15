@@ -1,0 +1,3156 @@
+import type { Express, Request, RequestHandler } from 'express'
+import type { PrismaClient, Admin, AdminRoleCode } from '@prisma/client'
+import bcrypt from 'bcryptjs'
+import multer from 'multer'
+import fs from 'node:fs'
+import path from 'node:path'
+import { randomBytes } from 'node:crypto'
+import { z } from 'zod'
+import { signAdminToken, verifyAdminToken } from './auth.js'
+import { getBearerToken } from './http.js'
+import { env } from './env.js'
+import { addMonths, fmtPeriod, startOfMonth, toYmd } from './time.js'
+import { upsertAssetSnapshot } from './services/assetSync.js'
+import { ensureHousingReportRecord, performHousingReportNow } from './services/housingReport.js'
+import { computePenalty } from './services/penalty.js'
+import { buildBillImportTemplateBuffer, parseAndImportBills } from './services/billImport.js'
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } })
+const contractFileUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 },
+})
+
+const CONTRACT_UPLOAD_ROOT = path.join(process.cwd(), 'data', 'contract-uploads')
+const BILL_VERIFY_UPLOAD_ROOT = path.join(process.cwd(), 'data', 'bill-verify-uploads')
+const DEPT_QR_PUBLIC_ROOT = path.join(process.cwd(), 'data', 'dept-qr-public')
+
+function ensureDeptQrPublicDir() {
+  fs.mkdirSync(DEPT_QR_PUBLIC_ROOT, { recursive: true })
+}
+
+function viewingContactFromStore(store: {
+  wecomQrUrl: string | null
+  department: { contactPhone: string | null; wecomQrUrl: string | null } | null
+}) {
+  const dept = store.department
+  const phone = (dept?.contactPhone && dept.contactPhone.trim()) || null
+  const qrUrlRaw = (dept?.wecomQrUrl && dept.wecomQrUrl.trim()) || (store.wecomQrUrl && store.wecomQrUrl.trim()) || null
+  return { phone, qrUrl: qrUrlRaw }
+}
+
+function ensureContractUploadDir(contractId: string) {
+  const dir = path.join(CONTRACT_UPLOAD_ROOT, contractId)
+  fs.mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+function ensureBillVerifyUploadDir(billId: string) {
+  const dir = path.join(BILL_VERIFY_UPLOAD_ROOT, billId)
+  fs.mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+function parseContractAttachmentsJson(s: string | null | undefined): { id: string; name: string; file: string }[] {
+  try {
+    const a = JSON.parse(s || '[]')
+    if (!Array.isArray(a)) return []
+    return a.filter((x) => x && typeof x.file === 'string' && typeof x.name === 'string')
+  } catch {
+    return []
+  }
+}
+
+function mimeFromFileKey(fileKey: string) {
+  const ext = path.extname(fileKey).toLowerCase()
+  const mime =
+    ext === '.png'
+      ? 'image/png'
+      : ext === '.jpg' || ext === '.jpeg'
+        ? 'image/jpeg'
+        : ext === '.gif'
+          ? 'image/gif'
+          : ext === '.webp'
+            ? 'image/webp'
+            : ext === '.pdf'
+              ? 'application/pdf'
+              : 'application/octet-stream'
+  return { ext, mime }
+}
+
+function parseBillVerifyAttachmentsJson(s: string | null | undefined): { id: string; name: string; file: string }[] {
+  try {
+    const a = JSON.parse(s || '[]')
+    if (!Array.isArray(a)) return []
+    return a.filter((x) => x && typeof x.file === 'string' && typeof x.name === 'string')
+  } catch {
+    return []
+  }
+}
+
+async function isBillPeriodLocked(prisma: PrismaClient, storeId: string, period: string) {
+  const bp = await prisma.billPeriod.findUnique({ where: { storeId_period: { storeId, period } } })
+  return Boolean(bp?.lockedAt)
+}
+
+/** 账期 YYYY-MM 是否与合同租期存在交集（与建合同时按月生成 BASE 账单的口径一致） */
+function periodOverlapsLease(startDate: Date, endDate: Date, period: string) {
+  const m = /^(\d{4})-(\d{2})$/.exec(period)
+  if (!m) return false
+  const y = Number(m[1])
+  const mo = Number(m[2])
+  if (!y || mo < 1 || mo > 12) return false
+  const monthStart = new Date(Date.UTC(y, mo - 1, 1))
+  const monthEndEx = new Date(Date.UTC(y, mo, 1))
+  return startDate < monthEndEx && endDate > monthStart
+}
+
+function remarkPlainPreview(html: string | null | undefined, max = 40): string {
+  if (!html) return ''
+  const t = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+  return t.length > max ? `${t.slice(0, max)}…` : t
+}
+
+function getDepositRefundSummary(refunds: Array<{ amount: number; reason: string }>) {
+  const depositRefunds = refunds.filter((r) => r.reason.startsWith('退押金'))
+  const refundedDepositAmount = depositRefunds.reduce((s, r) => s + Math.max(0, r.amount), 0)
+  return {
+    depositRefunded: refundedDepositAmount > 0,
+    refundedDepositAmount,
+  }
+}
+
+type Ctx = { prisma: PrismaClient }
+
+type AdminAuth = {
+  admin: Admin
+  storeIds: string[]
+}
+
+function adminAuth(prisma: PrismaClient): RequestHandler {
+  return async (req, res, next) => {
+    try {
+      const token = getBearerToken(req)
+      if (!token) return res.status(401).json({ error: 'UNAUTHORIZED' })
+      const payload = verifyAdminToken(token)
+      const admin = await prisma.admin.findUnique({ where: { id: payload.adminId } })
+      if (!admin) return res.status(401).json({ error: 'UNAUTHORIZED' })
+
+      const stores = await prisma.adminStore.findMany({
+        where: { adminId: admin.id },
+        select: { storeId: true },
+      })
+      ;(req as any).adminAuth = { admin, storeIds: stores.map((s) => s.storeId) } satisfies AdminAuth
+      next()
+    } catch {
+      return res.status(401).json({ error: 'UNAUTHORIZED' })
+    }
+  }
+}
+
+function getAdminAuth(req: Request): AdminAuth {
+  return (req as any).adminAuth as AdminAuth
+}
+
+function canAccessStore(auth: AdminAuth, storeId: string) {
+  if (auth.admin.roleCode === 'SYSTEM_ADMIN') return true
+  return auth.storeIds.includes(storeId)
+}
+
+function mustBeSystemAdmin(auth: AdminAuth) {
+  return auth.admin.roleCode === 'SYSTEM_ADMIN'
+}
+
+function numericCodeFromId(id: string, digits = 12) {
+  // Deterministic numeric display code for demo (no letters).
+  let h = 0
+  for (let i = 0; i < id.length; i += 1) h = (h * 31 + id.charCodeAt(i)) >>> 0
+  const s = String(h).padStart(digits, '0')
+  return s.slice(-digits)
+}
+
+/** 后台列表展示的房源业务编号（演示用，同一房源在各页面一致） */
+function houseBizId(houseId: string) {
+  return `FY${numericCodeFromId(houseId, 10)}`
+}
+
+export function registerRoutes(app: Express, prisma: PrismaClient) {
+  const ctx: Ctx = { prisma }
+
+  ensureDeptQrPublicDir()
+  app.get('/api/public/dept-qr/:fileName', (req, res) => {
+    const raw = String(req.params.fileName ?? '')
+    const base = path.basename(raw)
+    if (!base || base !== raw) return res.status(400).end()
+    const fp = path.resolve(DEPT_QR_PUBLIC_ROOT, base)
+    if (!fp.startsWith(path.resolve(DEPT_QR_PUBLIC_ROOT))) return res.status(400).end()
+    if (!fs.existsSync(fp)) return res.status(404).end()
+    res.sendFile(fp)
+  })
+
+  // ---------- Public (H5) ----------
+  app.get('/api/houses', async (req, res) => {
+    const status = z
+      .enum(['VACANT', 'RESERVED', 'ORDERED', 'SIGNED', 'TERMINATED'])
+      .optional()
+      .safeParse(req.query.status)
+    const browse = req.query.browse === '1' || req.query.browse === 'true'
+    const whereStatus = status.success ? status.data : undefined
+    const where = browse
+      ? { isPublished: true, status: { in: ['VACANT', 'ORDERED', 'RESERVED'] as any } }
+      : whereStatus
+        ? { isPublished: true, status: whereStatus }
+        : { isPublished: true }
+
+    const houses = await ctx.prisma.house.findMany({
+      where,
+      orderBy: { updatedAt: 'desc' },
+      include: { apartment: { include: { store: { include: { department: true } } } } },
+      take: 200,
+    })
+    res.json({
+      items: houses.map((h) => ({
+        id: h.id,
+        apartmentName: h.apartment.name,
+        storeName: h.apartment.store.name,
+        houseNo: h.houseNo,
+        houseType: h.houseType,
+        area: h.area,
+        rentMonthly: h.rentMonthly,
+        deposit: h.deposit,
+        status: h.status,
+        address: h.address,
+        location: h.geoLat != null && h.geoLng != null ? { lat: h.geoLat, lng: h.geoLng } : null,
+        nearbySubway: (() => {
+          try {
+            const parsed = JSON.parse(h.nearbySubwayJson ?? '[]')
+            return Array.isArray(parsed) ? parsed : []
+          } catch {
+            return []
+          }
+        })(),
+        nearbySchools: (() => {
+          try {
+            const parsed = JSON.parse(h.nearbySchoolsJson ?? '[]')
+            return Array.isArray(parsed) ? parsed : []
+          } catch {
+            return []
+          }
+        })(),
+        nearbyBusStops: (() => {
+          try {
+            const parsed = JSON.parse(h.nearbyBusStopsJson ?? '[]')
+            return Array.isArray(parsed) ? parsed : []
+          } catch {
+            return []
+          }
+        })(),
+        images: (() => {
+          try {
+            const parsed = JSON.parse(h.houseImagesJson)
+            return Array.isArray(parsed) ? parsed.map((x) => String(x)) : []
+          } catch {
+            return []
+          }
+        })(),
+      })),
+    })
+  })
+
+  app.get('/api/houses/:id', async (req, res) => {
+    const house = await ctx.prisma.house.findUnique({
+      where: { id: String(req.params.id) },
+      include: { apartment: { include: { store: { include: { department: true } } } } },
+    })
+    if (!house || !house.isPublished) return res.status(404).json({ error: 'NOT_FOUND' })
+    const viewingContact = viewingContactFromStore(house.apartment.store)
+    res.json({
+      id: house.id,
+      apartmentName: house.apartment.name,
+      storeName: house.apartment.store.name,
+      houseNo: house.houseNo,
+      houseType: house.houseType,
+      area: house.area,
+      rentMonthly: house.rentMonthly,
+      deposit: house.deposit,
+      status: house.status,
+      address: house.address,
+      location: house.geoLat != null && house.geoLng != null ? { lat: house.geoLat, lng: house.geoLng } : null,
+      nearbySubway: (() => {
+        try {
+          const parsed = JSON.parse(house.nearbySubwayJson ?? '[]')
+          return Array.isArray(parsed) ? parsed : []
+        } catch {
+          return []
+        }
+      })(),
+      nearbySchools: (() => {
+        try {
+          const parsed = JSON.parse(house.nearbySchoolsJson ?? '[]')
+          return Array.isArray(parsed) ? parsed : []
+        } catch {
+          return []
+        }
+      })(),
+      nearbyBusStops: (() => {
+        try {
+          const parsed = JSON.parse(house.nearbyBusStopsJson ?? '[]')
+          return Array.isArray(parsed) ? parsed : []
+        } catch {
+          return []
+        }
+      })(),
+      images: (() => {
+        try {
+          const parsed = JSON.parse(house.houseImagesJson)
+          return Array.isArray(parsed) ? parsed.map((x) => String(x)) : []
+        } catch {
+          return []
+        }
+      })(),
+      viewingContact,
+    })
+  })
+
+  app.post('/api/orders', async (req, res) => {
+    const Body = z.object({
+      houseId: z.string().min(1),
+      leaseMonths: z.number().int().min(1).max(36),
+      moveInDate: z.string().min(8),
+      name: z.string().min(1),
+      idNumber: z.string().min(6),
+      phone: z.string().min(6),
+      wechat: z.string().optional(),
+    })
+    const body = Body.parse(req.body)
+
+    const house = await ctx.prisma.house.findUnique({
+      where: { id: body.houseId },
+      include: { apartment: true },
+    })
+    if (!house) return res.status(404).json({ error: 'HOUSE_NOT_FOUND' })
+    if (!house.isPublished) return res.status(409).json({ error: 'HOUSE_NOT_PUBLISHED' })
+    if (house.rentMonthly <= 0) return res.status(409).json({ error: 'HOUSE_RENT_NOT_CONFIGURED' })
+    const houseImgs = (() => {
+      try {
+        const parsed = JSON.parse(house.houseImagesJson)
+        return Array.isArray(parsed) ? parsed.map((x) => String(x)) : []
+      } catch {
+        return []
+      }
+    })()
+    if (houseImgs.length === 0) return res.status(409).json({ error: 'HOUSE_IMAGES_NOT_CONFIGURED' })
+    if (house.status !== 'VACANT') return res.status(409).json({ error: 'HOUSE_NOT_VACANT' })
+
+    const tenant = await ctx.prisma.tenant.create({
+      data: {
+        name: body.name,
+        idNumber: body.idNumber,
+        phone: body.phone,
+        wechat: body.wechat,
+      },
+    })
+
+    const order = await ctx.prisma.order.create({
+      data: {
+        houseId: house.id,
+        tenantId: tenant.id,
+        leaseMonths: body.leaseMonths,
+        moveInDate: new Date(body.moveInDate),
+        status: 'PENDING_REVIEW',
+      },
+      include: { house: { include: { apartment: { include: { store: true } } } } },
+    })
+
+    await ctx.prisma.house.update({
+      where: { id: house.id },
+      data: { status: 'ORDERED' },
+    })
+
+    res.json({
+      id: order.id,
+      status: order.status,
+      house: {
+        id: order.house.id,
+        apartmentName: order.house.apartment.name,
+        storeName: order.house.apartment.store.name,
+        houseNo: order.house.houseNo,
+      },
+      storeWecomQrUrl: order.house.apartment.store.wecomQrUrl ?? null,
+      tenantPhone: tenant.phone,
+      tips: '已提交订单，等待店长审核。',
+    })
+  })
+
+  // Tenant actions: provide phone as simple "identity" for MVP
+  // 当前租客的合同列表（用于「确认订单」后跳转到合同页）
+  app.get('/api/contracts', async (req, res) => {
+    const phone = req.header('x-tenant-phone')
+    if (!phone) return res.status(401).json({ error: 'NEED_TENANT_PHONE' })
+
+    const contracts = await ctx.prisma.contract.findMany({
+      where: { tenant: { phone } },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+      select: { id: true, contractNo: true, status: true },
+    })
+    res.json({ items: contracts })
+  })
+
+  app.get('/api/contracts/:id', async (req, res) => {
+    const phone = req.header('x-tenant-phone')
+    if (!phone) return res.status(401).json({ error: 'NEED_TENANT_PHONE' })
+
+    const contract = await ctx.prisma.contract.findUnique({
+      where: { id: String(req.params.id) },
+      include: {
+        tenant: true,
+        house: { include: { apartment: { include: { store: true } } } },
+        payments: true,
+        bills: { orderBy: { period: 'asc' } },
+        housingReport: true,
+      },
+    })
+    if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (contract.tenant.phone !== phone) return res.status(403).json({ error: 'FORBIDDEN' })
+
+    res.json({
+      id: contract.id,
+      contractNo: contract.contractNo,
+      status: contract.status,
+      apartmentName: contract.house.apartment.name,
+      storeName: contract.house.apartment.store.name,
+      houseNo: contract.house.houseNo,
+      tenant: { name: contract.tenant.name, phone: contract.tenant.phone },
+      rentMonthly: contract.rentMonthly,
+      deposit: contract.deposit,
+      startDate: toYmd(contract.startDate),
+      endDate: toYmd(contract.endDate),
+      confirmedAt: contract.confirmedAt ? contract.confirmedAt.toISOString() : null,
+      stampedAt: contract.stampedAt ? contract.stampedAt.toISOString() : null,
+      payment: contract.payments[0]
+        ? {
+            id: contract.payments[0].id,
+            amount: contract.payments[0].amount,
+            status: contract.payments[0].status,
+            paidAt: contract.payments[0].paidAt ? contract.payments[0].paidAt.toISOString() : null,
+          }
+        : null,
+      bills: contract.bills.map((b) => ({
+        id: b.id,
+        period: b.period,
+        dueDate: toYmd(b.dueDate),
+        totalAmount: b.totalAmount,
+        status: b.status,
+        paidAt: b.paidAt ? b.paidAt.toISOString() : null,
+      })),
+      housingReport: contract.housingReport
+        ? {
+            status: contract.housingReport.status,
+            receiptPdfPath: contract.housingReport.receiptPdfPath,
+            reportedAt: contract.housingReport.reportedAt
+              ? contract.housingReport.reportedAt.toISOString()
+              : null,
+            lastError: contract.housingReport.lastError,
+          }
+        : null,
+      modificationRequestedAt: contract.modificationRequestedAt ? contract.modificationRequestedAt.toISOString() : null,
+      attachments: parseContractAttachmentsJson(contract.attachmentsJson),
+    })
+  })
+
+  app.get('/api/contracts/:id/attachment/:fileKey', async (req, res) => {
+    const phone = req.header('x-tenant-phone')
+    if (!phone) return res.status(401).json({ error: 'NEED_TENANT_PHONE' })
+
+    const fileKey = decodeURIComponent(String(req.params.fileKey))
+    if (!/^[a-zA-Z0-9._-]+$/.test(fileKey)) return res.status(400).json({ error: 'BAD_KEY' })
+
+    const contract = await ctx.prisma.contract.findUnique({
+      where: { id: String(req.params.id) },
+      include: { tenant: true },
+    })
+    if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (contract.tenant.phone !== phone) return res.status(403).json({ error: 'FORBIDDEN' })
+
+    const list = parseContractAttachmentsJson(contract.attachmentsJson)
+    const att = list.find((a) => a.file === fileKey)
+    if (!att) return res.status(404).json({ error: 'FILE_NOT_IN_CONTRACT' })
+
+    const full = path.join(CONTRACT_UPLOAD_ROOT, contract.id, fileKey)
+    if (!fs.existsSync(full)) return res.status(404).json({ error: 'FILE_MISSING' })
+
+    const { ext, mime } = mimeFromFileKey(fileKey)
+    res.setHeader('Content-Type', mime)
+    if (req.query.download === '1') {
+      res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(att.name)}`)
+    } else if (['.png', '.jpg', '.jpeg', '.gif', '.webp', '.pdf'].includes(ext)) {
+      res.setHeader('Content-Disposition', 'inline')
+    }
+    res.sendFile(path.resolve(full))
+  })
+
+  app.post('/api/contracts/:id/confirm', async (req, res) => {
+    const phone = req.header('x-tenant-phone')
+    if (!phone) return res.status(401).json({ error: 'NEED_TENANT_PHONE' })
+
+    const contract = await ctx.prisma.contract.findUnique({
+      where: { id: String(req.params.id) },
+      include: { tenant: true },
+    })
+    if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (contract.tenant.phone !== phone) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (contract.status !== 'WAIT_TENANT_SIGN') return res.status(409).json({ error: 'INVALID_STATUS' })
+
+    const updated = await ctx.prisma.contract.update({
+      where: { id: contract.id },
+      data: { confirmedAt: contract.confirmedAt ?? new Date(), status: 'WAIT_STAMP' },
+    })
+    res.json({ ok: true, confirmedAt: updated.confirmedAt?.toISOString() })
+  })
+
+  // 租客申请修改合同信息（仅记录申请时间，管理员在后台看到后再处理）
+  app.post('/api/contracts/:id/request-modification', async (req, res) => {
+    const phone = req.header('x-tenant-phone')
+    if (!phone) return res.status(401).json({ error: 'NEED_TENANT_PHONE' })
+
+    const contract = await ctx.prisma.contract.findUnique({
+      where: { id: String(req.params.id) },
+      include: { tenant: true },
+    })
+    if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (contract.tenant.phone !== phone) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (contract.status === 'VOID' || contract.status === 'TERMINATED') {
+      return res.status(409).json({ error: 'CONTRACT_ALREADY_ENDED' })
+    }
+
+    await ctx.prisma.contract.update({
+      where: { id: contract.id },
+      data: { modificationRequestedAt: new Date() },
+    })
+    res.json({ ok: true, message: '已提交修改申请，请等待管理员处理' })
+  })
+
+  app.post('/api/payments', async (req, res) => {
+    const Body = z.object({
+      contractId: z.string().min(1),
+    })
+    const body = Body.parse(req.body)
+
+    const phone = req.header('x-tenant-phone')
+    if (!phone) return res.status(401).json({ error: 'NEED_TENANT_PHONE' })
+
+    const contract = await ctx.prisma.contract.findUnique({
+      where: { id: body.contractId },
+      include: { tenant: true, house: true, payments: true },
+    })
+    if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (contract.tenant.phone !== phone) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (contract.status !== 'PENDING_PAYMENT') return res.status(409).json({ error: 'INVALID_STATUS' })
+
+    const amount = contract.deposit + contract.rentMonthly
+    const payment =
+      contract.payments[0] ??
+      (await ctx.prisma.payment.create({
+        data: { contractId: contract.id, amount, status: 'PENDING' },
+      }))
+
+    // MVP: mock pay success immediately
+    await ctx.prisma.payment.update({
+      where: { id: payment.id },
+      data: { status: 'PAID', paidAt: new Date() },
+    })
+
+    await ctx.prisma.contract.update({
+      where: { id: contract.id },
+      data: { status: 'ACTIVE', signedAt: new Date() },
+    })
+
+    await ctx.prisma.house.update({
+      where: { id: contract.houseId },
+      data: { status: 'SIGNED' },
+    })
+
+    await ensureHousingReportRecord(ctx.prisma, contract.id)
+
+    res.json({ ok: true, amount, contractStatus: 'ACTIVE' })
+  })
+
+  // Tenant bills (H5)
+  app.get('/api/bills', async (req, res) => {
+    const phone = req.header('x-tenant-phone')
+    if (!phone) return res.status(401).json({ error: 'NEED_TENANT_PHONE' })
+
+    const bills = await ctx.prisma.bill.findMany({
+      where: { contract: { tenant: { phone } } },
+      include: {
+        contract: {
+          include: {
+            tenant: true,
+            house: { include: { apartment: { include: { store: true } } } },
+          },
+        },
+      },
+      orderBy: { dueDate: 'desc' },
+      take: 200,
+    })
+
+    res.json({
+      items: bills.map((b) => ({
+        id: b.id,
+        period: b.period,
+        dueDate: toYmd(b.dueDate),
+        totalAmount: b.totalAmount,
+        status: b.status,
+        kind: b.kind,
+        contractId: b.contractId,
+        contractNo: b.contract.contractNo,
+        apartmentName: b.contract.house.apartment.name,
+        houseNo: b.contract.house.houseNo,
+        storeName: b.contract.house.apartment.store.name,
+      })),
+    })
+  })
+
+  app.get('/api/bills/:id', async (req, res) => {
+    const phone = req.header('x-tenant-phone')
+    if (!phone) return res.status(401).json({ error: 'NEED_TENANT_PHONE' })
+
+    const bill = await ctx.prisma.bill.findUnique({
+      where: { id: String(req.params.id) },
+      include: {
+        items: { orderBy: { createdAt: 'asc' } },
+        contract: {
+          include: {
+            tenant: true,
+            house: { include: { apartment: { include: { store: true } } } },
+          },
+        },
+      },
+    })
+    if (!bill) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (bill.contract.tenant.phone !== phone) return res.status(403).json({ error: 'FORBIDDEN' })
+
+    res.json({
+      id: bill.id,
+      period: bill.period,
+      dueDate: toYmd(bill.dueDate),
+      totalAmount: bill.totalAmount,
+      status: bill.status,
+      kind: bill.kind,
+      paidAt: bill.paidAt ? bill.paidAt.toISOString() : null,
+      contractId: bill.contractId,
+      contractNo: bill.contract.contractNo,
+      apartmentName: bill.contract.house.apartment.name,
+      houseNo: bill.contract.house.houseNo,
+      storeName: bill.contract.house.apartment.store.name,
+      tenantName: bill.contract.tenant.name,
+      tenantPhone: bill.contract.tenant.phone,
+      createdAt: bill.createdAt.toISOString(),
+      items: bill.items.map((i) => ({ name: i.name, amount: i.amount })),
+    })
+  })
+
+  app.post('/api/bills/:id/pay', async (req, res) => {
+    const phone = req.header('x-tenant-phone')
+    if (!phone) return res.status(401).json({ error: 'NEED_TENANT_PHONE' })
+
+    const bill = await ctx.prisma.bill.findUnique({
+      where: { id: String(req.params.id) },
+      include: {
+        contract: {
+          include: {
+            tenant: true,
+          },
+        },
+      },
+    })
+    if (!bill) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (bill.contract.tenant.phone !== phone) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (bill.status !== 'UNPAID' && bill.status !== 'OVERDUE') {
+      return res.status(409).json({ error: 'INVALID_STATUS' })
+    }
+
+    const updated = await ctx.prisma.bill.update({
+      where: { id: bill.id },
+      data: { status: 'PAID', paidAt: new Date() },
+    })
+
+    res.json({
+      ok: true,
+      paidAt: updated.paidAt?.toISOString() ?? null,
+      status: updated.status,
+    })
+  })
+
+  // ---------- Admin ----------
+  app.post('/api/admin/login', async (req, res) => {
+    const Body = z.object({ email: z.string().email(), password: z.string().min(1) })
+    const body = Body.parse(req.body)
+
+    const admin = await ctx.prisma.admin.findUnique({ where: { email: body.email } })
+    if (!admin) return res.status(401).json({ error: 'INVALID_CREDENTIALS' })
+    const ok = await bcrypt.compare(body.password, admin.passwordHash)
+    if (!ok) return res.status(401).json({ error: 'INVALID_CREDENTIALS' })
+
+    const token = signAdminToken({ adminId: admin.id })
+    res.json({
+      token,
+      admin: { id: admin.id, name: admin.name, email: admin.email, roleCode: admin.roleCode },
+    })
+  })
+
+  app.get('/api/admin/me', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    res.json({
+      id: auth.admin.id,
+      name: auth.admin.name,
+      email: auth.admin.email,
+      roleCode: auth.admin.roleCode,
+      storeIds: auth.storeIds,
+    })
+  })
+
+  // 修改当前登录管理员密码（需提供旧密码）
+  app.post('/api/admin/me/change-password', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const Body = z.object({
+      oldPassword: z.string().min(1),
+      newPassword: z.string().min(6).max(72),
+    })
+    const body = Body.parse(req.body)
+
+    const admin = await ctx.prisma.admin.findUnique({ where: { id: auth.admin.id } })
+    if (!admin) return res.status(401).json({ error: 'UNAUTHORIZED' })
+
+    const ok = await bcrypt.compare(body.oldPassword, admin.passwordHash)
+    if (!ok) return res.status(409).json({ error: 'OLD_PASSWORD_INCORRECT' })
+
+    const nextHash = await bcrypt.hash(body.newPassword, 10)
+    await ctx.prisma.admin.update({
+      where: { id: admin.id },
+      data: { passwordHash: nextHash },
+    })
+    res.json({ ok: true })
+  })
+
+  app.get('/api/admin/stores', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const stores = await ctx.prisma.store.findMany({ orderBy: { createdAt: 'asc' } })
+    const items = stores.filter((s) => canAccessStore(auth, s.id))
+    res.json({ items })
+  })
+
+  // ---------- Admin: Departments（组织架构；门店级预约电话与企业微信二维码）----------
+  app.get('/api/admin/departments', adminAuth(ctx.prisma), async (_req, res) => {
+    const rows = await ctx.prisma.department.findMany({
+      include: { store: { select: { id: true, name: true } } },
+      orderBy: { code: 'asc' },
+    })
+    res.json({
+      items: rows.map((d) => ({
+        id: d.id,
+        name: d.name,
+        code: d.code,
+        parentId: d.parentId,
+        remark: d.remark,
+        contactPhone: d.contactPhone,
+        wecomQrUrl: d.wecomQrUrl,
+        linkedStoreId: d.store?.id ?? null,
+        linkedStoreName: d.store?.name ?? null,
+      })),
+    })
+  })
+
+  app.post('/api/admin/departments', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    if (!mustBeSystemAdmin(auth)) return res.status(403).json({ error: 'FORBIDDEN' })
+    const Body = z.object({
+      name: z.string().min(1),
+      code: z.string().min(1),
+      parentId: z.string().nullable().optional(),
+      remark: z.string().optional(),
+      contactPhone: z.string().nullable().optional(),
+      wecomQrUrl: z.string().nullable().optional(),
+      linkedStoreId: z.string().nullable().optional(),
+    })
+    const body = Body.parse(req.body)
+    const codeDup = await ctx.prisma.department.findUnique({ where: { code: body.code } })
+    if (codeDup) return res.status(409).json({ error: 'CODE_EXISTS' })
+    if (body.linkedStoreId) {
+      const st = await ctx.prisma.store.findUnique({ where: { id: body.linkedStoreId } })
+      if (!st) return res.status(400).json({ error: 'STORE_NOT_FOUND' })
+    }
+    const created = await ctx.prisma.$transaction(async (tx) => {
+      const d = await tx.department.create({
+        data: {
+          name: body.name,
+          code: body.code,
+          parentId: body.parentId ?? null,
+          remark: body.remark ?? '',
+          contactPhone: body.contactPhone ?? null,
+          wecomQrUrl: body.wecomQrUrl ?? null,
+        },
+      })
+      if (body.linkedStoreId) {
+        await tx.store.updateMany({ where: { departmentId: d.id }, data: { departmentId: null } })
+        await tx.store.update({
+          where: { id: body.linkedStoreId },
+          data: { departmentId: d.id },
+        })
+      }
+      return d
+    })
+    const full = await ctx.prisma.department.findUnique({
+      where: { id: created.id },
+      include: { store: { select: { id: true, name: true } } },
+    })
+    res.json({
+      item: {
+        id: full!.id,
+        name: full!.name,
+        code: full!.code,
+        parentId: full!.parentId,
+        remark: full!.remark,
+        contactPhone: full!.contactPhone,
+        wecomQrUrl: full!.wecomQrUrl,
+        linkedStoreId: full!.store?.id ?? null,
+        linkedStoreName: full!.store?.name ?? null,
+      },
+    })
+  })
+
+  app.patch('/api/admin/departments/:id', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const id = String(req.params.id)
+    const dept = await ctx.prisma.department.findUnique({
+      where: { id },
+      include: { store: { select: { id: true } } },
+    })
+    if (!dept) return res.status(404).json({ error: 'NOT_FOUND' })
+    const isSys = mustBeSystemAdmin(auth)
+    const isMgrOk = Boolean(dept.store?.id && canAccessStore(auth, dept.store.id))
+    if (!isSys && !isMgrOk) return res.status(403).json({ error: 'FORBIDDEN' })
+
+    const Body = z.object({
+      name: z.string().min(1).optional(),
+      code: z.string().min(1).optional(),
+      parentId: z.string().nullable().optional(),
+      remark: z.string().optional(),
+      contactPhone: z.string().nullable().optional(),
+      wecomQrUrl: z.string().nullable().optional(),
+      linkedStoreId: z.string().nullable().optional(),
+    })
+    const body = Body.parse(req.body)
+
+    if (!isSys) {
+      if (
+        body.name !== undefined ||
+        body.code !== undefined ||
+        body.parentId !== undefined ||
+        body.linkedStoreId !== undefined
+      ) {
+        return res.status(403).json({ error: 'FORBIDDEN' })
+      }
+    }
+
+    if (body.code !== undefined && body.code !== dept.code) {
+      const exists = await ctx.prisma.department.findFirst({
+        where: { code: body.code, id: { not: id } },
+      })
+      if (exists) return res.status(409).json({ error: 'CODE_EXISTS' })
+    }
+
+    if (body.linkedStoreId !== undefined && !isSys) {
+      return res.status(403).json({ error: 'FORBIDDEN' })
+    }
+
+    if (body.linkedStoreId) {
+      const st = await ctx.prisma.store.findUnique({ where: { id: body.linkedStoreId } })
+      if (!st) return res.status(400).json({ error: 'STORE_NOT_FOUND' })
+      if (!canAccessStore(auth, body.linkedStoreId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    }
+
+    await ctx.prisma.$transaction(async (tx) => {
+      await tx.department.update({
+        where: { id },
+        data: {
+          ...(body.name !== undefined ? { name: body.name } : {}),
+          ...(body.code !== undefined ? { code: body.code } : {}),
+          ...(body.parentId !== undefined ? { parentId: body.parentId } : {}),
+          ...(body.remark !== undefined ? { remark: body.remark } : {}),
+          ...(body.contactPhone !== undefined ? { contactPhone: body.contactPhone } : {}),
+          ...(body.wecomQrUrl !== undefined ? { wecomQrUrl: body.wecomQrUrl } : {}),
+        },
+      })
+      if (body.linkedStoreId !== undefined) {
+        await tx.store.updateMany({ where: { departmentId: id }, data: { departmentId: null } })
+        if (body.linkedStoreId) {
+          await tx.store.update({
+            where: { id: body.linkedStoreId },
+            data: { departmentId: id },
+          })
+        }
+      }
+    })
+
+    const full = await ctx.prisma.department.findUnique({
+      where: { id },
+      include: { store: { select: { id: true, name: true } } },
+    })
+    res.json({
+      item: {
+        id: full!.id,
+        name: full!.name,
+        code: full!.code,
+        parentId: full!.parentId,
+        remark: full!.remark,
+        contactPhone: full!.contactPhone,
+        wecomQrUrl: full!.wecomQrUrl,
+        linkedStoreId: full!.store?.id ?? null,
+        linkedStoreName: full!.store?.name ?? null,
+      },
+    })
+  })
+
+  app.post(
+    '/api/admin/departments/:id/qr',
+    adminAuth(ctx.prisma),
+    upload.single('file'),
+    async (req, res) => {
+      const auth = getAdminAuth(req)
+      const id = String(req.params.id)
+      const dept = await ctx.prisma.department.findUnique({
+        where: { id },
+        include: { store: { select: { id: true } } },
+      })
+      if (!dept) return res.status(404).json({ error: 'NOT_FOUND' })
+      const isSys = mustBeSystemAdmin(auth)
+      const isMgrOk = Boolean(dept.store?.id && canAccessStore(auth, dept.store.id))
+      if (!isSys && !isMgrOk) return res.status(403).json({ error: 'FORBIDDEN' })
+
+      const file = req.file
+      if (!file?.buffer) return res.status(400).json({ error: 'FILE_REQUIRED' })
+
+      ensureDeptQrPublicDir()
+      const ext =
+        file.mimetype === 'image/png'
+          ? '.png'
+          : file.mimetype === 'image/jpeg' || file.mimetype === 'image/jpg'
+            ? '.jpg'
+            : file.mimetype === 'image/webp'
+              ? '.webp'
+              : null
+      if (!ext) return res.status(400).json({ error: 'UNSUPPORTED_TYPE' })
+
+      const fileName = `${randomBytes(18).toString('hex')}${ext}`
+      const fp = path.join(DEPT_QR_PUBLIC_ROOT, fileName)
+      fs.writeFileSync(fp, file.buffer)
+
+      const publicPath = `/api/public/dept-qr/${fileName}`
+      await ctx.prisma.department.update({
+        where: { id },
+        data: { wecomQrUrl: publicPath },
+      })
+      res.json({ ok: true, wecomQrUrl: publicPath })
+    },
+  )
+
+  app.get('/api/admin/houses', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const houses = await ctx.prisma.house.findMany({
+      include: { apartment: { include: { store: true } } },
+      orderBy: { updatedAt: 'desc' },
+      take: 300,
+    })
+    const items = houses.filter((h) => canAccessStore(auth, h.apartment.storeId))
+    res.json({
+      items: items.map((h) => ({
+        id: h.id,
+        houseBizId: houseBizId(h.id),
+        apartmentName: h.apartment.name,
+        storeName: h.apartment.store.name,
+        houseNo: h.houseNo,
+        houseType: h.houseType,
+        area: h.area,
+        rentMonthly: h.rentMonthly,
+        deposit: h.deposit,
+        status: h.status,
+        isPublished: h.isPublished,
+        address: h.address,
+        geoLat: h.geoLat,
+        geoLng: h.geoLng,
+        nearbySubway: (() => {
+          try {
+            const parsed = JSON.parse(h.nearbySubwayJson ?? '[]')
+            return Array.isArray(parsed) ? parsed : []
+          } catch {
+            return []
+          }
+        })(),
+        nearbySchools: (() => {
+          try {
+            const parsed = JSON.parse(h.nearbySchoolsJson ?? '[]')
+            return Array.isArray(parsed) ? parsed : []
+          } catch {
+            return []
+          }
+        })(),
+        nearbyBusStops: (() => {
+          try {
+            const parsed = JSON.parse(h.nearbyBusStopsJson ?? '[]')
+            return Array.isArray(parsed) ? parsed : []
+          } catch {
+            return []
+          }
+        })(),
+        images: (() => {
+          try {
+            const parsed = JSON.parse(h.houseImagesJson)
+            return Array.isArray(parsed) ? parsed.map((x) => String(x)) : []
+          } catch {
+            return []
+          }
+        })(),
+      })),
+    })
+  })
+
+  // ---------- Admin: Houses config & publish ----------
+  app.post('/api/admin/houses/:id/config', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const Body = z.object({
+      rentMonthly: z.number().int().min(0).optional(),
+      images: z.array(z.string().min(1)).optional(),
+      address: z.string().min(1).optional(),
+      geoLat: z.number().optional().nullable(),
+      geoLng: z.number().optional().nullable(),
+      nearbySubway: z.array(z.any()).optional(),
+      nearbySchools: z.array(z.any()).optional(),
+      nearbyBusStops: z.array(z.any()).optional(),
+    })
+    const body = Body.parse(req.body)
+
+    const house = await ctx.prisma.house.findUnique({
+      where: { id: String(req.params.id) },
+      include: { apartment: { include: { store: true } } },
+    })
+    if (!house) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+
+    let nextImages = undefined as string[] | undefined
+    if (body.images !== undefined) nextImages = body.images
+
+    const images = (() => {
+      if (nextImages !== undefined) return nextImages
+      try {
+        const parsed = JSON.parse(house.houseImagesJson)
+        return Array.isArray(parsed) ? parsed.map((x) => String(x)) : []
+      } catch {
+        return []
+      }
+    })()
+
+    const rentMonthly = body.rentMonthly !== undefined ? body.rentMonthly : house.rentMonthly
+    const deposit = body.rentMonthly !== undefined ? body.rentMonthly : house.deposit
+
+    const address = body.address !== undefined ? body.address : house.address
+    const geoLat = body.geoLat !== undefined ? body.geoLat : house.geoLat
+    const geoLng = body.geoLng !== undefined ? body.geoLng : house.geoLng
+    const nearbySubwayJson =
+      body.nearbySubway !== undefined ? JSON.stringify(body.nearbySubway) : house.nearbySubwayJson
+    const nearbySchoolsJson =
+      body.nearbySchools !== undefined ? JSON.stringify(body.nearbySchools) : house.nearbySchoolsJson
+    const nearbyBusStopsJson =
+      body.nearbyBusStops !== undefined ? JSON.stringify(body.nearbyBusStops) : house.nearbyBusStopsJson
+
+    const updated = await ctx.prisma.house.update({
+      where: { id: house.id },
+      data: {
+        rentMonthly,
+        deposit,
+        houseImagesJson: JSON.stringify(images),
+        address,
+        geoLat,
+        geoLng,
+        nearbySubwayJson,
+        nearbySchoolsJson,
+        nearbyBusStopsJson,
+      },
+    })
+
+    res.json({
+      ok: true,
+      id: updated.id,
+      rentMonthly: updated.rentMonthly,
+      deposit: updated.deposit,
+      isPublished: updated.isPublished,
+    })
+  })
+
+  app.post('/api/admin/houses/:id/publish', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const house = await ctx.prisma.house.findUnique({
+      where: { id: String(req.params.id) },
+      include: { apartment: { include: { store: true } } },
+    })
+    if (!house) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+
+    let images: string[] = []
+    try {
+      const parsed = JSON.parse(house.houseImagesJson)
+      images = Array.isArray(parsed) ? parsed.map((x) => String(x)) : []
+    } catch {
+      images = []
+    }
+
+    if (house.rentMonthly <= 0) return res.status(409).json({ error: 'RENT_NOT_CONFIGURED' })
+    if (images.length === 0) return res.status(409).json({ error: 'IMAGES_NOT_CONFIGURED' })
+    if (!(house.address && String(house.address).trim()))
+      return res.status(409).json({ error: 'ADDRESS_NOT_CONFIGURED' })
+
+    const updated = await ctx.prisma.house.update({
+      where: { id: house.id },
+      data: { isPublished: true },
+    })
+
+    res.json({ ok: true, id: updated.id, isPublished: updated.isPublished })
+  })
+
+  app.post('/api/admin/houses/:id/unpublish', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const house = await ctx.prisma.house.findUnique({
+      where: { id: String(req.params.id) },
+      include: { apartment: { include: { store: true } } },
+    })
+    if (!house) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+
+    const updated = await ctx.prisma.house.update({
+      where: { id: house.id },
+      data: { isPublished: false },
+    })
+
+    res.json({ ok: true, id: updated.id, isPublished: updated.isPublished })
+  })
+
+  app.get('/api/admin/orders', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const orders = await ctx.prisma.order.findMany({
+      include: {
+        tenant: true,
+        house: { include: { apartment: { include: { store: true } } } },
+        contract: true,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+    })
+    const items = orders.filter((o) => canAccessStore(auth, o.house.apartment.storeId))
+    res.json({
+      items: items.map((o) => ({
+        id: o.id,
+        orderNo: numericCodeFromId(o.id, 12),
+        status: o.status,
+        reviewReason: o.reviewReason,
+        createdAt: o.createdAt.toISOString(),
+        leaseMonths: o.leaseMonths,
+        moveInDate: o.moveInDate.toISOString().slice(0, 10),
+        tenantId: o.tenantId,
+        tenant: { name: o.tenant.name, phone: o.tenant.phone },
+        house: {
+          id: o.house.id,
+          houseBizId: houseBizId(o.house.id),
+          storeName: o.house.apartment.store.name,
+          apartmentName: o.house.apartment.name,
+          houseNo: o.house.houseNo,
+          rentMonthly: o.house.rentMonthly,
+          deposit: o.house.deposit,
+        },
+        contractId: o.contract?.id ?? null,
+        contractStatus: o.contract?.status ?? null,
+        contractModificationRequestedAt: o.contract?.modificationRequestedAt
+          ? o.contract.modificationRequestedAt.toISOString()
+          : null,
+        contractModificationRejectedAt: o.contract?.modificationRejectedAt
+          ? o.contract.modificationRejectedAt.toISOString()
+          : null,
+      })),
+    })
+  })
+
+  app.post('/api/admin/orders/:id/review', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const Body = z.object({
+      approved: z.boolean(),
+      reason: z.string().optional(),
+    })
+    const body = Body.parse(req.body)
+
+    const order = await ctx.prisma.order.findUnique({
+      where: { id: String(req.params.id) },
+      include: { house: { include: { apartment: true } } },
+    })
+    if (!order) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, order.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (order.status !== 'PENDING_REVIEW') return res.status(409).json({ error: 'INVALID_STATUS' })
+
+    if (body.approved) {
+      const updated = await ctx.prisma.order.update({
+        where: { id: order.id },
+        data: { status: 'APPROVED', reviewReason: null },
+      })
+      await ctx.prisma.house.update({ where: { id: order.houseId }, data: { status: 'RESERVED' } })
+      return res.json({ ok: true, status: updated.status })
+    }
+
+    const updated = await ctx.prisma.order.update({
+      where: { id: order.id },
+      data: { status: 'REJECTED', reviewReason: body.reason ?? '不通过' },
+    })
+    await ctx.prisma.house.update({ where: { id: order.houseId }, data: { status: 'VACANT' } })
+    return res.json({ ok: true, status: updated.status })
+  })
+
+  /** 待审核订单取消：释放房源，他人可再次下单（与「审核拒绝」效果类似） */
+  app.post('/api/admin/orders/:id/cancel', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const order = await ctx.prisma.order.findUnique({
+      where: { id: String(req.params.id) },
+      include: { house: { include: { apartment: true } } },
+    })
+    if (!order) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, order.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (order.status !== 'PENDING_REVIEW') {
+      return res.status(409).json({ error: 'ONLY_PENDING_REVIEW_CAN_CANCEL' })
+    }
+    await ctx.prisma.order.update({
+      where: { id: order.id },
+      data: { status: 'CANCELLED', reviewReason: '店长取消订单，房源已解锁' },
+    })
+    if (order.house.status === 'ORDERED') {
+      await ctx.prisma.house.update({ where: { id: order.houseId }, data: { status: 'VACANT' } })
+    }
+    return res.json({ ok: true })
+  })
+
+  app.post('/api/admin/contracts', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const Body = z.object({
+      orderId: z.string().min(1),
+      tenantId: z.string().min(1),
+      leaseMonths: z.number().int().min(1).max(36),
+      moveInDate: z.string().min(8),
+      rentMonthly: z.number().int().positive(),
+      depositMultiple: z.number().positive(),
+      rentCycle: z.enum(['MONTHLY', 'QUARTERLY', 'YEARLY']),
+      penaltyFormula: z.string().min(1),
+      latestRentGraceDays: z.union([z.number().int().min(0).max(999), z.null()]).optional(),
+      configRemarkHtml: z.string().optional(),
+      attachmentsJson: z.string().optional(),
+    })
+    const body = Body.parse(req.body)
+
+    const order = await ctx.prisma.order.findUnique({
+      where: { id: body.orderId },
+      include: { tenant: true, house: { include: { apartment: true } }, contract: true },
+    })
+    if (!order) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, order.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (order.status !== 'APPROVED') return res.status(409).json({ error: 'ORDER_NOT_APPROVED' })
+    if (order.contract) {
+      const canModifyConfiguredContract = Boolean(
+        order.contract.modificationRequestedAt || order.contract.modificationRejectedAt,
+      )
+      if (!canModifyConfiguredContract) {
+        return res.status(409).json({ error: 'CONTRACT_LOCKED_WAIT_TENANT_CONFIRM_OR_MODIFY_REQUEST' })
+      }
+      // Ensure bills exist even if a previous attempt partially failed.
+      const startDate = new Date(body.moveInDate)
+      const dueDate = startOfMonth(startDate)
+      for (let i = 0; i < body.leaseMonths; i += 1) {
+        const d = addMonths(dueDate, i)
+        const period = fmtPeriod(d)
+        await ctx.prisma.bill.upsert({
+          where: { contractId_period_kind: { contractId: order.contract.id, period, kind: 'BASE' } },
+          create: {
+            contractId: order.contract.id,
+            period,
+            dueDate: d,
+            totalAmount: body.rentMonthly,
+            status: 'UNPAID',
+            kind: 'BASE',
+          },
+          update: {},
+        })
+      }
+      const deposit = Math.round(body.rentMonthly * body.depositMultiple)
+      const startDate2 = new Date(body.moveInDate)
+      const endDate2 = addMonths(startDate2, body.leaseMonths)
+      const updated = await ctx.prisma.contract.update({
+        where: { id: order.contract.id },
+        data: {
+          tenantId: body.tenantId,
+          startDate: startDate2,
+          endDate: endDate2,
+          rentMonthly: body.rentMonthly,
+          deposit,
+          depositMultiple: body.depositMultiple,
+          rentCycle: body.rentCycle,
+          penaltyFormula: body.penaltyFormula,
+          ...(body.latestRentGraceDays !== undefined
+            ? {
+                latestRentGraceDays: body.latestRentGraceDays,
+                latestRentDueDate: null,
+              }
+            : {}),
+          status: 'WAIT_TENANT_SIGN',
+          confirmedAt: null,
+          stampedAt: null,
+          voidedAt: null,
+          terminatedAt: null,
+          ...(body.configRemarkHtml !== undefined ? { configRemarkHtml: body.configRemarkHtml || null } : {}),
+          ...(body.attachmentsJson !== undefined ? { attachmentsJson: body.attachmentsJson || '[]' } : {}),
+        },
+      })
+      return res.json({ id: updated.id, contractNo: updated.contractNo, tenantPhone: order.tenant.phone })
+    }
+
+    const startDate = new Date(body.moveInDate)
+    const endDate = addMonths(startDate, body.leaseMonths)
+    const contractNo = `C${new Date().getFullYear()}${String(Date.now()).slice(-8)}`
+    const deposit = Math.round(body.rentMonthly * body.depositMultiple)
+
+    const contract = await ctx.prisma.contract.create({
+      data: {
+        contractNo,
+        houseId: order.houseId,
+        tenantId: body.tenantId,
+        orderId: order.id,
+        status: 'WAIT_TENANT_SIGN',
+        source: 'SYSTEM',
+        startDate,
+        endDate,
+        rentMonthly: body.rentMonthly,
+        deposit,
+        depositMultiple: body.depositMultiple,
+        rentCycle: body.rentCycle,
+        penaltyFormula: body.penaltyFormula,
+        latestRentGraceDays: body.latestRentGraceDays ?? null,
+        latestRentDueDate: null,
+        configRemarkHtml: body.configRemarkHtml ?? null,
+        attachmentsJson: body.attachmentsJson ?? '[]',
+      },
+    })
+
+    // Generate monthly bills (BASE: rent only; utilities etc may be 0)
+    const firstPeriod = fmtPeriod(startOfMonth(startDate))
+    const dueDate = startOfMonth(startDate)
+    const periods: { period: string; dueDate: Date }[] = []
+    for (let i = 0; i < body.leaseMonths; i += 1) {
+      const d = addMonths(dueDate, i)
+      periods.push({ period: fmtPeriod(d), dueDate: d })
+    }
+    for (const p of periods) {
+      await ctx.prisma.bill.upsert({
+        where: { contractId_period_kind: { contractId: contract.id, period: p.period, kind: 'BASE' } },
+        create: {
+          contractId: contract.id,
+          period: p.period,
+          dueDate: p.dueDate,
+          totalAmount: contract.rentMonthly,
+          status: 'UNPAID',
+          kind: 'BASE',
+        },
+        update: {
+          dueDate: p.dueDate,
+          totalAmount: contract.rentMonthly,
+        },
+      })
+    }
+
+    res.json({ id: contract.id, contractNo, tenantPhone: order.tenant.phone, firstPeriod })
+  })
+
+  /**
+   * 管理员手动新建合同（不走租客签字/盖章/支付流程）：直接生成「已生效」合同
+   * - 自动创建租客 + 订单（APPROVED）
+   * - 房源需为空置 VACANT，创建后标记为 RESERVED
+   * - 合同来源 source=MANUAL_IMPORT，便于列表筛选
+   */
+  app.post('/api/admin/contracts/manual', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const Body = z.object({
+      houseId: z.string().min(1),
+      tenant: z.object({
+        name: z.string().min(1),
+        phone: z.string().min(6),
+        idNumber: z.string().min(6),
+      }),
+      leaseMonths: z.number().int().min(1).max(36),
+      startDate: z.string().min(8), // YYYY-MM-DD
+      rentMonthly: z.number().int().positive(),
+      deposit: z.number().int().nonnegative(),
+      rentCycle: z.enum(['MONTHLY', 'QUARTERLY', 'YEARLY']),
+      penaltyFormula: z.string().min(1),
+      latestRentGraceDays: z.union([z.number().int().min(0).max(999), z.null()]).optional(),
+      configRemarkHtml: z.union([z.string(), z.null()]).optional(),
+    })
+    const body = Body.parse(req.body)
+
+    const house = await ctx.prisma.house.findUnique({
+      where: { id: body.houseId },
+      include: { apartment: true },
+    })
+    if (!house) return res.status(404).json({ error: 'TARGET_NOT_FOUND' })
+    if (!canAccessStore(auth, house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (house.status !== 'VACANT') return res.status(409).json({ error: 'TARGET_NOT_VACANT' })
+
+    const start = new Date(body.startDate)
+    const end = addMonths(start, body.leaseMonths)
+    const contractNo = `C${new Date().getFullYear()}M${String(Date.now()).slice(-8)}`
+    const dueDate = startOfMonth(start)
+
+    const out = await ctx.prisma.$transaction(async (tx) => {
+      const tenant = await tx.tenant.create({
+        data: {
+          name: body.tenant.name,
+          phone: body.tenant.phone,
+          idNumber: body.tenant.idNumber,
+        },
+      })
+      const order = await tx.order.create({
+        data: {
+          houseId: house.id,
+          tenantId: tenant.id,
+          leaseMonths: body.leaseMonths,
+          moveInDate: start,
+          status: 'APPROVED',
+          reviewReason: '管理员手动创建合同',
+        },
+      })
+      const contract = await tx.contract.create({
+        data: {
+          contractNo,
+          houseId: house.id,
+          tenantId: tenant.id,
+          orderId: order.id,
+          status: 'ACTIVE',
+          source: 'MANUAL_IMPORT',
+          startDate: start,
+          endDate: end,
+          rentMonthly: body.rentMonthly,
+          deposit: body.deposit,
+          depositMultiple: body.rentMonthly > 0 ? Math.round((body.deposit / body.rentMonthly) * 100) / 100 : 1,
+          rentCycle: body.rentCycle,
+          penaltyFormula: body.penaltyFormula,
+          latestRentGraceDays: body.latestRentGraceDays ?? null,
+          latestRentDueDate: null,
+          configRemarkHtml: body.configRemarkHtml === undefined ? null : body.configRemarkHtml,
+          confirmedAt: new Date(),
+          signedAt: new Date(),
+          stampedAt: new Date(),
+        },
+      })
+      for (let i = 0; i < body.leaseMonths; i += 1) {
+        const d = addMonths(dueDate, i)
+        await tx.bill.create({
+          data: {
+            contractId: contract.id,
+            period: fmtPeriod(d),
+            dueDate: d,
+            totalAmount: body.rentMonthly,
+            status: 'UNPAID',
+            kind: 'BASE',
+          },
+        })
+      }
+      await tx.house.update({ where: { id: house.id }, data: { status: 'RESERVED' } })
+      return { contractId: contract.id, contractNo: contract.contractNo }
+    })
+
+    res.json({ ok: true, ...out })
+  })
+
+  app.get('/api/admin/contracts', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const contracts = await ctx.prisma.contract.findMany({
+      include: {
+        tenant: true,
+        house: { include: { apartment: { include: { store: true } } } },
+        housingReport: true,
+        refunds: {
+          select: { amount: true, reason: true },
+          take: 20,
+          orderBy: { createdAt: 'desc' },
+        },
+        renewedFrom: { select: { id: true, contractNo: true } },
+        changeHouseFrom: { select: { id: true, contractNo: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+    })
+    const items = contracts.filter((c) => canAccessStore(auth, c.house.apartment.storeId))
+
+    // 为演示优化“前 10 条”：混排置顶换房/续租/退租样例，避免同类样例刷屏
+    const topSize = 10
+    const perKind = 2
+    const used = new Set<string>()
+    const pick = <T extends { id: string }>(arr: T[], n: number) => {
+      const out: T[] = []
+      for (const x of arr) {
+        if (out.length >= n) break
+        if (used.has(x.id)) continue
+        used.add(x.id)
+        out.push(x)
+      }
+      return out
+    }
+
+    const changeHouseNew = items.filter((c) => c.changeHouseFrom?.id)
+    const renewedNew = items.filter((c) => c.renewedFrom?.id)
+    const moveOutDemo = items.filter((c) =>
+      c.status === 'TERMINATED' && (c.refunds ?? []).some((r) => r.reason.includes('退租') || r.reason.includes('作废')),
+    )
+    const normal = items.filter(
+      (c) =>
+        !c.changeHouseFrom?.id &&
+        !c.renewedFrom?.id &&
+        !(c.refunds ?? []).some((r) => r.reason.includes('退租') || r.reason.includes('作废')),
+    )
+
+    const top: typeof items = [
+      ...pick(changeHouseNew, perKind),
+      ...pick(renewedNew, perKind),
+      ...pick(moveOutDemo, perKind),
+    ]
+    const filled: typeof items = [...top]
+    for (const x of normal) {
+      if (filled.length >= topSize) break
+      if (used.has(x.id)) continue
+      used.add(x.id)
+      filled.push(x)
+    }
+    const rest = items.filter((x) => !used.has(x.id))
+    const mixedItems = [...filled, ...rest]
+    res.json({
+      items: mixedItems.map((c) => {
+        const atts = parseContractAttachmentsJson(c.attachmentsJson)
+        const depositRefund = getDepositRefundSummary(c.refunds)
+        return {
+          id: c.id,
+          contractNo: c.contractNo,
+          status: c.status,
+          source: c.source,
+          // 用于列表展示「到期预警」
+          endDate: toYmd(c.endDate),
+          tenant: { name: c.tenant.name, phone: c.tenant.phone },
+          house: {
+            id: c.house.id,
+            houseBizId: houseBizId(c.house.id),
+            storeName: c.house.apartment.store.name,
+            apartmentName: c.house.apartment.name,
+            houseNo: c.house.houseNo,
+          },
+          housingReportStatus: c.housingReport?.status ?? null,
+          modificationRequestedAt: c.modificationRequestedAt ? c.modificationRequestedAt.toISOString() : null,
+          modificationRejectedAt: c.modificationRejectedAt ? c.modificationRejectedAt.toISOString() : null,
+          remarkPreview: remarkPlainPreview(c.configRemarkHtml) || '—',
+          attachmentCount: atts.length,
+          attachmentFiles: atts.map((a) => ({ name: a.name, file: a.file })),
+          renewedFromContractNo: c.renewedFrom?.contractNo ?? null,
+          changeHouseFromContractNo: c.changeHouseFrom?.contractNo ?? null,
+          depositRefunded: depositRefund.depositRefunded,
+          refundedDepositAmount: depositRefund.refundedDepositAmount,
+        }
+      }),
+    })
+  })
+
+  app.get('/api/admin/contracts/:id', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const contract = await ctx.prisma.contract.findUnique({
+      where: { id: String(req.params.id) },
+      include: {
+        tenant: true,
+        house: { include: { apartment: { include: { store: true } } } },
+        housingReport: true,
+        refunds: { orderBy: { createdAt: 'desc' } },
+        renewedFrom: { select: { id: true, contractNo: true } },
+        changeHouseFrom: { select: { id: true, contractNo: true } },
+      },
+    })
+    if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, contract.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+
+    const atts = parseContractAttachmentsJson(contract.attachmentsJson)
+    const attUrls = (f: string) => ({
+      previewUrl: `/api/admin/contracts/${contract.id}/attachment/${encodeURIComponent(f)}`,
+      downloadUrl: `/api/admin/contracts/${contract.id}/attachment/${encodeURIComponent(f)}?download=1`,
+    })
+    const depositRefund = getDepositRefundSummary(
+      contract.refunds.map((r) => ({ amount: r.amount, reason: r.reason })),
+    )
+
+    res.json({
+      id: contract.id,
+      contractNo: contract.contractNo,
+      status: contract.status,
+      source: contract.source,
+      tenant: {
+        name: contract.tenant.name,
+        phone: contract.tenant.phone,
+        idNumber: contract.tenant.idNumber,
+        wechat: contract.tenant.wechat ?? null,
+      },
+      house: {
+        storeName: contract.house.apartment.store.name,
+        apartmentName: contract.house.apartment.name,
+        houseNo: contract.house.houseNo,
+      },
+      startDate: toYmd(contract.startDate),
+      endDate: toYmd(contract.endDate),
+      rentMonthly: contract.rentMonthly,
+      deposit: contract.deposit,
+      rentCycle: contract.rentCycle,
+      penaltyFormula: contract.penaltyFormula,
+      latestRentGraceDays: contract.latestRentGraceDays ?? null,
+      configRemarkHtml: contract.configRemarkHtml ?? '',
+      attachments: atts.map((a) => ({ id: a.id, name: a.name, file: a.file, ...attUrls(a.file) })),
+      renewedFromContractNo: contract.renewedFrom?.contractNo ?? null,
+      renewedFromId: contract.renewedFrom?.id ?? null,
+      changeHouseFromContractNo: contract.changeHouseFrom?.contractNo ?? null,
+      changeHouseFromId: contract.changeHouseFrom?.id ?? null,
+      createdAt: contract.createdAt.toISOString(),
+      confirmedAt: contract.confirmedAt?.toISOString() ?? null,
+      signedAt: contract.signedAt?.toISOString() ?? null,
+      stampedAt: contract.stampedAt?.toISOString() ?? null,
+      voidedAt: contract.voidedAt?.toISOString() ?? null,
+      terminatedAt: contract.terminatedAt?.toISOString() ?? null,
+      housingReport: contract.housingReport
+        ? {
+            status: contract.housingReport.status,
+            receiptPdfPath: contract.housingReport.receiptPdfPath,
+            reportedAt: contract.housingReport.reportedAt?.toISOString() ?? null,
+            lastError: contract.housingReport.lastError,
+          }
+        : null,
+      depositRefunded: depositRefund.depositRefunded,
+      refundedDepositAmount: depositRefund.refundedDepositAmount,
+      refunds: contract.refunds.map((r) => ({
+        amount: r.amount,
+        reason: r.reason,
+        createdAt: r.createdAt.toISOString(),
+      })),
+    })
+  })
+
+  // 修改配置合同信息（租期、月租、押金、缴费周期、滞纳金公式等）
+  app.patch('/api/admin/contracts/:id', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const Body = z.object({
+      startDate: z.string().min(8).optional(),
+      endDate: z.string().min(8).optional(),
+      rentMonthly: z.number().int().positive().optional(),
+      deposit: z.number().int().nonnegative().optional(),
+      rentCycle: z.enum(['MONTHLY', 'QUARTERLY', 'YEARLY']).optional(),
+      penaltyFormula: z.string().min(1).optional(),
+      latestRentGraceDays: z.union([z.number().int().min(0).max(999), z.null()]).optional(),
+      configRemarkHtml: z.string().nullable().optional(),
+      attachmentsJson: z.string().optional(),
+    })
+    const body = Body.safeParse(req.body)
+    if (!body.success) return res.status(400).json({ error: 'INVALID_BODY', details: body.error.flatten() })
+
+    const contract = await ctx.prisma.contract.findUnique({
+      where: { id: String(req.params.id) },
+      include: { house: { include: { apartment: true } } },
+    })
+    if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, contract.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (contract.status === 'VOID' || contract.status === 'TERMINATED') {
+      return res.status(409).json({ error: 'CONTRACT_ALREADY_ENDED' })
+    }
+
+    const data: Record<string, unknown> = {}
+    if (body.data.startDate != null) data.startDate = new Date(body.data.startDate)
+    if (body.data.endDate != null) data.endDate = new Date(body.data.endDate)
+    if (body.data.rentMonthly != null) data.rentMonthly = body.data.rentMonthly
+    if (body.data.deposit != null) data.deposit = body.data.deposit
+    if (body.data.rentCycle != null) data.rentCycle = body.data.rentCycle
+    if (body.data.penaltyFormula != null) data.penaltyFormula = body.data.penaltyFormula
+    if (body.data.latestRentGraceDays !== undefined) {
+      data.latestRentGraceDays = body.data.latestRentGraceDays
+      data.latestRentDueDate = null
+    }
+    if (body.data.configRemarkHtml !== undefined) {
+      data.configRemarkHtml = body.data.configRemarkHtml
+    }
+    if (body.data.attachmentsJson !== undefined) {
+      data.attachmentsJson = body.data.attachmentsJson
+    }
+
+    if (Object.keys(data).length === 0) return res.status(400).json({ error: 'NO_FIELDS_TO_UPDATE' })
+
+    await ctx.prisma.contract.update({
+      where: { id: contract.id },
+      data: { ...(data as any), modificationRequestedAt: null, modificationRejectedAt: null },
+    })
+    res.json({ ok: true })
+  })
+
+  app.post(
+    '/api/admin/contracts/:id/upload-attachment',
+    adminAuth(ctx.prisma),
+    contractFileUpload.single('file'),
+    async (req, res) => {
+      const auth = getAdminAuth(req)
+      if (!req.file) return res.status(400).json({ error: 'NO_FILE' })
+      const contract = await ctx.prisma.contract.findUnique({
+        where: { id: String(req.params.id) },
+        include: { house: { include: { apartment: true } } },
+      })
+      if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
+      if (!canAccessStore(auth, contract.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+
+      const ext = path.extname(req.file.originalname || '').slice(0, 12) || '.bin'
+      const stored = `${Date.now()}-${randomBytes(8).toString('hex')}${ext.replace(/[^a-zA-Z0-9.]/g, '')}`
+      if (!/^[a-zA-Z0-9._-]+$/.test(stored)) return res.status(400).json({ error: 'BAD_FILENAME' })
+      const dir = ensureContractUploadDir(contract.id)
+      fs.writeFileSync(path.join(dir, stored), req.file.buffer)
+
+      const list = parseContractAttachmentsJson(contract.attachmentsJson)
+      const id = randomBytes(6).toString('hex')
+      list.push({ id, name: req.file.originalname || stored, file: stored })
+      await ctx.prisma.contract.update({
+        where: { id: contract.id },
+        data: { attachmentsJson: JSON.stringify(list) },
+      })
+      res.json({ ok: true, attachments: list })
+    },
+  )
+
+  app.get('/api/admin/contracts/:id/attachment/:fileKey', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const fileKey = decodeURIComponent(String(req.params.fileKey))
+    if (!/^[a-zA-Z0-9._-]+$/.test(fileKey)) return res.status(400).json({ error: 'BAD_KEY' })
+    const contract = await ctx.prisma.contract.findUnique({
+      where: { id: String(req.params.id) },
+      include: { house: { include: { apartment: true } } },
+    })
+    if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, contract.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    const list = parseContractAttachmentsJson(contract.attachmentsJson)
+    const att = list.find((a) => a.file === fileKey)
+    if (!att) return res.status(404).json({ error: 'FILE_NOT_IN_CONTRACT' })
+    const full = path.join(CONTRACT_UPLOAD_ROOT, contract.id, fileKey)
+    if (!fs.existsSync(full)) return res.status(404).json({ error: 'FILE_MISSING' })
+    const { ext, mime } = mimeFromFileKey(fileKey)
+    res.setHeader('Content-Type', mime)
+    if (req.query.download === '1') {
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename*=UTF-8''${encodeURIComponent(att.name)}`,
+      )
+    } else if (['.png', '.jpg', '.jpeg', '.gif', '.webp', '.pdf'].includes(ext)) {
+      res.setHeader('Content-Disposition', 'inline')
+    }
+    res.sendFile(path.resolve(full))
+  })
+
+  app.delete('/api/admin/contracts/:id/attachment/:fileKey', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const fileKey = decodeURIComponent(String(req.params.fileKey))
+    if (!/^[a-zA-Z0-9._-]+$/.test(fileKey)) return res.status(400).json({ error: 'BAD_KEY' })
+    const contract = await ctx.prisma.contract.findUnique({
+      where: { id: String(req.params.id) },
+      include: { house: { include: { apartment: true } } },
+    })
+    if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, contract.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    const list = parseContractAttachmentsJson(contract.attachmentsJson).filter((a) => a.file !== fileKey)
+    const full = path.join(CONTRACT_UPLOAD_ROOT, contract.id, fileKey)
+    try {
+      if (fs.existsSync(full)) fs.unlinkSync(full)
+    } catch {
+      /* ignore */
+    }
+    await ctx.prisma.contract.update({
+      where: { id: contract.id },
+      data: { attachmentsJson: JSON.stringify(list) },
+    })
+    res.json({ ok: true, attachments: list })
+  })
+
+  app.post('/api/admin/contracts/:id/void', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const Body = z.object({
+      terminateDate: z.string().optional(),
+      reason: z.string().optional(),
+      remark: z.string().optional(),
+    })
+    const body = Body.parse(req.body ?? {})
+    const contract = await ctx.prisma.contract.findUnique({
+      where: { id: String(req.params.id) },
+      include: { house: { include: { apartment: true } } },
+    })
+    if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, contract.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (contract.status !== 'PENDING_PAYMENT') return res.status(409).json({ error: 'INVALID_STATUS' })
+
+    const now = new Date()
+    await ctx.prisma.contract.update({
+      where: { id: contract.id },
+      data: { status: 'VOID', voidedAt: body.terminateDate ? new Date(body.terminateDate) : now },
+    })
+    await ctx.prisma.house.update({ where: { id: contract.houseId }, data: { status: 'VACANT' } })
+    const reasonText = [body.reason && `作废：${body.reason}`, body.remark && `备注：${body.remark}`].filter(Boolean).join('；') || '作废'
+    await ctx.prisma.refund.create({
+      data: { contractId: contract.id, amount: 0, reason: reasonText },
+    })
+    res.json({ ok: true })
+  })
+
+  app.post('/api/admin/contracts/:id/terminate', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const Body = z.object({
+      terminateDate: z.string().min(8),
+      reason: z.string().min(1),
+      remark: z.string().optional(),
+    })
+    const body = Body.parse(req.body)
+    const contract = await ctx.prisma.contract.findUnique({
+      where: { id: String(req.params.id) },
+      include: { house: { include: { apartment: true } } },
+    })
+    if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, contract.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (contract.status !== 'ACTIVE') return res.status(409).json({ error: 'INVALID_STATUS' })
+
+    await ctx.prisma.contract.update({
+      where: { id: contract.id },
+      data: { status: 'TERMINATED', terminatedAt: new Date(body.terminateDate) },
+    })
+    await ctx.prisma.house.update({ where: { id: contract.houseId }, data: { status: 'TERMINATED' } })
+    const reasonText = [`退租：${body.reason}`, body.remark && `备注：${body.remark}`].filter(Boolean).join('；')
+    await ctx.prisma.refund.create({
+      data: { contractId: contract.id, amount: 0, reason: reasonText },
+    })
+    res.json({ ok: true })
+  })
+
+  app.post('/api/admin/contracts/:id/refund-deposit', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const Body = z.object({
+      amount: z.number().int().positive(),
+      remark: z.string().max(200).optional(),
+    })
+    const body = Body.parse(req.body)
+    const contract = await ctx.prisma.contract.findUnique({
+      where: { id: String(req.params.id) },
+      include: { house: { include: { apartment: true } } },
+    })
+    if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, contract.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (contract.status !== 'TERMINATED') return res.status(409).json({ error: 'DEPOSIT_REFUND_NEED_TERMINATED' })
+    if (body.amount > contract.deposit) return res.status(409).json({ error: 'DEPOSIT_REFUND_EXCEED_DEPOSIT' })
+
+    const reason = body.remark?.trim() ? `退押金：${body.remark.trim()}` : '退押金'
+    await ctx.prisma.refund.create({
+      data: {
+        contractId: contract.id,
+        amount: body.amount,
+        reason,
+      },
+    })
+    res.json({ ok: true })
+  })
+
+  /** 续签资格：已生效 + 所有账单已结清 */
+  app.get('/api/admin/contracts/:id/renew-eligibility', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const contract = await ctx.prisma.contract.findUnique({
+      where: { id: String(req.params.id) },
+      include: { house: { include: { apartment: true } }, tenant: true },
+    })
+    if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, contract.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (contract.status !== 'ACTIVE') {
+      return res.json({
+        eligible: false,
+        reason: '仅「已生效」的合同可续签',
+        tenant: {
+          name: contract.tenant.name,
+          phone: contract.tenant.phone,
+          idNumber: contract.tenant.idNumber,
+          wechat: contract.tenant.wechat ?? null,
+        },
+        previousContractNo: contract.contractNo,
+      })
+    }
+    const unpaid = await ctx.prisma.bill.count({
+      where: { contractId: contract.id, status: { in: ['UNPAID', 'OVERDUE'] } },
+    })
+    res.json({
+      eligible: unpaid === 0,
+      reason: unpaid > 0 ? `尚有 ${unpaid} 期账单未结清，请先收租后再续签` : null,
+      tenant: {
+        name: contract.tenant.name,
+        phone: contract.tenant.phone,
+        idNumber: contract.tenant.idNumber,
+        wechat: contract.tenant.wechat ?? null,
+      },
+      previousContractNo: contract.contractNo,
+      rentMonthly: contract.rentMonthly,
+      depositMultiple: contract.depositMultiple,
+      rentCycle: contract.rentCycle,
+      penaltyFormula: contract.penaltyFormula,
+    })
+  })
+
+  /**
+   * 续签：旧合同结案（已终止），新订单+新合同（租客不变），需旧合同账单全部已付。
+   * 新合同从「待租客签字」开始走流程。
+   */
+  app.post('/api/admin/contracts/:id/renew', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const Body = z.object({
+      leaseMonths: z.number().int().min(1).max(36),
+      moveInDate: z.string().min(8),
+      rentMonthly: z.number().int().positive().optional(),
+      depositMultiple: z.number().positive().optional(),
+      rentCycle: z.enum(['MONTHLY', 'QUARTERLY', 'YEARLY']).optional(),
+      penaltyFormula: z.string().min(1).optional(),
+      latestRentGraceDays: z.union([z.number().int().min(0).max(999), z.null()]).optional(),
+      configRemarkHtml: z.string().nullable().optional(),
+    })
+    const body = Body.parse(req.body)
+
+    const old = await ctx.prisma.contract.findUnique({
+      where: { id: String(req.params.id) },
+      include: { house: { include: { apartment: true } }, order: true },
+    })
+    if (!old) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, old.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (old.status !== 'ACTIVE') return res.status(409).json({ error: 'RENEW_NEED_ACTIVE' })
+    const unpaid = await ctx.prisma.bill.count({
+      where: { contractId: old.id, status: { in: ['UNPAID', 'OVERDUE'] } },
+    })
+    if (unpaid > 0) return res.status(409).json({ error: 'BILLS_NOT_SETTLED' })
+
+    const startDate = new Date(body.moveInDate)
+    const endDate = addMonths(startDate, body.leaseMonths)
+    const terminatedAt = new Date(startDate)
+    terminatedAt.setDate(terminatedAt.getDate() - 1)
+    terminatedAt.setHours(23, 59, 59, 999)
+
+    const rentMonthly = body.rentMonthly ?? old.rentMonthly
+    const depositMultiple = body.depositMultiple ?? old.depositMultiple
+    const deposit = Math.round(rentMonthly * depositMultiple)
+    const contractNo = `C${new Date().getFullYear()}${String(Date.now()).slice(-8)}`
+
+    const result = await ctx.prisma.$transaction(async (tx) => {
+      const newOrder = await tx.order.create({
+        data: {
+          houseId: old.houseId,
+          tenantId: old.tenantId,
+          leaseMonths: body.leaseMonths,
+          moveInDate: startDate,
+          status: 'APPROVED',
+        },
+      })
+      const nc = await tx.contract.create({
+        data: {
+          contractNo,
+          houseId: old.houseId,
+          tenantId: old.tenantId,
+          orderId: newOrder.id,
+          status: 'WAIT_TENANT_SIGN',
+          startDate,
+          endDate,
+          rentMonthly,
+          deposit,
+          depositMultiple,
+          rentCycle: body.rentCycle ?? old.rentCycle,
+          penaltyFormula: body.penaltyFormula ?? old.penaltyFormula,
+          latestRentGraceDays:
+            body.latestRentGraceDays !== undefined ? body.latestRentGraceDays : old.latestRentGraceDays,
+          latestRentDueDate: null,
+          renewedFromId: old.id,
+          configRemarkHtml:
+            body.configRemarkHtml === undefined ? null : body.configRemarkHtml || null,
+          attachmentsJson: '[]',
+        },
+      })
+      const dueDate = startOfMonth(startDate)
+      for (let i = 0; i < body.leaseMonths; i += 1) {
+        const d = addMonths(dueDate, i)
+        await tx.bill.create({
+          data: {
+            contractId: nc.id,
+            period: fmtPeriod(d),
+            dueDate: d,
+            totalAmount: rentMonthly,
+            status: 'UNPAID',
+          },
+        })
+      }
+      await tx.contract.update({
+        where: { id: old.id },
+        data: { status: 'TERMINATED', terminatedAt, endDate: terminatedAt },
+      })
+      await tx.refund.create({
+        data: {
+          contractId: old.id,
+          amount: 0,
+          reason: `续签结案，新合同 ${contractNo}（待租客签字）`,
+        },
+      })
+      await tx.house.update({ where: { id: old.houseId }, data: { status: 'RESERVED' } })
+      return { newContractId: nc.id, contractNo: nc.contractNo }
+    })
+
+    res.json({ ok: true, ...result })
+  })
+
+  /**
+   * 换房：旧合同于「换房日」终止并释放旧房；生成新订单+新合同（新房）；
+   * 新月租 > 旧月租时生成「换房补差」账单（租金差额+押金补足明细）；否则不生成补差账单（押金多不退）。
+   */
+  app.post('/api/admin/contracts/:id/change-house', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const Body = z.object({
+      targetHouseId: z.string().min(1),
+      moveDate: z.string().min(8),
+      newStartDate: z.string().min(8),
+      leaseMonths: z.number().int().min(1).max(36),
+      newRentMonthly: z.number().int().positive(),
+      newDeposit: z.number().int().nonnegative(),
+      rentCycle: z.enum(['MONTHLY', 'QUARTERLY', 'YEARLY']).optional(),
+      penaltyFormula: z.string().min(1).optional(),
+      latestRentGraceDays: z.union([z.number().int().min(0).max(999), z.null()]).optional(),
+    })
+    const body = Body.parse(req.body)
+
+    if (body.newStartDate < body.moveDate) {
+      return res.status(400).json({ error: 'NEW_START_BEFORE_MOVE' })
+    }
+
+    const old = await ctx.prisma.contract.findUnique({
+      where: { id: String(req.params.id) },
+      include: { house: { include: { apartment: true } }, order: true },
+    })
+    if (!old) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, old.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (old.status !== 'ACTIVE') return res.status(409).json({ error: 'CHANGE_HOUSE_NEED_ACTIVE' })
+
+    const unpaid = await ctx.prisma.bill.count({
+      where: { contractId: old.id, status: { in: ['UNPAID', 'OVERDUE'] } },
+    })
+    if (unpaid > 0) return res.status(409).json({ error: 'BILLS_NOT_SETTLED' })
+
+    if (old.houseId === body.targetHouseId) return res.status(400).json({ error: 'SAME_HOUSE' })
+
+    const target = await ctx.prisma.house.findUnique({
+      where: { id: body.targetHouseId },
+      include: { apartment: true },
+    })
+    if (!target) return res.status(404).json({ error: 'TARGET_NOT_FOUND' })
+    if (target.status !== 'VACANT') return res.status(409).json({ error: 'TARGET_NOT_VACANT' })
+    if (!canAccessStore(auth, target.apartment.storeId)) return res.status(403).json({ error: 'TARGET_FORBIDDEN' })
+    if (target.apartment.storeId !== old.house.apartment.storeId) {
+      return res.status(409).json({ error: 'CROSS_STORE_NOT_ALLOWED' })
+    }
+
+    const moveEnd = new Date(`${body.moveDate}T23:59:59.999`)
+    const newStart = new Date(body.newStartDate)
+    const newEnd = addMonths(newStart, body.leaseMonths)
+    const contractNo = `C${new Date().getFullYear()}${String(Date.now()).slice(-8)}`
+    const depMul =
+      body.newRentMonthly > 0 ? Math.round((body.newDeposit / body.newRentMonthly) * 100) / 100 : 1
+
+    const oldRent = old.rentMonthly
+    const oldDep = old.deposit
+    const newRent = body.newRentMonthly
+    const newDep = body.newDeposit
+
+    // 补差仅针对押金：新房押金 > 旧房押金时，租客需补足差额，生成一笔换房补差账单；否则不生成（多出的押金不退）
+    const supplementItems: { name: string; amount: number }[] = []
+    const depDiff = newDep - oldDep
+    if (depDiff > 0) {
+      supplementItems.push({
+        name: `换房—押金补足（新¥${newDep} − 旧¥${oldDep}）`,
+        amount: depDiff,
+      })
+    }
+
+    const supplementTotal = supplementItems.reduce((s, x) => s + x.amount, 0)
+    const supplementPeriod = `换房补差-${Date.now()}`
+
+    const out = await ctx.prisma.$transaction(async (tx) => {
+      await tx.contract.update({
+        where: { id: old.id },
+        data: { status: 'TERMINATED', terminatedAt: moveEnd, endDate: moveEnd },
+      })
+      await tx.house.update({ where: { id: old.houseId }, data: { status: 'VACANT' } })
+      await tx.refund.create({
+        data: {
+          contractId: old.id,
+          amount: 0,
+          reason: `换房结案：${body.moveDate} 迁出 ${old.house.apartment.name} ${old.house.houseNo} → 新签 ${target.apartment.name} ${target.houseNo}，新合同 ${contractNo}`,
+        },
+      })
+
+      const newOrder = await tx.order.create({
+        data: {
+          houseId: target.id,
+          tenantId: old.tenantId,
+          leaseMonths: body.leaseMonths,
+          moveInDate: newStart,
+          status: 'APPROVED',
+        },
+      })
+
+      const nc = await tx.contract.create({
+        data: {
+          contractNo,
+          houseId: target.id,
+          tenantId: old.tenantId,
+          orderId: newOrder.id,
+          status: 'WAIT_TENANT_SIGN',
+          startDate: newStart,
+          endDate: newEnd,
+          rentMonthly: newRent,
+          deposit: newDep,
+          depositMultiple: depMul,
+          rentCycle: body.rentCycle ?? old.rentCycle,
+          penaltyFormula: body.penaltyFormula ?? old.penaltyFormula,
+          latestRentGraceDays:
+            body.latestRentGraceDays !== undefined ? body.latestRentGraceDays : old.latestRentGraceDays,
+          latestRentDueDate: null,
+          changeHouseFromId: old.id,
+        },
+      })
+
+      const dueDate = startOfMonth(newStart)
+      for (let i = 0; i < body.leaseMonths; i += 1) {
+        const d = addMonths(dueDate, i)
+        await tx.bill.create({
+          data: {
+            contractId: nc.id,
+            period: fmtPeriod(d),
+            dueDate: d,
+            totalAmount: newRent,
+            status: 'UNPAID',
+          },
+        })
+      }
+
+      if (supplementTotal > 0) {
+        const sb = await tx.bill.create({
+          data: {
+            contractId: nc.id,
+            period: supplementPeriod,
+            dueDate: newStart,
+            totalAmount: supplementTotal,
+            status: 'UNPAID',
+          },
+        })
+        for (const it of supplementItems) {
+          await tx.billItem.create({
+            data: { billId: sb.id, name: it.name, amount: it.amount },
+          })
+        }
+      }
+
+      await tx.house.update({ where: { id: target.id }, data: { status: 'RESERVED' } })
+
+      return {
+        newContractId: nc.id,
+        contractNo: nc.contractNo,
+        supplementBillCreated: supplementTotal > 0,
+        supplementTotal,
+        supplementItems,
+      }
+    })
+
+    res.json({ ok: true, ...out })
+  })
+
+  app.post('/api/admin/contracts/:id/stamp', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const contract = await ctx.prisma.contract.findUnique({
+      where: { id: String(req.params.id) },
+      include: { house: { include: { apartment: true } } },
+    })
+    if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, contract.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+
+    // 只有租客确认后才能盖章
+    if (!contract.confirmedAt || contract.status !== 'WAIT_STAMP') {
+      return res.status(409).json({ error: 'NEED_TENANT_SIGN_FIRST' })
+    }
+
+    // MVP：模拟调用“盖章/签章服务”
+    const updated = await ctx.prisma.contract.update({
+      where: { id: contract.id },
+      data: { stampedAt: contract.stampedAt ?? new Date(), status: 'PENDING_PAYMENT' },
+    })
+    res.json({ ok: true, stampedAt: updated.stampedAt?.toISOString(), status: updated.status })
+  })
+
+  app.get('/api/admin/bills/overdue', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const today = new Date()
+    const bills = await ctx.prisma.bill.findMany({
+      where: { dueDate: { lt: today }, status: { in: ['UNPAID', 'OVERDUE'] } },
+      include: {
+        contract: { include: { tenant: true, house: { include: { apartment: { include: { store: true } } } } } },
+        arrears: true,
+      },
+      orderBy: { dueDate: 'asc' },
+      take: 200,
+    })
+
+    const visible = bills.filter((b) => canAccessStore(auth, b.contract.house.apartment.storeId))
+    const items = []
+    for (const b of visible) {
+      const daysOverdue = Math.max(0, Math.floor((today.getTime() - b.dueDate.getTime()) / (24 * 3600 * 1000)))
+      const penalty = computePenalty(b.totalAmount, daysOverdue)
+      items.push({
+        billId: b.id,
+        contractNo: b.contract.contractNo,
+        houseBizId: houseBizId(b.contract.house.id),
+        apartmentName: b.contract.house.apartment.name,
+        houseNo: b.contract.house.houseNo,
+        storeName: b.contract.house.apartment.store.name,
+        tenantName: b.contract.tenant.name,
+        tenantPhone: b.contract.tenant.phone,
+        period: b.period,
+        dueDate: toYmd(b.dueDate),
+        totalAmount: b.totalAmount,
+        daysOverdue,
+        penalty,
+      })
+
+      if (!b.arrears && daysOverdue > 0) {
+        await ctx.prisma.arrears.create({
+          data: { billId: b.id, daysOverdue, penalty },
+        })
+        await ctx.prisma.bill.update({ where: { id: b.id }, data: { status: 'OVERDUE' } })
+      }
+    }
+
+    res.json({ items, rule: 'MVP：滞纳金=账单金额*0.1%*逾期天数（可替换为客户公式）' })
+  })
+
+  /**
+   * 催租短信（演示）：创建一条催租台账记录
+   * - 仅针对 UNPAID/OVERDUE 的账单
+   * - 不对接真实短信服务，仅记录“发送时间+内容”
+   */
+  app.post('/api/admin/bills/:id/send-rent-reminder', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const Body = z.object({
+      message: z.string().min(1).max(500),
+      penaltySnapshot: z.number().int().min(0).optional(),
+    })
+    const body = Body.safeParse(req.body)
+    if (!body.success) return res.status(400).json({ error: 'INVALID_BODY', details: body.error.flatten() })
+
+    const bill = await ctx.prisma.bill.findUnique({
+      where: { id: String(req.params.id) },
+      include: {
+        contract: { include: { tenant: true, house: { include: { apartment: { include: { store: true } } } } } },
+      },
+    })
+    if (!bill) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, bill.contract.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (bill.status !== 'UNPAID' && bill.status !== 'OVERDUE') return res.status(409).json({ error: 'INVALID_STATUS' })
+
+    const penalty = body.data.penaltySnapshot ?? 0
+    const totalDue = bill.totalAmount + penalty
+    const sentAt = new Date()
+
+    const rr = await ctx.prisma.rentReminder.create({
+      data: {
+        billId: bill.id,
+        contractId: bill.contractId,
+        period: bill.period,
+        dueDate: bill.dueDate,
+        billAmount: bill.totalAmount,
+        penalty,
+        totalDue,
+        tenantName: bill.contract.tenant.name,
+        tenantPhone: bill.contract.tenant.phone,
+        storeName: bill.contract.house.apartment.store.name,
+        apartmentName: bill.contract.house.apartment.name,
+        houseNo: bill.contract.house.houseNo,
+        message: body.data.message.trim(),
+        sentAt,
+        sentByAdminId: auth.admin.id,
+      },
+    })
+
+    // demo: 模拟发送成功（真实项目可在此对接短信服务并记录回执）
+    console.log('[DEMO_SMS]', {
+      to: rr.tenantPhone,
+      name: rr.tenantName,
+      billId: rr.billId,
+      period: rr.period,
+      message: rr.message,
+    })
+
+    res.json({ ok: true, id: rr.id, sentAt: rr.sentAt.toISOString() })
+  })
+
+  /** 催租记录台账：用于查询追溯 */
+  app.get('/api/admin/rent-reminders', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const list = await ctx.prisma.rentReminder.findMany({
+      orderBy: { sentAt: 'desc' },
+      take: 500,
+    })
+    // 以门店名作为快照字段，避免额外 join；同时仍需按门店权限过滤（通过 bill->contract->store 校验）
+    const billIds = Array.from(new Set(list.map((x) => x.billId)))
+    const bills = await ctx.prisma.bill.findMany({
+      where: { id: { in: billIds } },
+      include: { contract: { include: { house: { include: { apartment: true } } } } },
+    })
+    const billStoreMap = new Map(bills.map((b) => [b.id, b.contract.house.apartment.storeId]))
+    const visible = list.filter((x) => {
+      const storeId = billStoreMap.get(x.billId)
+      if (!storeId) return false
+      return canAccessStore(auth, storeId)
+    })
+    res.json({
+      items: visible.map((x) => ({
+        id: x.id,
+        sentAt: x.sentAt.toISOString(),
+        billId: x.billId,
+        contractId: x.contractId,
+        period: x.period,
+        dueDate: toYmd(x.dueDate),
+        billAmount: x.billAmount,
+        penalty: x.penalty,
+        totalDue: x.totalDue,
+        tenantName: x.tenantName,
+        tenantPhone: x.tenantPhone,
+        storeName: x.storeName,
+        apartmentName: x.apartmentName,
+        houseNo: x.houseNo,
+        message: x.message,
+      })),
+    })
+  })
+
+  // 账期汇总（按门店+账期）
+  app.get('/api/admin/bill-periods', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const bills = await ctx.prisma.bill.findMany({
+      include: {
+        contract: { include: { tenant: true, house: { include: { apartment: { include: { store: true } } } } } },
+      },
+      orderBy: [{ period: 'desc' }, { dueDate: 'desc' }],
+      take: 600,
+    })
+    const visible = bills.filter((b) => {
+      // 过滤掉用于演示的「换房补差」账期，不在一级汇总中展示
+      if (!/^\d{4}-\d{2}$/.test(b.period)) return false
+      return canAccessStore(auth, b.contract.house.apartment.storeId)
+    })
+    type Agg = {
+      storeId: string
+      storeName: string
+      period: string
+      contractIds: Set<string>
+      billCount: number
+      totalAmount: number
+      dueFrom: Date
+      dueTo: Date
+    }
+    const map = new Map<string, Agg>()
+    for (const b of visible) {
+      const storeId = b.contract.house.apartment.storeId
+      const storeName = b.contract.house.apartment.store.name
+      const key = `${storeId}__${b.period}`
+      const due = b.dueDate
+      if (!map.has(key)) {
+        map.set(key, {
+          storeId,
+          storeName,
+          period: b.period,
+          contractIds: new Set<string>([b.contractId]),
+          billCount: 1,
+          totalAmount: b.totalAmount,
+          dueFrom: due,
+          dueTo: due,
+        })
+      } else {
+        const a = map.get(key)!
+        a.contractIds.add(b.contractId)
+        a.billCount += 1
+        a.totalAmount += b.totalAmount
+        if (due < a.dueFrom) a.dueFrom = due
+        if (due > a.dueTo) a.dueTo = due
+      }
+    }
+
+    const locks = await ctx.prisma.billPeriod.findMany({ take: 1000 })
+    const lockMap = new Map<string, (typeof locks)[number]>()
+    for (const l of locks) lockMap.set(`${l.storeId}__${l.period}`, l)
+
+    const out = Array.from(map.values())
+      .map((a) => {
+        const lock = lockMap.get(`${a.storeId}__${a.period}`)
+        const locked = Boolean(lock?.lockedAt)
+        return {
+          storeId: a.storeId,
+          storeName: a.storeName,
+          period: a.period,
+          contractCount: locked ? lock?.snapshotContractCount ?? a.contractIds.size : a.contractIds.size,
+          billCount: locked ? lock?.snapshotBillCount ?? a.billCount : a.billCount,
+          totalAmount: locked ? lock?.snapshotTotalAmount ?? a.totalAmount : a.totalAmount,
+          dueDateFrom: locked
+            ? lock?.snapshotDueDateFrom
+              ? toYmd(lock.snapshotDueDateFrom)
+              : toYmd(a.dueFrom)
+            : toYmd(a.dueFrom),
+          dueDateTo: locked
+            ? lock?.snapshotDueDateTo
+              ? toYmd(lock.snapshotDueDateTo)
+              : toYmd(a.dueTo)
+            : toYmd(a.dueTo),
+          locked,
+          lockedAt: lock?.lockedAt ? lock.lockedAt.toISOString() : null,
+        }
+      })
+      .sort((x, y) => (x.period < y.period ? 1 : x.period > y.period ? -1 : x.storeName.localeCompare(y.storeName)))
+
+    res.json({ items: out })
+  })
+
+  // 账期明细（按门店+账期）
+  app.get('/api/admin/bill-periods/:storeId/:period', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const storeId = String(req.params.storeId)
+    const period = String(req.params.period)
+    if (!storeId || !period) return res.status(400).json({ error: 'BAD_PARAMS' })
+    if (!canAccessStore(auth, storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    const bills = await ctx.prisma.bill.findMany({
+      where: { period },
+      include: {
+        contract: { include: { tenant: true, house: { include: { apartment: { include: { store: true } } } } } },
+        items: { orderBy: { createdAt: 'asc' } },
+      },
+      orderBy: { totalAmount: 'desc' },
+      take: 600,
+    })
+    const visible = bills.filter((b) => b.contract.house.apartment.storeId === storeId)
+    res.json({
+      items: visible.map((b) => ({
+        id: b.id,
+        contractId: b.contractId,
+        contractNo: b.contract.contractNo,
+        houseBizId: houseBizId(b.contract.house.id),
+        apartmentName: b.contract.house.apartment.name,
+        houseNo: b.contract.house.houseNo,
+        storeName: b.contract.house.apartment.store.name,
+        tenantName: b.contract.tenant.name,
+        tenantPhone: b.contract.tenant.phone,
+        period: b.period,
+        dueDate: toYmd(b.dueDate),
+        totalAmount: b.totalAmount,
+        status: b.status,
+        items: b.items.map((i) => ({ name: i.name, amount: i.amount })),
+      })),
+      locked: await isBillPeriodLocked(ctx.prisma, storeId, period),
+    })
+  })
+
+  // 锁定账期（不可解锁）
+  app.post('/api/admin/bill-periods/:storeId/:period/lock', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const storeId = String(req.params.storeId)
+    const period = String(req.params.period)
+    if (!storeId || !period) return res.status(400).json({ error: 'BAD_PARAMS' })
+    if (!canAccessStore(auth, storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+
+    const existing = await ctx.prisma.billPeriod.findUnique({ where: { storeId_period: { storeId, period } } })
+    if (existing?.lockedAt) return res.status(409).json({ error: 'ALREADY_LOCKED' })
+
+    const bills = await ctx.prisma.bill.findMany({
+      where: { period },
+      include: { contract: { include: { house: { include: { apartment: true } } } } },
+      take: 800,
+    })
+    const visible = bills.filter((b) => b.contract.house.apartment.storeId === storeId)
+    const contractIds = new Set(visible.map((b) => b.contractId))
+    const billCount = visible.length
+    const totalAmount = visible.reduce((s, b) => s + b.totalAmount, 0)
+    const dueDates = visible.map((b) => b.dueDate).sort((a, b) => (a < b ? -1 : 1))
+    const dueFrom = dueDates[0] ?? new Date(`${period}-01`)
+    const dueTo = dueDates[dueDates.length - 1] ?? dueFrom
+
+    const now = new Date()
+    await ctx.prisma.billPeriod.upsert({
+      where: { storeId_period: { storeId, period } },
+      create: {
+        storeId,
+        period,
+        lockedAt: now,
+        lockedByAdminId: auth.admin.id,
+        snapshotContractCount: contractIds.size,
+        snapshotBillCount: billCount,
+        snapshotTotalAmount: totalAmount,
+        snapshotDueDateFrom: dueFrom,
+        snapshotDueDateTo: dueTo,
+      },
+      update: {
+        lockedAt: now,
+        lockedByAdminId: auth.admin.id,
+        snapshotContractCount: contractIds.size,
+        snapshotBillCount: billCount,
+        snapshotTotalAmount: totalAmount,
+        snapshotDueDateFrom: dueFrom,
+        snapshotDueDateTo: dueTo,
+      },
+    })
+    res.json({ ok: true, lockedAt: now.toISOString() })
+  })
+
+  /**
+   * 新建账期账单（BASE 租金）
+   * - 指定门店 + 账期，为租期覆盖该月的生效合同补建缺失的 BASE 账单
+   * - statStartDate 用于记录统计开始时间（展示与审计）
+   */
+  app.post('/api/admin/bill-periods/generate', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const Body = z.object({
+      mode: z.literal('manual'),
+      storeId: z.string().min(1),
+      period: z.string().regex(/^\d{4}-\d{2}$/),
+      statStartDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    })
+    const parsed = Body.safeParse(req.body)
+    if (!parsed.success) return res.status(400).json({ error: 'BAD_BODY' })
+
+    const { storeId, period, statStartDate, dueDate } = parsed.data
+    if (!canAccessStore(auth, storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (await isBillPeriodLocked(ctx.prisma, storeId, period)) {
+      return res.status(409).json({ error: 'PERIOD_LOCKED' })
+    }
+
+    const [py, pm] = period.split('-').map(Number)
+    const defaultDue = new Date(Date.UTC(py, pm - 1, 1))
+    const due = dueDate ? new Date(`${dueDate}T12:00:00.000Z`) : defaultDue
+    const statFrom = new Date(`${statStartDate}T12:00:00.000Z`)
+
+    const contracts = await ctx.prisma.contract.findMany({
+      where: { status: 'ACTIVE', house: { apartment: { storeId } } },
+      take: 3000,
+    })
+
+    let created = 0
+    let skippedExisting = 0
+    let skippedOutOfLease = 0
+
+    for (const c of contracts) {
+      if (!periodOverlapsLease(c.startDate, c.endDate, period)) {
+        skippedOutOfLease += 1
+        continue
+      }
+      const existing = await ctx.prisma.bill.findUnique({
+        where: { contractId_period_kind: { contractId: c.id, period, kind: 'BASE' } },
+      })
+      if (existing) {
+        skippedExisting += 1
+        continue
+      }
+      await ctx.prisma.bill.create({
+        data: {
+          contractId: c.id,
+          period,
+          dueDate: due,
+          totalAmount: c.rentMonthly,
+          status: 'UNPAID',
+          kind: 'BASE',
+        },
+      })
+      created += 1
+    }
+
+    res.json({
+      ok: true,
+      mode: 'manual',
+      created,
+      skippedExisting,
+      skippedOutOfLease,
+      contractsScanned: contracts.length,
+      statStartDate: toYmd(statFrom),
+      dueDate: toYmd(due),
+    })
+  })
+
+  app.get('/api/admin/bills', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const bills = await ctx.prisma.bill.findMany({
+      include: {
+        contract: {
+          include: { tenant: true, house: { include: { apartment: { include: { store: true } } } } },
+        },
+      },
+      orderBy: { dueDate: 'desc' },
+      take: 300,
+    })
+    const visible = bills.filter((b) => canAccessStore(auth, b.contract.house.apartment.storeId))
+    res.json({
+      items: visible.map((b) => ({
+        id: b.id,
+        contractNo: b.contract.contractNo,
+        houseBizId: houseBizId(b.contract.house.id),
+        apartmentName: b.contract.house.apartment.name,
+        houseNo: b.contract.house.houseNo,
+        storeName: b.contract.house.apartment.store.name,
+        tenantName: b.contract.tenant.name,
+        tenantPhone: b.contract.tenant.phone,
+        period: b.period,
+        dueDate: toYmd(b.dueDate),
+        totalAmount: b.totalAmount,
+        status: b.status,
+      })),
+    })
+  })
+
+  /** 线下核销记录：用于审计/追溯与附件查看 */
+  app.get('/api/admin/bills/offline-verifications', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const bills = await ctx.prisma.bill.findMany({
+      where: { offlineVerifiedAt: { not: null } },
+      include: {
+        contract: {
+          include: { tenant: true, house: { include: { apartment: { include: { store: true } } } } },
+        },
+      },
+      orderBy: { offlineVerifiedAt: 'desc' },
+      take: 400,
+    })
+    const visible = bills.filter((b) => canAccessStore(auth, b.contract.house.apartment.storeId))
+    res.json({
+      items: visible.map((b) => {
+        const atts = parseBillVerifyAttachmentsJson(b.offlineVerifyAttachmentsJson)
+        const attUrls = (f: string) => ({
+          previewUrl: `/api/admin/bills/${b.id}/offline-verify-attachment/${encodeURIComponent(f)}`,
+          downloadUrl: `/api/admin/bills/${b.id}/offline-verify-attachment/${encodeURIComponent(f)}?download=1`,
+        })
+        return {
+          billId: b.id,
+          contractNo: b.contract.contractNo,
+          houseBizId: houseBizId(b.contract.house.id),
+          apartmentName: b.contract.house.apartment.name,
+          houseNo: b.contract.house.houseNo,
+          storeName: b.contract.house.apartment.store.name,
+          tenantName: b.contract.tenant.name,
+          tenantPhone: b.contract.tenant.phone,
+          period: b.period,
+          dueDate: toYmd(b.dueDate),
+          totalAmount: b.totalAmount,
+          status: b.status,
+          paidAt: b.paidAt ? b.paidAt.toISOString() : null,
+          offlineVerifiedAt: b.offlineVerifiedAt ? b.offlineVerifiedAt.toISOString() : null,
+          offlineVerifiedRemark: b.offlineVerifiedRemark ?? null,
+          offlineVerifyAttachments: atts.map((a) => ({ id: a.id, name: a.name, file: a.file, ...attUrls(a.file) })),
+        }
+      }),
+    })
+  })
+
+  app.get('/api/admin/bills/import-template', adminAuth(ctx.prisma), (_req, res) => {
+    const buf = buildBillImportTemplateBuffer()
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent('账单导入模板.xlsx')}`)
+    res.send(buf)
+  })
+
+  app.post('/api/admin/bills/import', adminAuth(ctx.prisma), upload.single('file'), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const file = (req as any).file
+    if (!file || !file.buffer) return res.status(400).json({ error: '请上传 Excel 文件', created: 0, errors: [] })
+    const result = await parseAndImportBills(ctx.prisma, file.buffer, (storeId) => canAccessStore(auth, storeId))
+    res.json({ ok: true, ...result })
+  })
+
+  app.get('/api/admin/bills/:id', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const bill = await ctx.prisma.bill.findUnique({
+      where: { id: String(req.params.id) },
+      include: {
+        items: { orderBy: { createdAt: 'asc' } },
+        contract: {
+          include: {
+            tenant: true,
+            house: { include: { apartment: { include: { store: true } } } },
+          },
+        },
+        changeLogs: { orderBy: { changedAt: 'desc' }, include: { admin: true } },
+      },
+    })
+    if (!bill) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, bill.contract.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    const atts = parseBillVerifyAttachmentsJson((bill as any).offlineVerifyAttachmentsJson)
+    const attUrls = (f: string) => ({
+      previewUrl: `/api/admin/bills/${bill.id}/offline-verify-attachment/${encodeURIComponent(f)}`,
+      downloadUrl: `/api/admin/bills/${bill.id}/offline-verify-attachment/${encodeURIComponent(f)}?download=1`,
+    })
+    res.json({
+      id: bill.id,
+      contractNo: bill.contract.contractNo,
+      houseBizId: houseBizId(bill.contract.house.id),
+      apartmentName: bill.contract.house.apartment.name,
+      houseNo: bill.contract.house.houseNo,
+      storeName: bill.contract.house.apartment.store.name,
+      tenantName: bill.contract.tenant.name,
+      tenantPhone: bill.contract.tenant.phone,
+      period: bill.period,
+      dueDate: toYmd(bill.dueDate),
+      totalAmount: bill.totalAmount,
+      status: bill.status,
+      paidAt: bill.paidAt ? bill.paidAt.toISOString() : null,
+      offlineVerifiedAt: (bill as any).offlineVerifiedAt ? (bill as any).offlineVerifiedAt.toISOString() : null,
+      offlineVerifiedRemark: (bill as any).offlineVerifiedRemark ?? null,
+      offlineVerifyAttachments: atts.map((a) => ({ id: a.id, name: a.name, file: a.file, ...attUrls(a.file) })),
+      createdAt: bill.createdAt.toISOString(),
+      items: bill.items.map((i) => ({ name: i.name, amount: i.amount })),
+      changeLogs: bill.changeLogs.map((c) => ({
+        id: c.id,
+        changedAt: c.changedAt.toISOString(),
+        adminName: c.admin?.name ?? '—',
+        remark: c.remark ?? '',
+        beforeJson: c.beforeJson,
+        afterJson: c.afterJson,
+      })),
+    })
+  })
+
+  /**
+   * 修改账单信息（仅后台）：支持调整到期日和收费明细，自动记录变更前后快照
+   */
+  app.patch('/api/admin/bills/:id', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const Body = z.object({
+      dueDate: z.string().min(8).optional(),
+      items: z
+        .array(z.object({ name: z.string().min(1), amount: z.number().int().min(0) }))
+        .optional(),
+      remark: z.string().optional(),
+    })
+    const body = Body.safeParse(req.body)
+    if (!body.success) return res.status(400).json({ error: 'INVALID_BODY', details: body.error.flatten() })
+
+    const bill = await ctx.prisma.bill.findUnique({
+      where: { id: String(req.params.id) },
+      include: {
+        items: true,
+        contract: { include: { house: { include: { apartment: true } } } },
+      },
+    })
+    if (!bill) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, bill.contract.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+
+    // 锁定账期禁止修改
+    const locked = await isBillPeriodLocked(ctx.prisma, bill.contract.house.apartment.storeId, bill.period)
+    if (locked) return res.status(409).json({ error: 'BILL_PERIOD_LOCKED' })
+
+    const beforeSnapshot = {
+      dueDate: toYmd(bill.dueDate),
+      items: bill.items.map((i) => ({ name: i.name, amount: i.amount })),
+      totalAmount: bill.totalAmount,
+    }
+
+    const newDueDate = body.data.dueDate ? new Date(body.data.dueDate) : bill.dueDate
+    const newItems =
+      body.data.items ??
+      bill.items.map((i) => ({
+        name: i.name,
+        amount: i.amount,
+      }))
+    const cleanedItems = newItems.filter((i) => i.amount > 0)
+    const totalAmount = cleanedItems.reduce((s, i) => s + i.amount, 0)
+    if (totalAmount <= 0) return res.status(400).json({ error: 'ITEMS_SUM_MUST_BE_POSITIVE' })
+
+    const updated = await ctx.prisma.$transaction(async (tx) => {
+      const u = await tx.bill.update({
+        where: { id: bill.id },
+        data: { dueDate: newDueDate, totalAmount },
+      })
+      await tx.billItem.deleteMany({ where: { billId: bill.id } })
+      for (const it of cleanedItems) {
+        await tx.billItem.create({
+          data: { billId: bill.id, name: it.name, amount: it.amount },
+        })
+      }
+      await tx.billChangeLog.create({
+        data: {
+          billId: bill.id,
+          adminId: auth.admin.id,
+          beforeJson: JSON.stringify(beforeSnapshot),
+          afterJson: JSON.stringify({
+            dueDate: toYmd(newDueDate),
+            items: cleanedItems,
+            totalAmount,
+          }),
+          remark: body.data.remark ?? '',
+        },
+      })
+      return u
+    })
+
+    res.json({
+      ok: true,
+      id: updated.id,
+      totalAmount: updated.totalAmount,
+      dueDate: toYmd(updated.dueDate),
+    })
+  })
+
+  /**
+   * 线下核销：管理员确认账单已线下收款，可上传凭证附件
+   * - 仅 UNPAID/OVERDUE 可核销
+   * - 核销后账单状态置为 PAID，并写入 paidAt（若为空）
+   */
+  app.post(
+    '/api/admin/bills/:id/offline-verify',
+    adminAuth(ctx.prisma),
+    contractFileUpload.array('files', 5),
+    async (req, res) => {
+      const auth = getAdminAuth(req)
+      const bill = await ctx.prisma.bill.findUnique({
+        where: { id: String(req.params.id) },
+        include: { contract: { include: { house: { include: { apartment: true } } } } },
+      })
+      if (!bill) return res.status(404).json({ error: 'NOT_FOUND' })
+      if (!canAccessStore(auth, bill.contract.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+      if (bill.status === 'PAID') return res.status(409).json({ error: 'ALREADY_PAID' })
+      if (bill.status !== 'UNPAID' && bill.status !== 'OVERDUE') return res.status(409).json({ error: 'INVALID_STATUS' })
+
+      const remark = String((req.body as any)?.remark ?? '').trim()
+      const files = ((req as any).files ?? []) as Express.Multer.File[]
+
+      const now = new Date()
+      const dir = ensureBillVerifyUploadDir(bill.id)
+      const list = parseBillVerifyAttachmentsJson((bill as any).offlineVerifyAttachmentsJson)
+
+      for (const f of files) {
+        if (!f || !f.buffer) continue
+        const ext = path.extname(f.originalname || '').slice(0, 12) || '.bin'
+        const stored = `${Date.now()}-${randomBytes(8).toString('hex')}${ext.replace(/[^a-zA-Z0-9.]/g, '')}`
+        if (!/^[a-zA-Z0-9._-]+$/.test(stored)) return res.status(400).json({ error: 'BAD_FILENAME' })
+        fs.writeFileSync(path.join(dir, stored), f.buffer)
+        const id = randomBytes(6).toString('hex')
+        list.push({ id, name: f.originalname || stored, file: stored })
+      }
+
+      const updated = await ctx.prisma.bill.update({
+        where: { id: bill.id },
+        data: {
+          status: 'PAID',
+          paidAt: bill.paidAt ?? now,
+          offlineVerifiedAt: (bill as any).offlineVerifiedAt ?? now,
+          offlineVerifiedByAdminId: (bill as any).offlineVerifiedByAdminId ?? auth.admin.id,
+          offlineVerifiedRemark: remark || null,
+          offlineVerifyAttachmentsJson: JSON.stringify(list),
+        } as any,
+      })
+
+      res.json({
+        ok: true,
+        status: updated.status,
+        paidAt: updated.paidAt?.toISOString() ?? null,
+        offlineVerifiedAt: (updated as any).offlineVerifiedAt ? (updated as any).offlineVerifiedAt.toISOString() : null,
+        offlineVerifyAttachmentCount: list.length,
+      })
+    },
+  )
+
+  app.get(
+    '/api/admin/bills/:id/offline-verify-attachment/:fileKey',
+    adminAuth(ctx.prisma),
+    async (req, res) => {
+      const auth = getAdminAuth(req)
+      const fileKey = decodeURIComponent(String(req.params.fileKey))
+      if (!/^[a-zA-Z0-9._-]+$/.test(fileKey)) return res.status(400).json({ error: 'BAD_KEY' })
+      const bill = await ctx.prisma.bill.findUnique({
+        where: { id: String(req.params.id) },
+        include: { contract: { include: { house: { include: { apartment: true } } } } },
+      })
+      if (!bill) return res.status(404).json({ error: 'NOT_FOUND' })
+      if (!canAccessStore(auth, bill.contract.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+      const list = parseBillVerifyAttachmentsJson((bill as any).offlineVerifyAttachmentsJson)
+      const att = list.find((a) => a.file === fileKey)
+      if (!att) return res.status(404).json({ error: 'FILE_NOT_IN_BILL' })
+      const full = path.join(BILL_VERIFY_UPLOAD_ROOT, bill.id, fileKey)
+      if (!fs.existsSync(full)) return res.status(404).json({ error: 'FILE_MISSING' })
+      const ext = path.extname(fileKey).toLowerCase()
+      const mime =
+        ext === '.png'
+          ? 'image/png'
+          : ext === '.jpg' || ext === '.jpeg'
+            ? 'image/jpeg'
+            : ext === '.gif'
+              ? 'image/gif'
+              : ext === '.webp'
+                ? 'image/webp'
+                : ext === '.pdf'
+                  ? 'application/pdf'
+                  : 'application/octet-stream'
+      res.setHeader('Content-Type', mime)
+      if (req.query.download === '1') {
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename*=UTF-8''${encodeURIComponent(att.name)}`,
+        )
+      } else if (['.png', '.jpg', '.jpeg', '.gif', '.webp', '.pdf'].includes(ext)) {
+        res.setHeader('Content-Disposition', 'inline')
+      }
+      res.sendFile(path.resolve(full))
+    },
+  )
+
+  // 交易记录：聚合系统内的“支付/退款”等流水（MVP：账单已支付 + 退款）
+  app.get('/api/admin/transactions', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+
+    const bills = await ctx.prisma.bill.findMany({
+      where: { status: 'PAID', paidAt: { not: null } },
+      include: {
+        contract: {
+          include: {
+            tenant: true,
+            house: { include: { apartment: { include: { store: true } } } },
+          },
+        },
+      },
+      orderBy: { paidAt: 'desc' },
+      take: 300,
+    })
+
+    const refunds = await ctx.prisma.refund.findMany({
+      include: {
+        contract: {
+          include: {
+            tenant: true,
+            house: { include: { apartment: { include: { store: true } } } },
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+    })
+
+    type Tx = {
+      id: string
+      txNo: string
+      orderId: string
+      type: 'BILL_PAYMENT' | 'REFUND'
+      amount: number
+      occurredAt: string
+      contractId: string
+      contractNo: string
+      tenant: { name: string; phone: string }
+      house: { storeName: string; apartmentName: string; houseNo: string }
+      note: string
+    }
+
+    const txs: Tx[] = []
+    for (const b of bills) {
+      if (!canAccessStore(auth, b.contract.house.apartment.storeId)) continue
+      txs.push({
+        id: `bill_${b.id}`,
+        txNo: `TX${b.paidAt ? 'P' : 'B'}${b.id.slice(-10)}`,
+        orderId: b.contract.orderId,
+        type: 'BILL_PAYMENT',
+        amount: b.totalAmount,
+        occurredAt: (b.paidAt ?? b.createdAt).toISOString(),
+        contractId: b.contractId,
+        contractNo: b.contract.contractNo,
+        tenant: { name: b.contract.tenant.name, phone: b.contract.tenant.phone },
+        house: {
+          storeName: b.contract.house.apartment.store.name,
+          apartmentName: b.contract.house.apartment.name,
+          houseNo: b.contract.house.houseNo,
+        },
+        note: b.period.startsWith('换房补差') ? `换房补差已支付：${b.period}` : `账单已支付：${b.period}`,
+      })
+    }
+    for (const r of refunds) {
+      if (!canAccessStore(auth, r.contract.house.apartment.storeId)) continue
+      txs.push({
+        id: `refund_${r.id}`,
+        txNo: `TXR${r.id.slice(-10)}`,
+        orderId: r.contract.orderId,
+        type: 'REFUND',
+        amount: -Math.abs(r.amount),
+        occurredAt: r.createdAt.toISOString(),
+        contractId: r.contractId,
+        contractNo: r.contract.contractNo,
+        tenant: { name: r.contract.tenant.name, phone: r.contract.tenant.phone },
+        house: {
+          storeName: r.contract.house.apartment.store.name,
+          apartmentName: r.contract.house.apartment.name,
+          houseNo: r.contract.house.houseNo,
+        },
+        note: `退款：${r.reason}`,
+      })
+    }
+
+    txs.sort((a, b) => (a.occurredAt < b.occurredAt ? 1 : a.occurredAt > b.occurredAt ? -1 : 0))
+    res.json({ items: txs.slice(0, 400) })
+  })
+
+  app.post('/api/admin/bills', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const Body = z.object({
+      contractId: z.string().min(1),
+      period: z.string().regex(/^\d{4}-\d{2}$/),
+      dueDate: z.string().min(8),
+      items: z.array(z.object({ name: z.string().min(1), amount: z.number().int().min(0) })),
+    })
+    const body = Body.parse(req.body)
+    const contract = await ctx.prisma.contract.findUnique({
+      where: { id: body.contractId },
+      include: { house: { include: { apartment: { include: { store: true } } } } },
+    })
+    if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, contract.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (await isBillPeriodLocked(ctx.prisma, contract.house.apartment.storeId, body.period)) {
+      return res.status(409).json({ error: 'BILL_PERIOD_LOCKED' })
+    }
+    const totalAmount = body.items.reduce((s, i) => s + i.amount, 0)
+    if (totalAmount <= 0) return res.status(400).json({ error: 'ITEMS_SUM_MUST_BE_POSITIVE' })
+    const existing = await ctx.prisma.bill.findFirst({
+      where: { contractId: body.contractId, period: body.period, kind: 'ADJUSTMENT' },
+    })
+    if (existing) return res.status(409).json({ error: 'PERIOD_ALREADY_EXISTS' })
+    const bill = await ctx.prisma.bill.create({
+      data: {
+        contractId: body.contractId,
+        period: body.period,
+        dueDate: new Date(body.dueDate),
+        totalAmount,
+        status: 'UNPAID',
+        kind: 'ADJUSTMENT',
+      },
+    })
+    for (const it of body.items) {
+      if (it.amount <= 0) continue
+      await ctx.prisma.billItem.create({
+        data: { billId: bill.id, name: it.name, amount: it.amount },
+      })
+    }
+    res.json({ ok: true, id: bill.id })
+  })
+
+  // ---------- Integrations (mock) ----------
+  app.post('/api/integrations/asset/sync', async (req, res) => {
+    const token = req.header('x-asset-token')
+    if (token !== env.ASSET_SYNC_TOKEN) return res.status(401).json({ error: 'UNAUTHORIZED' })
+    const Body = z.object({
+      stores: z.array(z.object({ externalId: z.string().min(1), name: z.string().min(1) })),
+      apartments: z.array(
+        z.object({
+          externalId: z.string().min(1),
+          storeExternalId: z.string().min(1),
+          name: z.string().min(1),
+        }),
+      ),
+      houses: z.array(
+        z.object({
+          externalId: z.string().min(1),
+          apartmentExternalId: z.string().min(1),
+          houseNo: z.string().min(1),
+          houseType: z.string().min(1),
+          area: z.number().positive(),
+          rentMonthly: z.number().int().positive().optional(),
+          deposit: z.number().int().nonnegative().optional(),
+          status: z.enum(['VACANT', 'RESERVED', 'ORDERED', 'SIGNED', 'TERMINATED']),
+        }),
+      ),
+    })
+    const body = Body.parse(req.body)
+    const result = await upsertAssetSnapshot(ctx.prisma, body)
+    res.json({ ok: true, ...result })
+  })
+
+  app.post('/api/admin/integrations/asset/sync-demo', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    if (!mustBeSystemAdmin(auth)) return res.status(403).json({ error: 'FORBIDDEN' })
+    const stores = [
+      { externalId: 'S001', name: '南宁市-江南区' },
+      { externalId: 'S002', name: '南宁市-青秀区' },
+      { externalId: 'S003', name: '南宁市-兴宁区' },
+      { externalId: 'S004', name: '南宁市-西乡塘区' },
+      { externalId: 'S005', name: '南宁市-邕宁区' },
+      { externalId: 'S006', name: '南宁市-武鸣区' },
+      { externalId: 'S007', name: '南宁市-良庆区' },
+    ]
+
+    const apartments = [
+      { externalId: 'A001', storeExternalId: 'S001', name: '江南·梧桐公寓' },
+      { externalId: 'A002', storeExternalId: 'S002', name: '青秀·江景公寓' },
+      { externalId: 'A003', storeExternalId: 'S003', name: '兴宁·里弄公寓' },
+      { externalId: 'A004', storeExternalId: 'S004', name: '西乡塘·青年社区' },
+      { externalId: 'A005', storeExternalId: 'S005', name: '邕宁·花园公寓' },
+      { externalId: 'A006', storeExternalId: 'S006', name: '武鸣·精装公寓' },
+      { externalId: 'A007', storeExternalId: 'S007', name: '良庆·悦居公寓' },
+    ] as const
+
+    const houseTypes = ['开间', '一室一厅', '两室一厅', '三室一厅', 'Loft'] as const
+    // 同步演示房源：30 条全部设为空置，便于 H5 列表展示
+    const houseSpecs: Array<{ aptIndex: number; typeIndex: number; area: number; rent: number; no: string }> = []
+    const aptCount = apartments.length
+    const typeCount = houseTypes.length
+    for (let i = 0; i < 30; i++) {
+      const aptIndex = i % aptCount
+      const typeIndex = i % typeCount
+      const area = 28 + (typeIndex * 12) + (i % 8)
+      const rentBase = [4200, 5500, 7200, 9000, 6800][typeIndex]
+      const rent = rentBase + (i % 5) * 200
+      const no = `${1 + (i % 9)}${String(10 + (i % 90)).slice(-2)}`
+      houseSpecs.push({ aptIndex, typeIndex, area, rent, no })
+    }
+
+    const houses = houseSpecs.map((spec, i) => {
+      const apt = apartments[spec.aptIndex]
+      const houseType = houseTypes[spec.typeIndex]
+      return {
+        externalId: `H${String(i + 1).padStart(3, '0')}`,
+        apartmentExternalId: apt.externalId,
+        houseNo: spec.no,
+        houseType,
+        area: spec.area,
+        // 演示：资产系统仅同步基础房子信息（租金/押金等需后台补录）
+        rentMonthly: undefined,
+        deposit: undefined,
+        status: 'VACANT' as const,
+      }
+    })
+
+    const demo = await upsertAssetSnapshot(ctx.prisma, { stores, apartments: apartments as any, houses })
+    res.json({ ok: true, ...demo })
+  })
+
+  app.post('/api/admin/integrations/housing/report-now/:contractId', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const contract = await ctx.prisma.contract.findUnique({
+      where: { id: String(req.params.contractId) },
+      include: { house: { include: { apartment: true } } },
+    })
+    if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, contract.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+
+    const result = await performHousingReportNow(ctx.prisma, contract.id)
+    res.json({ ok: true, ...result })
+  })
+}
+
