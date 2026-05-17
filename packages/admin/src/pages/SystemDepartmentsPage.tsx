@@ -94,7 +94,7 @@ export function SystemDepartmentsPage() {
       apiGet<Me>('/api/admin/me'),
     ])
     if (!dRes.ok || !sRes.ok || !mRes.ok) {
-      const err = !dRes.ok ? dRes.error : !sRes.ok ? sRes.error : mRes.error
+      const err = !dRes.ok ? dRes.error : !sRes.ok ? sRes.error : !mRes.ok ? mRes.error : '加载失败'
       setLoadErr(err)
       return
     }

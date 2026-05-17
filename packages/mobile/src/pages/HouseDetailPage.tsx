@@ -1,12 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { apiGet } from '../api'
+import {
+  assetTypePillClass,
+  countHouseConfigOn,
+  houseConfigIcon,
+  resolveHouseConfigItems,
+} from '../houseConfigDisplay'
+import { addToCart, defaultCartLineFromHouse, getCart, removeFromCart, subscribeCart } from '../cartStorage'
 
 type BusStop = { name: string; routes: string[] }
 
 type House = {
   id: string
   apartmentName: string
+  assetType?: string
   storeName: string
   houseNo: string
   houseType: string
@@ -23,6 +31,8 @@ type House = {
   nearbySubway?: { name: string; distanceMeters?: number }[]
   nearbySchools?: { name: string; type?: string; distanceMeters?: number }[]
   nearbyBusStops?: BusStop[]
+  /** 后台维护的房屋配置项 */
+  houseConfig?: { label: string; on: boolean }[]
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -92,6 +102,16 @@ export function HouseDetailPage() {
   const [showViewingModal, setShowViewingModal] = useState(false)
   const galleryRef = useRef<HTMLDivElement>(null)
   const [currentSlide, setCurrentSlide] = useState(0)
+  const [cartTick, setCartTick] = useState(0)
+
+  useEffect(() => {
+    return subscribeCart(() => setCartTick((t) => t + 1))
+  }, [])
+
+  const inCart = useMemo(
+    () => (id ? getCart().some((l) => l.houseId === id) : false),
+    [id, cartTick],
+  )
 
   const merged = useMemo<House | null>(() => {
     if (!house) return null
@@ -115,6 +135,24 @@ export function HouseDetailPage() {
       merged.address ?? '',
     )}`
   }, [merged])
+
+  const houseConfigItems = useMemo(
+    () => (merged ? resolveHouseConfigItems(merged.houseConfig) : []),
+    [merged],
+  )
+  const configOnCount = useMemo(() => countHouseConfigOn(houseConfigItems), [houseConfigItems])
+  const configDisplayItems = useMemo(
+    () => houseConfigItems.filter((x) => x.on && (x.label ?? '').trim()),
+    [houseConfigItems],
+  )
+  const usingDemoConfig = !(merged?.houseConfig?.some((x) => (x.label ?? '').trim()) ?? false)
+
+  function toggleCart() {
+    if (!merged) return
+    if (inCart) removeFromCart(merged.id)
+    else addToCart(defaultCartLineFromHouse(merged))
+    setCartTick((t) => t + 1)
+  }
 
   useEffect(() => {
     if (!id) return
@@ -172,9 +210,12 @@ export function HouseDetailPage() {
       </div>
 
       {/* 基本信息（不含押金，押金在签合同时配置） */}
-      <div className="m-card">
+      <div className="m-card m-detail-intro">
         <div className="m-row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <div className="m-col" style={{ gap: 4 }}>
+          <div className="m-col" style={{ gap: 8, minWidth: 0 }}>
+            {merged.assetType ? (
+              <span className={assetTypePillClass(merged.assetType)}>{merged.assetType}</span>
+            ) : null}
             <div className="m-h1">
               {merged.apartmentName} · {merged.houseNo}
             </div>
@@ -212,6 +253,30 @@ export function HouseDetailPage() {
             <span className="m-detail-label">状态</span>
             <span className="m-detail-value">{STATUS_LABEL[merged.status] ?? merged.status}</span>
           </div>
+        </div>
+      </div>
+
+      {/* 房屋配置：辅助信息，紧凑展示 */}
+      <div className="m-card m-house-config-card">
+        <div className="m-section-head m-section-head--compact">
+          <div>
+            <div className="m-section-title m-section-title--sm">房屋配置</div>
+            <div className="m-section-sub">已配备 {configOnCount} 项</div>
+          </div>
+          {usingDemoConfig ? <span className="m-section-badge m-section-badge--sm">演示</span> : null}
+        </div>
+        <div className="m-config-chips">
+          {configDisplayItems.map((x) => {
+            const label = (x.label ?? '').trim()
+            return (
+              <span key={label} className="m-config-chip">
+                <span className="m-config-chip-icon" aria-hidden>
+                  {houseConfigIcon(label)}
+                </span>
+                {label}
+              </span>
+            )
+          })}
         </div>
       </div>
 
@@ -306,25 +371,50 @@ export function HouseDetailPage() {
         </div>
       ) : null}
 
-      {/* 预约看房 + 直接下单 */}
-      <div className="m-row" style={{ gap: 10 }}>
-        <button
-          type="button"
-          className="m-btn ghost"
-          style={{ flex: 1 }}
-          onClick={() => setShowViewingModal(true)}
-        >
-          预约看房
-        </button>
+      {/* 主操作：预约 + 下单；购物车单独为「收纳」条，与底部迷你购物车语义一致 */}
+      <div className="m-detail-actions">
+        <div className="m-detail-actions-row">
+          <button
+            type="button"
+            className="m-btn ghost m-detail-actions-half"
+            onClick={() => setShowViewingModal(true)}
+          >
+            预约看房
+          </button>
+          {merged.status === 'VACANT' ? (
+            <Link className="m-btn m-detail-actions-half" to={`/order/${merged.id}`}>
+              直接下单
+            </Link>
+          ) : (
+            <span className="m-btn ghost m-detail-actions-half m-detail-actions-half--disabled">暂不可下单</span>
+          )}
+        </div>
         {merged.status === 'VACANT' ? (
-          <Link className="m-btn" to={`/order/${merged.id}`} style={{ flex: 1, textAlign: 'center' }}>
-            直接下单
-          </Link>
-        ) : (
-          <span className="m-btn" style={{ flex: 1, textAlign: 'center', opacity: 0.5, pointerEvents: 'none' }}>
-            暂不可下单
-          </span>
-        )}
+          <div className="m-detail-cart-row">
+            <button
+              type="button"
+              className={`m-detail-cart-strip${inCart ? ' m-detail-cart-strip--in' : ''}`}
+              onClick={toggleCart}
+            >
+              <div className="m-detail-cart-strip-text">
+                <span className="m-detail-cart-strip-main">
+                  {inCart ? '已在购物车 · 点击移出' : '加入购物车'}
+                </span>
+                <span className="m-detail-cart-strip-sub">
+                  {inCart ? '也可进入购物车调整租期后一并结算' : '先收藏多套，再统一选合同形式并结算'}
+                </span>
+              </div>
+              <span className="m-detail-cart-strip-chev" aria-hidden>
+                {inCart ? '×' : '›'}
+              </span>
+            </button>
+            {inCart ? (
+              <Link to="/cart" className="m-detail-cart-goto">
+                去购物车
+              </Link>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       {/* 预约看房弹窗：门店电话 + 二维码（数据来自后台部门管理-门店绑定） */}

@@ -13,14 +13,16 @@ type Role = {
 /** 与侧边栏一致的菜单项（用于权限分配） */
 const MENU_OPTIONS: { id: string; label: string; path: string }[] = [
   { id: 'home', label: '首页', path: '/' },
-  { id: 'houses', label: '房源管理', path: '/houses' },
+  { id: 'houses', label: '资产管理', path: '/houses' },
   { id: 'orders', label: '订单管理', path: '/orders' },
   { id: 'contracts', label: '合同管理', path: '/contracts' },
+  { id: 'tenant_profiles', label: '租客档案', path: '/tenant-profiles' },
   { id: 'transactions', label: '交易记录', path: '/transactions' },
+  { id: 'contract_prepayments', label: '合同预收款', path: '/contract-prepayments' },
   { id: 'bills', label: '账单管理', path: '/bills' },
-  { id: 'bill_verifications', label: '核销记录', path: '/bill-verifications' },
   { id: 'overdue', label: '欠费预警', path: '/overdue' },
   { id: 'rent_reminders', label: '催租记录', path: '/rent-reminders' },
+  { id: 'reports', label: '报表管理', path: '/reports' },
   { id: 'system_departments', label: '部门管理', path: '/system/departments' },
   { id: 'system_roles', label: '角色管理', path: '/system/roles' },
   { id: 'system_users', label: '用户管理', path: '/system/users' },
@@ -39,7 +41,7 @@ const initialRoles: Role[] = [
     name: '店长',
     code: 'STORE_MANAGER',
     description: '只能查看和操作自己门店的数据',
-    menuIds: ['home', 'houses', 'orders', 'contracts', 'transactions', 'bills', 'bill_verifications', 'overdue', 'rent_reminders'],
+    menuIds: ['home', 'houses', 'orders', 'contracts', 'tenant_profiles', 'transactions', 'contract_prepayments', 'bills', 'overdue', 'rent_reminders', 'reports'],
   },
 ]
 

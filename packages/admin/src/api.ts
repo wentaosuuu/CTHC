@@ -2,12 +2,28 @@ import { clearAdminToken, getAdminToken } from './auth'
 
 export type ApiResult<T> = { ok: true; data: T } | { ok: false; error: string }
 
+/** 避免把整页 HTML / Prisma 堆栈直接展示在管理端 */
+function normalizeClientError(raw: string, status: number): string {
+  const t = (raw || '').trim()
+  if (!t) return `请求失败（${status || '?'})`
+  if (t.length > 600 || /^<!doctype/i.test(t) || /<html[\s>]/i.test(t)) {
+    if (/does not exist.*column/i.test(t) && /PrismaClientKnownRequestError/i.test(t)) {
+      return '数据库结构未同步：请在 packages/server 下执行 npx prisma db push（或 npm run db:migrate）后重启后端。'
+    }
+    return status >= 500 ? '服务器错误（请查看后端日志）。' : `请求失败（HTTP ${status}）`
+  }
+  return t
+}
+
 async function readError(res: Response) {
+  const text = await res.text()
+  const status = res.status
   try {
-    const j = await res.json()
-    return j?.error ? String(j.error) : JSON.stringify(j)
+    const j = JSON.parse(text) as { error?: unknown }
+    if (j?.error != null) return normalizeClientError(String(j.error), status)
+    return normalizeClientError(text || String(status), status)
   } catch {
-    return await res.text()
+    return normalizeClientError(text || String(status), status)
   }
 }
 
@@ -81,6 +97,37 @@ export async function apiUploadContractAttachment(
   })
   if (!res.ok) return { ok: false, error: await readAdminError(res) }
   return { ok: true, data: (await res.json()) as { ok: true; attachments: { id: string; name: string; file: string }[] } }
+}
+
+export async function apiUploadMoveOutFile(
+  contractId: string,
+  file: File,
+): Promise<ApiResult<{ ok: true; attachment: { id: string; name: string; file: string } }>> {
+  const token = getAdminToken()
+  const fd = new FormData()
+  fd.append('file', file)
+  const headers: Record<string, string> = {}
+  if (token) headers.Authorization = `Bearer ${token}`
+  const res = await fetch(`/api/admin/contracts/${encodeURIComponent(contractId)}/move-out-file`, {
+    method: 'POST',
+    headers,
+    body: fd,
+  })
+  if (!res.ok) return { ok: false, error: await readAdminError(res) }
+  return { ok: true, data: (await res.json()) as { ok: true; attachment: { id: string; name: string; file: string } } }
+}
+
+export async function apiDeleteMoveOutFile(
+  contractId: string,
+  fileKey: string,
+): Promise<ApiResult<{ ok: true }>> {
+  const base = withAuthHeaders()
+  const res = await fetch(
+    `/api/admin/contracts/${encodeURIComponent(contractId)}/move-out-file/${encodeURIComponent(fileKey)}`,
+    { ...base, method: 'DELETE' },
+  )
+  if (!res.ok) return { ok: false, error: await readAdminError(res) }
+  return { ok: true, data: { ok: true } }
 }
 
 export async function apiDeleteContractAttachment(

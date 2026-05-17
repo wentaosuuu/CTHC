@@ -1,11 +1,46 @@
 import type { PrismaClient } from '@prisma/client'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { PDFDocument, StandardFonts } from 'pdf-lib'
+import { toYmd } from '../time.js'
 
 export async function ensureHousingReportRecord(prisma: PrismaClient, contractId: string) {
   const existing = await prisma.housingReport.findUnique({ where: { contractId } })
   if (existing) return existing
   return prisma.housingReport.create({ data: { contractId, status: 'PENDING' } })
+}
+
+async function buildHousingReceiptPdfBuffer(contract: {
+  contractNo: string
+  startDate: Date
+  endDate: Date
+  tenant: { name: string; phone: string }
+  house: { houseNo: string; apartment: { name: string; store: { name: string } } }
+}): Promise<Uint8Array> {
+  const doc = await PDFDocument.create()
+  const page = doc.addPage([595, 842])
+  const font = await doc.embedFont(StandardFonts.Helvetica)
+  let y = 780
+  const lines = [
+    'Housing bureau filing receipt (simulated)',
+    `ContractNo: ${contract.contractNo}`,
+    `Store: ${asciiOrDash(contract.house.apartment.store.name)}`,
+    `Apt: ${asciiOrDash(contract.house.apartment.name)}`,
+    `Room: ${asciiOrDash(contract.house.houseNo)}`,
+    `Tenant: ${asciiOrDash(contract.tenant.name)} Tel:${asciiOrDash(contract.tenant.phone)}`,
+    `Lease: ${toYmd(contract.startDate)} ~ ${toYmd(contract.endDate)}`,
+    `FiledAt(UTC): ${new Date().toISOString()}`,
+  ]
+  for (const line of lines) {
+    page.drawText(line.slice(0, 95), { x: 50, y, size: 11, font })
+    y -= 18
+  }
+  return await doc.save()
+}
+
+function asciiOrDash(s: string) {
+  const out = [...s].map((ch) => (ch.charCodeAt(0) <= 0x7f ? ch : '?')).join('')
+  return out.trim() || '-'
 }
 
 export async function performHousingReportNow(prisma: PrismaClient, contractId: string) {
@@ -26,20 +61,10 @@ export async function performHousingReportNow(prisma: PrismaClient, contractId: 
   try {
     const receiptsDir = path.join(process.cwd(), 'receipts')
     await fs.mkdir(receiptsDir, { recursive: true })
-    const filename = `housing-receipt-${contract.contractNo}.pdf` // dummy file
+    const filename = `housing-receipt-${contract.contractNo}.pdf`
     const filePath = path.join(receiptsDir, filename)
-    const content = [
-      '住建局合同报备回执（模拟）',
-      `合同号：${contract.contractNo}`,
-      `门店：${contract.house.apartment.store.name}`,
-      `公寓：${contract.house.apartment.name}`,
-      `房号：${contract.house.houseNo}`,
-      `租客：${contract.tenant.name} ${contract.tenant.phone}`,
-      `起止：${contract.startDate.toISOString().slice(0, 10)} ~ ${contract.endDate.toISOString().slice(0, 10)}`,
-      `报备时间：${new Date().toISOString()}`,
-      '',
-    ].join('\n')
-    await fs.writeFile(filePath, content, 'utf8')
+    const pdfBytes = await buildHousingReceiptPdfBuffer(contract)
+    await fs.writeFile(filePath, Buffer.from(pdfBytes))
 
     const updated = await prisma.housingReport.update({
       where: { id: report.id },
@@ -48,6 +73,7 @@ export async function performHousingReportNow(prisma: PrismaClient, contractId: 
         receiptPdfPath: filePath,
         lastError: null,
         reportedAt: new Date(),
+        bureauRecordNo: `NNFJ-DEMO-${contract.contractNo}-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(Math.floor(Math.random() * 900) + 100).padStart(3, '0')}`,
       },
     })
     return { status: updated.status, receiptPdfPath: updated.receiptPdfPath, reportedAt: updated.reportedAt?.toISOString() }
@@ -62,4 +88,3 @@ export async function performHousingReportNow(prisma: PrismaClient, contractId: 
     return { status: updated.status, lastError: updated.lastError }
   }
 }
-

@@ -115,7 +115,7 @@ export function AdminLayout({ children }: { children: ReactNode }) {
               首页
             </Link>
             <Link className={loc.pathname.startsWith('/houses') ? 'a-menu-item active' : 'a-menu-item'} to="/houses">
-              房源管理
+              资产管理
             </Link>
             <Link className={loc.pathname.startsWith('/orders') ? 'a-menu-item active' : 'a-menu-item'} to="/orders">
               订单管理
@@ -124,19 +124,25 @@ export function AdminLayout({ children }: { children: ReactNode }) {
               合同管理
             </Link>
             <Link
+              className={loc.pathname.startsWith('/tenant-profiles') ? 'a-menu-item active' : 'a-menu-item'}
+              to="/tenant-profiles"
+            >
+              租客档案
+            </Link>
+            <Link
               className={loc.pathname.startsWith('/transactions') ? 'a-menu-item active' : 'a-menu-item'}
               to="/transactions"
             >
               交易记录
             </Link>
+            <Link
+              className={loc.pathname.startsWith('/contract-prepayments') ? 'a-menu-item active' : 'a-menu-item'}
+              to="/contract-prepayments"
+            >
+              合同预收款
+            </Link>
             <Link className={loc.pathname.startsWith('/bills') ? 'a-menu-item active' : 'a-menu-item'} to="/bills">
               账单管理
-            </Link>
-            <Link
-              className={loc.pathname.startsWith('/bill-verifications') ? 'a-menu-item active' : 'a-menu-item'}
-              to="/bill-verifications"
-            >
-              核销记录
             </Link>
             <Link className={loc.pathname.startsWith('/overdue') ? 'a-menu-item active' : 'a-menu-item'} to="/overdue">
               欠费预警
@@ -146,6 +152,12 @@ export function AdminLayout({ children }: { children: ReactNode }) {
               to="/rent-reminders"
             >
               催租记录
+            </Link>
+            <Link
+              className={loc.pathname.startsWith('/reports') ? 'a-menu-item active' : 'a-menu-item'}
+              to="/reports"
+            >
+              报表管理
             </Link>
           </nav>
 

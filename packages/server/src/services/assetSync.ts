@@ -2,7 +2,7 @@ import type { PrismaClient } from '@prisma/client'
 
 type AssetSnapshot = {
   stores: { externalId: string; name: string; wecomQrUrl?: string | null }[]
-  apartments: { externalId: string; storeExternalId: string; name: string }[]
+  apartments: { externalId: string; storeExternalId: string; name: string; assetType?: string }[]
   houses: {
     externalId: string
     apartmentExternalId: string
@@ -40,8 +40,17 @@ export async function upsertAssetSnapshot(prisma: PrismaClient, snapshot: AssetS
     if (!storeId) continue
     const apartment = await prisma.apartment.upsert({
       where: { externalId: a.externalId },
-      create: { externalId: a.externalId, name: a.name, storeId },
-      update: { name: a.name, storeId },
+      create: {
+        externalId: a.externalId,
+        name: a.name,
+        storeId,
+        assetType: a.assetType ?? '泊湾公寓',
+      },
+      update: {
+        name: a.name,
+        storeId,
+        ...(a.assetType !== undefined ? { assetType: a.assetType } : {}),
+      },
     })
     apartmentMap.set(a.externalId, apartment.id)
   }

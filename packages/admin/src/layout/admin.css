@@ -407,6 +407,469 @@
   flex: 1 1 520px;
   min-width: 360px;
 }
+
+/* ---------- 首页驾驶舱（HomePage） ---------- */
+.a-home-dashboard {
+  width: 100%;
+  min-width: 0;
+  gap: 14px;
+}
+
+.a-home-alert {
+  border-radius: 14px;
+  border: 1px solid #fecaca;
+  background: linear-gradient(90deg, #fef2f2, #fff);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.a-home-alert-title {
+  font-weight: 900;
+  color: #991b1b;
+  font-size: 14px;
+}
+.a-home-alert-msg {
+  font-size: 13px;
+  color: #7f1d1d;
+}
+
+.a-home-hero {
+  border-radius: 18px;
+  border: 1px solid rgba(37, 99, 235, 0.18);
+  background: radial-gradient(1200px 400px at 10% -20%, rgba(59, 130, 246, 0.14), transparent 55%),
+    linear-gradient(165deg, #f8fafc 0%, #eff6ff 40%, #ffffff 100%);
+  padding: 18px 18px 16px;
+  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.06);
+}
+.a-home-hero-top {
+  margin-bottom: 14px;
+}
+.a-home-eyebrow {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+.a-home-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  color: #0f172a;
+}
+.a-home-subtitle {
+  margin: 8px 0 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #475569;
+  max-width: 720px;
+}
+
+.a-home-filter-panel {
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  padding: 12px;
+}
+.a-home-filter-grid {
+  margin-top: 0;
+}
+.a-home-select,
+.a-home-date {
+  border-radius: 10px;
+  border-color: #cbd5e1;
+}
+
+.a-home-section {
+  border-radius: 16px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  padding: 14px 16px 16px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+.a-home-section--time {
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+}
+.a-home-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.a-home-section-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 900;
+  color: #0f172a;
+}
+.a-home-section-meta {
+  margin: 0;
+  font-size: 12px;
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+}
+.a-home-hint {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.5;
+}
+
+.a-time-segments {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.a-time-segments--compact {
+  margin-top: 4px;
+}
+.a-time-seg {
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 7px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.a-time-seg:hover {
+  border-color: #94a3b8;
+  background: #f8fafc;
+}
+.a-time-seg.is-active {
+  border-color: #2563eb;
+  background: #2563eb;
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.25);
+}
+
+/* 报表管理 */
+.a-report-tabs-card {
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+.a-report-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.a-report-tab {
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #334155;
+  font-size: 14px;
+  font-weight: 800;
+  padding: 8px 18px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.a-report-tab:hover {
+  border-color: #94a3b8;
+  background: #f8fafc;
+}
+.a-report-tab.is-active {
+  border-color: #2563eb;
+  background: #eff6ff;
+  color: #1d4ed8;
+  box-shadow: inset 0 0 0 1px #bfdbfe;
+}
+.a-report-tab-desc {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.a-report-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+@media (max-width: 900px) {
+  .a-report-summary-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.a-report-kpi {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 14px 16px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+.a-report-kpi--green {
+  border-color: #bbf7d0;
+  background: linear-gradient(180deg, #f0fdf4 0%, #fff 100%);
+}
+.a-report-kpi--amber {
+  border-color: #fde68a;
+  background: linear-gradient(180deg, #fffbeb 0%, #fff 100%);
+}
+.a-report-kpi--slate {
+  border-color: #e2e8f0;
+  background: linear-gradient(180deg, #f8fafc 0%, #fff 100%);
+}
+.a-report-kpi-label {
+  margin: 0;
+  font-size: 12px;
+  color: #64748b;
+  font-weight: 700;
+}
+.a-report-kpi-num {
+  margin: 6px 0 4px;
+  font-size: 22px;
+  font-weight: 900;
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+}
+.a-report-kpi-foot {
+  margin: 0;
+  font-size: 11px;
+  color: #94a3b8;
+}
+.a-time-custom {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.a-home-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+.a-home-kpi {
+  border-radius: 14px;
+  padding: 14px;
+  min-height: 112px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
+}
+.a-home-kpi--blue {
+  border-color: #bfdbfe;
+  background: linear-gradient(160deg, #eff6ff, #fff 55%);
+}
+.a-home-kpi--green {
+  border-color: #bbf7d0;
+  background: linear-gradient(160deg, #f0fdf4, #fff 55%);
+}
+.a-home-kpi--slate {
+  border-color: #cbd5e1;
+  background: linear-gradient(160deg, #f8fafc, #fff 55%);
+}
+.a-home-kpi--amber {
+  border-color: #fde68a;
+  background: linear-gradient(160deg, #fffbeb, #fff 55%);
+}
+.a-home-kpi-label {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: #64748b;
+}
+.a-home-kpi-num {
+  margin: 6px 0 0;
+  font-size: 24px;
+  font-weight: 900;
+  letter-spacing: -0.03em;
+  color: #0f172a;
+  line-height: 1.1;
+}
+.a-home-kpi-foot {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: #94a3b8;
+  line-height: 1.35;
+}
+
+.a-home-metric-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 10px;
+}
+.a-home-metric-strip--dense {
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+}
+.a-home-metric {
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  padding: 12px;
+  min-height: 102px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.a-home-metric--accent {
+  border-color: #93c5fd;
+  background: linear-gradient(180deg, #eff6ff, #fff);
+}
+.a-home-metric-label {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: #64748b;
+}
+.a-home-metric-value {
+  margin: 4px 0 0;
+  font-size: 22px;
+  font-weight: 900;
+  color: #0f172a;
+  letter-spacing: -0.02em;
+}
+.a-home-metric-desc {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: #94a3b8;
+  line-height: 1.35;
+}
+
+.a-home-overdue {
+  border-radius: 16px;
+  border: 1px solid #fecaca;
+  background: linear-gradient(115deg, rgba(254, 226, 226, 0.55) 0%, #fff 42%, #fff 100%);
+  padding: 16px 16px 14px;
+  box-shadow: 0 8px 28px rgba(185, 28, 28, 0.08);
+}
+.a-home-overdue-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-start;
+}
+.a-home-overdue-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 900;
+  color: #991b1b;
+}
+.a-home-overdue-desc {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #7f1d1d;
+  max-width: 640px;
+}
+.a-home-overdue-range {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: #b91c1c;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.a-home-overdue-sum {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(248, 113, 113, 0.35);
+}
+.a-home-overdue-sum-label {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: #991b1b;
+}
+.a-home-overdue-sum-num {
+  margin: 4px 0 0;
+  font-size: 30px;
+  font-weight: 900;
+  letter-spacing: -0.03em;
+  color: #b91c1c;
+}
+.a-home-overdue-count {
+  margin: 0;
+  font-size: 13px;
+  color: #7f1d1d;
+}
+.a-home-overdue-count strong {
+  color: #0f172a;
+}
+
+.a-home-section--charts {
+  padding-bottom: 12px;
+}
+.a-home-charts {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: stretch;
+}
+.a-home-chart-card {
+  flex: 1 1 480px;
+  min-width: 320px;
+  border-radius: 14px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  padding: 12px 12px 10px;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.05);
+}
+.a-home-chart-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 900;
+  color: #334155;
+}
+.a-home-chart-title--spaced {
+  margin-top: 14px;
+}
+.a-home-chart-foot {
+  margin: 10px 0 0;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+/* 首页筛选栅格（与房源页共用类名） */
+.a-dashboard-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.a-filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.a-filter-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #475569;
+}
+
+/* 首页两块图表（旧类名保留，兼容其它引用） */
+.a-dashboard-charts {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: stretch;
+}
+.a-dashboard-charts > .a-card {
+  flex: 1 1 520px;
+  min-width: 360px;
+}
 .a-row {
   display: flex;
   align-items: center;
@@ -571,6 +1034,76 @@
   background: #f8fafc;
 }
 
+/* 资产管理：变更记录弹窗 */
+.a-change-log-wrap {
+  max-height: min(60vh, 520px);
+  overflow: auto;
+}
+
+.a-change-log-table .a-change-log-cell {
+  max-width: 280px;
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-word;
+  vertical-align: top;
+  white-space: pre-wrap;
+}
+
+/* 租客档案：信誉度等级标记 */
+.a-tenant-legend-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px 16px;
+}
+
+.a-tenant-legend-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.a-tier-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 8px;
+  font-weight: 900;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+}
+
+.a-tier-a {
+  background: #ecfdf5;
+  color: #047857;
+  border: 1px solid #a7f3d0;
+}
+
+.a-tier-b {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+}
+
+.a-tier-c {
+  background: #fffbeb;
+  color: #b45309;
+  border: 1px solid #fde68a;
+}
+
+.a-tier-d {
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+}
+
+.a-op-actions--assets {
+  grid-template-columns: repeat(3, minmax(86px, 1fr));
+}
+
 /* 合同管理页：操作列按钮布局优化（小屏更易点按） */
 .contracts-op-col,
 .a-op-col {
@@ -620,6 +1153,10 @@
   .a-op-actions {
     grid-template-columns: 1fr;
   }
+
+  .a-op-actions--assets {
+    grid-template-columns: 1fr;
+  }
 }
 
 .a-modal-backdrop {
@@ -642,6 +1179,19 @@
   border-radius: 16px;
   border: 1px solid #e2e8f0;
   box-shadow: 0 30px 120px rgba(0, 0, 0, 0.35);
+}
+
+.a-modal--narrow {
+  width: min(560px, 96vw);
+}
+
+/* 变更记录：单栏全宽表格（勿沿用双栏 grid，否则仅约半宽、后两列常被挤出视区） */
+.a-modal--change-log {
+  width: min(1120px, 98vw);
+}
+
+.a-modal--change-log .a-modal-body {
+  display: block;
 }
 
 .a-modal-header {
@@ -863,6 +1413,45 @@
   color: #15803d;
 }
 
+.a-badge.status-partial {
+  background: rgba(59, 130, 246, 0.14);
+  color: #1d4ed8;
+}
+
+/* 表头「类型」旁帮助问号 */
+.a-th-label-help {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.a-help-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  border: 1px solid #94a3b8;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  color: #64748b;
+  background: #f8fafc;
+  cursor: help;
+  user-select: none;
+}
+
+.a-help-icon:hover,
+.a-help-icon:focus-visible {
+  border-color: #64748b;
+  color: #334155;
+  background: #e2e8f0;
+  outline: none;
+}
+
 .a-badge.status-not-published {
   background: rgba(59, 130, 246, 0.12);
   color: #1d4ed8;
@@ -1056,4 +1645,227 @@
 .contract-remark-body:empty:before {
   content: attr(data-placeholder);
   color: #94a3b8;
+}
+
+/* 欠费预警 · 账期折叠明细 */
+.a-overdue-detail-accordion .a-accordion-panel.open {
+  max-height: none;
+  overflow: visible;
+}
+
+.a-overdue-period-header {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  text-align: left;
+}
+
+.a-overdue-period-title {
+  font-weight: 800;
+  font-size: 15px;
+  color: #0f172a;
+}
+
+.a-overdue-period-meta {
+  font-size: 13px;
+  color: #64748b;
+}
+
+.a-overdue-period-amount {
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: #b45309;
+  margin-left: auto;
+}
+
+.a-overdue-period-fees {
+  padding: 8px 12px 12px 36px;
+  border-top: 1px dashed #e2e8f0;
+  background: #f8fafc;
+  border-radius: 0 0 8px 8px;
+}
+
+.a-overdue-period-fees .a-kv-row {
+  padding: 4px 0;
+}
+
+.a-overdue-detail-modal .a-modal-body.a-overdue-detail-body {
+  display: block;
+  max-height: min(72vh, 640px);
+  overflow-y: auto;
+}
+
+.a-overdue-detail-summary {
+  background: linear-gradient(180deg, #f8fafc 0%, #fff 100%);
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+
+.a-overdue-detail-summary-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-size: 14px;
+  line-height: 1.5;
+  padding: 4px 0;
+}
+
+.a-overdue-detail-summary-row .label {
+  flex: 0 0 64px;
+  color: #64748b;
+}
+
+.a-overdue-detail-summary-row .value {
+  flex: 1;
+  color: #0f172a;
+}
+
+.a-overdue-detail-summary-row.total .value {
+  font-weight: 800;
+  color: #b45309;
+}
+
+.a-overdue-detail-summary-row.total .value em {
+  display: block;
+  font-style: normal;
+  font-weight: 500;
+  font-size: 12px;
+  color: #64748b;
+  margin-top: 4px;
+}
+
+.a-overdue-detail-section-title {
+  font-weight: 700;
+  font-size: 13px;
+  color: #475569;
+  margin-bottom: 8px;
+}
+
+.a-overdue-period-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.a-overdue-period-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.a-overdue-period-card.is-focus {
+  border-color: #fcd34d;
+  box-shadow: 0 0 0 1px #fde68a;
+}
+
+.a-overdue-period-card-head {
+  width: 100%;
+  border: none;
+  background: #f8fafc;
+  padding: 12px 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.a-overdue-period-card-head:hover {
+  background: #f1f5f9;
+}
+
+.a-overdue-period-chevron {
+  color: #64748b;
+  font-size: 12px;
+  width: 14px;
+}
+
+.a-overdue-period-badge {
+  font-weight: 800;
+  font-size: 15px;
+  color: #0f172a;
+  background: #e0f2fe;
+  padding: 2px 10px;
+  border-radius: 6px;
+}
+
+.a-overdue-period-head-meta {
+  font-size: 13px;
+  color: #64748b;
+}
+
+.a-overdue-period-head-due {
+  margin-left: auto;
+  font-weight: 800;
+  font-size: 15px;
+  color: #b45309;
+  font-variant-numeric: tabular-nums;
+}
+
+.a-overdue-period-card-body {
+  padding: 10px 14px 14px;
+  border-top: 1px dashed #e2e8f0;
+  background: #fff;
+}
+
+.a-overdue-period-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  font-size: 12px;
+  color: #64748b;
+  margin-bottom: 10px;
+}
+
+.a-overdue-fee-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.a-overdue-fee-table th {
+  text-align: left;
+  color: #64748b;
+  font-weight: 600;
+  padding: 6px 8px;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
+.a-overdue-fee-table td {
+  padding: 8px;
+  border-bottom: 1px solid #f1f5f9;
+  color: #0f172a;
+}
+
+.a-overdue-fee-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.a-bill-pay-qr-wrap {
+  text-align: center;
+  padding: 8px 0;
+}
+
+.a-bill-pay-qr-wrap img {
+  width: 260px;
+  height: 260px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 8px;
+  background: #fff;
+}
+
+.a-bill-pay-qr-url {
+  margin-top: 10px;
+  font-size: 12px;
+  word-break: break-all;
+  color: #64748b;
 }

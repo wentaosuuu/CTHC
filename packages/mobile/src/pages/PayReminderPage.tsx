@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { apiGet, getTenantPhone } from '../api'
+import { pendingFirstPayDeadlineMs } from '../countdownFormat'
 
 type Contract = {
   id: string
@@ -14,10 +15,10 @@ type Contract = {
   deposit: number
   confirmedAt: string | null
   stampedAt: string | null
+  tenantSignDeadlineAt: string | null
+  renewedFromId?: string | null
   payment: { id: string; amount: number; status: string; paidAt: string | null } | null
 }
-
-const DEADLINE_HOURS = 24
 
 function formatHms(ms: number) {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000))
@@ -64,22 +65,40 @@ export function PayReminderPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contractId, phone])
 
-  const deadlineMs = useMemo(() => {
+  const payDeadlineMs = useMemo(() => {
     if (!contract || !contract.stampedAt) return null
-    const stamped = new Date(contract.stampedAt).getTime()
-    if (Number.isNaN(stamped)) return null
-    return stamped + DEADLINE_HOURS * 3600 * 1000
+    return pendingFirstPayDeadlineMs(contract)
   }, [contract])
 
-  const remainingMs = useMemo(() => {
-    if (!deadlineMs) return null
-    return deadlineMs - now
-  }, [deadlineMs, now])
+  const signDeadlineMs = useMemo(() => {
+    if (!contract?.tenantSignDeadlineAt) return null
+    const t = new Date(contract.tenantSignDeadlineAt).getTime()
+    return Number.isNaN(t) ? null : t
+  }, [contract])
+
+  const payRemainingMs = useMemo(() => {
+    if (!payDeadlineMs) return null
+    return payDeadlineMs - now
+  }, [payDeadlineMs, now])
+
+  const signRemainingMs = useMemo(() => {
+    if (!signDeadlineMs || contract?.status !== 'WAIT_TENANT_SIGN') return null
+    return signDeadlineMs - now
+  }, [signDeadlineMs, contract?.status, now])
+
+  const payExpired =
+    contract?.status === 'PENDING_PAYMENT' &&
+    payRemainingMs != null &&
+    payRemainingMs <= 0
+
+  const signExpired =
+    contract?.status === 'WAIT_TENANT_SIGN' && signRemainingMs != null && signRemainingMs <= 0
 
   const expired =
     contract?.status === 'VOID' ||
     contract?.status === 'TERMINATED' ||
-    (remainingMs != null ? remainingMs <= 0 : false)
+    payExpired ||
+    signExpired
 
   const stampedText = contract?.stampedAt ? new Date(contract.stampedAt).toLocaleString('zh-CN') : ''
 
@@ -99,14 +118,30 @@ export function PayReminderPage() {
   return (
     <div className="m-col">
       <div className="m-card">
-        <div className="m-h1">付款提醒（24h 倒计时）</div>
+        <div className="m-h1">合同流程与倒计时</div>
         <div className="m-muted" style={{ marginTop: 6 }}>
           {expired
-            ? '合同已失效：盖章后 24 小时未支付。'
+            ? contract?.status === 'VOID' && !contract.stampedAt
+              ? '合同已失效：未在约定期限内完成确认与签字（或订单已被系统取消）。'
+              : contract?.status === 'VOID' && contract.stampedAt
+                ? contract.renewedFromId
+                  ? '合同已失效：续签新合同未在起租首日起 24 小时内完成首期款。'
+                  : '合同已失效：待付款后的 24 小时内未完成首期款支付。'
+                : signExpired
+                  ? '已超过确认与签字截止时间，订单将失效（请刷新以同步状态）。'
+                  : payExpired
+                    ? contract?.renewedFromId
+                      ? '已超过续签首期款支付期限，合同将失效（请刷新以同步状态）。'
+                      : '已超过待付款后 24 小时付款期限，合同将失效（请刷新以同步状态）。'
+                    : '当前状态已结束倒计时。'
             : contract?.status === 'PENDING_PAYMENT'
-              ? '合同已盖章，请在倒计时结束前完成付款。'
+              ? '已进入待付款：请在倒计时结束前完成首期款支付。'
               : contract?.status === 'WAIT_STAMP'
-                ? '合同已确认，正在等待盖章完成。'
+                ? '合同已确认，系统处理中；请稍后刷新，进入待付款后将显示首期款支付倒计时。'
+              : contract?.status === 'WAIT_TENANT_SIGN'
+                ? contract?.renewedFromId
+                  ? '续签新合同：请在下方倒计时内完成确认与签字；须在同一截止时点前完成首期款支付（起租首日起 24 小时）。'
+                  : '请在下方倒计时内完成合同确认与签字；超时订单失效、房源重新开放。'
                 : contract?.status === 'ACTIVE'
                   ? '合同已生效。'
                   : '请等待系统流转到待付款状态。'}
@@ -117,32 +152,79 @@ export function PayReminderPage() {
             <div>{contract.contractNo}</div>
             <div className="m-k">当前状态</div>
             <div>{contract.status}</div>
-            <div className="m-k">盖章时间</div>
+            <div className="m-k">确认/签字截止</div>
+            <div>
+              {contract.tenantSignDeadlineAt
+                ? new Date(contract.tenantSignDeadlineAt).toLocaleString('zh-CN')
+                : '-'}
+            </div>
+            <div className="m-k">待付款起始</div>
             <div>{contract.stampedAt ? stampedText : '-'}</div>
+          </div>
+        ) : null}
+        {contract?.status === 'WAIT_STAMP' ? (
+          <div className="m-row" style={{ marginTop: 12 }}>
+            <button className="m-btn secondary" type="button" onClick={() => void load()}>
+              刷新
+            </button>
+            <Link className="m-btn ghost" to={`/contracts/${contract.id}`}>
+              返回合同
+            </Link>
           </div>
         ) : null}
       </div>
 
       {loading && !contract ? <div className="m-card">加载中…</div> : null}
 
+      {contract && contract.status === 'WAIT_TENANT_SIGN' && !expired ? (
+        <div className="m-card">
+          <div style={{ fontWeight: 900 }}>
+            确认与签字倒计时{contract.renewedFromId ? '（续签：起租首日起 24 小时）' : '（3 天）'}
+          </div>
+          {signRemainingMs != null ? (
+            <>
+              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 10, color: '#b45309' }}>
+                {formatHms(signRemainingMs)}
+              </div>
+              <div className="m-muted" style={{ marginTop: 6 }}>
+                请在截止前于合同页完成「确认合同信息」（演示中含电子签字）；超时订单失效、房源重新开放。
+              </div>
+            </>
+          ) : (
+            <div className="m-muted" style={{ marginTop: 8 }}>未获取到截止时间，请返回合同页或联系门店。</div>
+          )}
+          <div className="m-row" style={{ marginTop: 12 }}>
+            <Link className="m-btn" to={`/contracts/${contract.id}`}>
+              去合同页确认
+            </Link>
+            <button className="m-btn secondary" type="button" onClick={() => void load()}>
+              刷新
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       {contract && contract.status === 'PENDING_PAYMENT' && !expired ? (
         <div className="m-card">
-          <div style={{ fontWeight: 900 }}>倒计时</div>
-          {remainingMs != null && deadlineMs != null ? (
+          <div style={{ fontWeight: 900 }}>
+            首期款倒计时（24 小时{contract.renewedFromId ? ' · 续签与起租首日整体截止取较早' : ''}）
+          </div>
+          {payRemainingMs != null && payDeadlineMs != null ? (
             <>
               <div style={{ fontSize: 28, fontWeight: 900, marginTop: 10, color: '#1d4ed8' }}>
-                {formatHms(remainingMs)}
+                {formatHms(payRemainingMs)}
               </div>
               <div className="m-muted" style={{ marginTop: 6 }}>
-                还剩时间：倒计时结束后合同将自动失效（24h 规则）。
+                还剩时间：倒计时结束后合同将自动失效
+                {contract.renewedFromId ? '（续签须遵守起租首日起 24 小时规则）。' : '（24h 规则）。'}
               </div>
               <div className="m-muted" style={{ marginTop: 6 }}>
-                支付截止：{new Date(deadlineMs).toLocaleString('zh-CN')}
+                支付截止：{new Date(payDeadlineMs).toLocaleString('zh-CN')}
               </div>
             </>
           ) : (
             <div className="m-muted" style={{ marginTop: 8 }}>
-              正在获取盖章时间，倒计时即将显示…
+              正在获取待付款起始时间，倒计时即将显示…
             </div>
           )}
 
@@ -150,23 +232,6 @@ export function PayReminderPage() {
             <Link className="m-btn" to={`/pay/${contract.id}`}>
               立即支付
             </Link>
-            <Link className="m-btn ghost" to={`/contracts/${contract.id}`}>
-              返回合同
-            </Link>
-          </div>
-        </div>
-      ) : null}
-
-      {contract && contract.status === 'WAIT_STAMP' ? (
-        <div className="m-card">
-          <div style={{ fontWeight: 900 }}>盖章处理中</div>
-          <div className="m-muted" style={{ marginTop: 8 }}>
-            系统会在电子章完成后自动切换到“待付款”状态。你可以继续停留在此页，倒计时会自动出现。
-          </div>
-          <div className="m-row" style={{ marginTop: 12 }}>
-            <button className="m-btn secondary" type="button" onClick={() => void load()}>
-              刷新状态
-            </button>
             <Link className="m-btn ghost" to={`/contracts/${contract.id}`}>
               返回合同
             </Link>
@@ -192,7 +257,19 @@ export function PayReminderPage() {
         <div className="m-card">
           <div style={{ fontWeight: 900 }}>合同已失效</div>
           <div className="m-muted" style={{ marginTop: 8 }}>
-            由于盖章后 24 小时未完成付款，合同已自动作废（页面会在后台刷新最新状态）。
+            {contract.status === 'VOID' && !contract.stampedAt
+              ? '未在约定期限内完成确认与签字，或订单已被系统取消。'
+              : contract.status === 'VOID' && contract.stampedAt
+                ? contract.renewedFromId
+                  ? '续签新合同：未在起租首日起 24 小时内完成首期款支付，合同已自动作废。'
+                  : '待付款后的 24 小时内未完成首期款支付，合同已自动作废。'
+                : signExpired
+                  ? '已超过确认与签字截止时间，请刷新页面；系统将取消订单并释放房源。'
+                  : payExpired
+                    ? contract?.renewedFromId
+                      ? '已超过续签首期款支付期限，请刷新页面以查看最新状态。'
+                      : '已超过待付款后 24 小时付款期限，请刷新页面以查看最新状态。'
+                    : '当前合同已结束有效流程。'}
           </div>
           <div className="m-row" style={{ marginTop: 12 }}>
             <Link className="m-btn" to={`/contracts/${contract.id}`}>

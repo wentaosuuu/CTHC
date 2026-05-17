@@ -18,13 +18,13 @@ function makeDemoAssets() {
   ]
 
   const apartments = [
-    { externalId: 'A001', storeExternalId: 'S001', name: '江南·梧桐公寓' },
-    { externalId: 'A002', storeExternalId: 'S002', name: '青秀·江景公寓' },
-    { externalId: 'A003', storeExternalId: 'S003', name: '兴宁·里弄公寓' },
-    { externalId: 'A004', storeExternalId: 'S004', name: '西乡塘·青年社区' },
-    { externalId: 'A005', storeExternalId: 'S005', name: '邕宁·花园公寓' },
-    { externalId: 'A006', storeExternalId: 'S006', name: '武鸣·精装公寓' },
-    { externalId: 'A007', storeExternalId: 'S007', name: '良庆·悦居公寓' },
+    { externalId: 'A001', storeExternalId: 'S001', name: '江南·梧桐公寓', assetType: '泊湾公寓' },
+    { externalId: 'A002', storeExternalId: 'S002', name: '青秀·江景公寓', assetType: '商铺' },
+    { externalId: 'A003', storeExternalId: 'S003', name: '兴宁·里弄公寓', assetType: '厂房' },
+    { externalId: 'A004', storeExternalId: 'S004', name: '西乡塘·青年社区', assetType: '住宅' },
+    { externalId: 'A005', storeExternalId: 'S005', name: '邕宁·花园公寓', assetType: '泊湾公寓' },
+    { externalId: 'A006', storeExternalId: 'S006', name: '武鸣·精装公寓', assetType: '商铺' },
+    { externalId: 'A007', storeExternalId: 'S007', name: '良庆·悦居公寓', assetType: '住宅' },
   ] as const
 
   const houseTypes = ['开间', '一室一厅', '两室一厅', '三室一厅', 'Loft'] as const
@@ -120,6 +120,216 @@ async function seedDepartmentsAndStoreLinks() {
   }
 }
 
+type AdminMini = { id: string; name: string; email: string }
+
+/** 为带 externalId 的资产写入变更履历（与真实字段口径一致，便于后台「变更记录」联调观感） */
+async function seedHouseChangeLogsForDemo(prisma: PrismaClient, systemAdmin: AdminMini, manager: AdminMini) {
+  const houses = await prisma.house.findMany({
+    where: { externalId: { not: null } },
+    include: { apartment: { include: { store: true } } },
+    orderBy: { externalId: 'asc' },
+  })
+  const ids = houses.map((h) => h.id)
+  if (ids.length === 0) return
+  await prisma.houseChangeLog.deleteMany({ where: { houseId: { in: ids } } })
+
+  const rentUnits = ['物业公司', '运营中心', '项目部 A', '资管平台（代收）']
+  const managers = ['张敏', '李磊', '王强', '陈洁（资管）']
+  const districts = ['青秀区', '江南区', '兴宁区', '西乡塘区', '良庆区', '邕宁区', '武鸣区']
+  const roads = ['民族大道', '凤岭北路', '五象大道', '大学东路', '星光大道', '龙岗大道', '壮锦大道']
+
+  for (let i = 0; i < houses.length; i += 1) {
+    const h = houses[i]
+    const primary = i % 2 === 0 ? systemAdmin : manager
+    const secondary = i % 2 === 0 ? manager : systemAdmin
+
+    const cur = h.rentMonthly
+    const r0 = Math.max(2800, cur - 780 - (i % 7) * 60)
+    const r1 = Math.max(2800, cur - 320 - (i % 5) * 45)
+
+    const district = districts[i % districts.length]
+    const road = roads[i % roads.length]
+    const draftAddr = `南宁市${district}${road}${110 + (i % 90)}号（初始登记）`
+    const finalAddr = (h.address ?? '').trim() || `南宁市${district}${road}${128 + (i % 70)}号 ${h.apartment.name} ${h.houseNo}`
+
+    const projAfter = (h.projectName ?? '').trim() || `${h.apartment.name}·资管项目`
+    const ru = (h.rentCollectionUnit ?? '').trim() || rentUnits[i % rentUnits.length]
+    const mg = (h.managerName ?? '').trim() || managers[i % managers.length]
+
+    /** 距今若干天前的时点（跨多个月分散，避免履历挤在同一两周内） */
+    const stamp = (daysAgo: number, hour: number, minute: number, second: number) => {
+      const d = new Date()
+      d.setDate(d.getDate() - daysAgo)
+      d.setHours(hour, minute, second, 0)
+      return d
+    }
+    const j = (base: number) => base + (i % 7)
+
+    const rows: Array<{
+      fieldLabel: string
+      beforeValue: string
+      afterValue: string
+      changedAt: Date
+      adminId: string
+      adminName: string
+      adminEmail: string
+    }> = []
+
+    rows.push({
+      fieldLabel: '月租(元)',
+      beforeValue: String(r0),
+      afterValue: String(r1),
+      changedAt: stamp(j(198), 10 + (i % 5), 16 + (i % 40), 8 + (i % 50)),
+      adminId: primary.id,
+      adminName: primary.name,
+      adminEmail: primary.email,
+    })
+    rows.push({
+      fieldLabel: '项目名称',
+      beforeValue: h.apartment.store.name,
+      afterValue: projAfter,
+      changedAt: stamp(j(162), 11, 9 + (i % 48), 22 + (i % 35)),
+      adminId: primary.id,
+      adminName: primary.name,
+      adminEmail: primary.email,
+    })
+    rows.push({
+      fieldLabel: '月租(元)',
+      beforeValue: String(r1),
+      afterValue: String(cur),
+      changedAt: stamp(j(131), 14 + (i % 4), 21 + (i % 35), 41 + (i % 18)),
+      adminId: secondary.id,
+      adminName: secondary.name,
+      adminEmail: secondary.email,
+    })
+
+    rows.push({
+      fieldLabel: '公寓地址',
+      beforeValue: draftAddr,
+      afterValue: finalAddr,
+      changedAt: stamp(j(99), 9 + (i % 3), 44, 12 + (i % 45)),
+      adminId: secondary.id,
+      adminName: secondary.name,
+      adminEmail: secondary.email,
+    })
+
+    rows.push({
+      fieldLabel: '收租单位',
+      beforeValue: '待归口确认',
+      afterValue: ru,
+      changedAt: stamp(j(76), 15, 18 + (i % 40), 33 + (i % 25)),
+      adminId: manager.id,
+      adminName: manager.name,
+      adminEmail: manager.email,
+    })
+
+    if (i % 6 === 0 && h.deposit > 0) {
+      const prevDep = Math.max(0, h.deposit - 400 - (i % 3) * 100)
+      rows.push({
+        fieldLabel: '押金(元)',
+        beforeValue: String(prevDep),
+        afterValue: String(h.deposit),
+        changedAt: stamp(j(54), 13, 7 + (i % 50), 19 + (i % 40)),
+        adminId: primary.id,
+        adminName: primary.name,
+        adminEmail: primary.email,
+      })
+    }
+
+    rows.push({
+      fieldLabel: '管理人',
+      beforeValue: '待指派',
+      afterValue: mg,
+      changedAt: stamp(j(36), 16, 11 + (i % 45), 27 + (i % 30)),
+      adminId: systemAdmin.id,
+      adminName: systemAdmin.name,
+      adminEmail: systemAdmin.email,
+    })
+
+    if (h.isPublished) {
+      rows.push({
+        fieldLabel: '上架状态',
+        beforeValue: '未上架',
+        afterValue: '已上架',
+        changedAt: stamp(j(17), 10 + (i % 2), 36 + (i % 20), 51 + (i % 8)),
+        adminId: manager.id,
+        adminName: manager.name,
+        adminEmail: manager.email,
+      })
+    }
+
+    for (const row of rows) {
+      await prisma.houseChangeLog.create({
+        data: {
+          houseId: h.id,
+          fieldLabel: row.fieldLabel,
+          beforeValue: row.beforeValue,
+          afterValue: row.afterValue,
+          changedAt: row.changedAt,
+          adminId: row.adminId,
+          adminName: row.adminName,
+          adminEmail: row.adminEmail,
+        },
+      })
+    }
+  }
+}
+
+/** 合同预收款页演示：为若干在履行合同写入预收余额与入账流水（已存在 ContractCredit 的合同会跳过，避免覆盖真实数据） */
+async function seedDemoContractPrepayments(prisma: PrismaClient) {
+  const contracts = await prisma.contract.findMany({
+    where: { status: 'ACTIVE' },
+    orderBy: { contractNo: 'asc' },
+    take: 6,
+  })
+  if (contracts.length === 0) return
+
+  const amounts = [4180, 2650, 9200, 1380, 5600, 720]
+  const remarks = [
+    '【演示】线下核销超额：预缴下期租金',
+    '【演示】合并缴费结余转入预收',
+    '【演示】季付多收部分（待后续账期抵扣）',
+    '【演示】现金收款舍入暂挂预收',
+    '【演示】换房结算尾款转预收',
+    '【演示】一次支付覆盖两期后的结余',
+  ]
+
+  let inserted = 0
+  for (let i = 0; i < contracts.length; i += 1) {
+    const c = contracts[i]!
+    const existed = await prisma.contractCredit.findUnique({ where: { contractId: c.id } })
+    if (existed) continue
+
+    const bill = await prisma.bill.findFirst({
+      where: { contractId: c.id },
+      orderBy: { period: 'desc' },
+      select: { id: true, period: true },
+    })
+    const balance = amounts[i]!
+    const remark = `${remarks[i]!}${bill?.period ? `（参考账期 ${bill.period}）` : ''}`
+
+    const cc = await prisma.contractCredit.create({
+      data: { contractId: c.id, balanceAmount: balance },
+    })
+    await prisma.contractCreditLedger.create({
+      data: {
+        contractCreditId: cc.id,
+        deltaAmount: balance,
+        balanceAfterAmount: balance,
+        kind: 'OVERPAY_OFFLINE',
+        billId: bill?.id ?? null,
+        remark,
+        adminId: null,
+      },
+    })
+    inserted += 1
+  }
+  if (inserted > 0) {
+    // eslint-disable-next-line no-console
+    console.log(`Demo: 已写入 ${inserted} 条合同预收余额（后台「合同预收款」列表）。`)
+  }
+}
+
 async function main() {
   // Seed demo assets
   await upsertAssetSnapshot(prisma, makeDemoAssets())
@@ -152,6 +362,29 @@ async function main() {
       },
     })
   }
+
+  const rentUnits = ['物业公司', '运营中心', '项目部 A', '资管平台（代收）']
+  const managers = ['张敏', '李磊', '王强', '陈洁（资管）']
+  const housesForDims = await prisma.house.findMany({ include: { apartment: true }, orderBy: { externalId: 'asc' } })
+  for (let i = 0; i < housesForDims.length; i += 1) {
+    const h = housesForDims[i]
+    await prisma.house.update({
+      where: { id: h.id },
+      data: {
+        rentCollectionUnit: rentUnits[i % rentUnits.length],
+        managerName: managers[i % managers.length],
+        ...(i < 5 ? { projectName: `${h.apartment.name}·资管项目` } : {}),
+      },
+    })
+  }
+
+  // 非「泊湾公寓」资产：演示用 H5 外链（正式环境请在后台「房源配置」中维护）
+  await prisma.house.updateMany({
+    where: { apartment: { assetType: { not: '泊湾公寓' } } },
+    data: {
+      externalBrowseUrl: 'https://example.com/h5-demo-browse',
+    },
+  })
 
   const adminPassword = await bcrypt.hash('admin123', 10)
   const managerPassword = await bcrypt.hash('manager123', 10)
@@ -231,6 +464,7 @@ async function main() {
           name: `${firstNames[globalIndex % firstNames.length]}${globalIndex < 10 ? '零' : ''}${['一', '二', '三', '四', '五', '六', '七', '八', '九', '九'][globalIndex % 10]}`,
           idNumber: `310101${year}0101${String(1000 + globalIndex).padStart(4, '0')}`,
           phone: `138${String(10000000 + globalIndex).padStart(8, '0')}`,
+          creditTier: (['A', 'B', 'C', 'D'] as const)[globalIndex % 4],
         },
       })
 
@@ -298,7 +532,8 @@ async function main() {
       const gas = globalIndex % 3 === 0 ? 0 : 30 + (globalIndex % 40)
       const network = globalIndex % 4 === 0 ? 0 : 50 + (globalIndex % 40)
       const late = 0
-      const otherSum = water + elec + prop + garbage + shared + gas + network + late
+      const otherFee = 10 + (globalIndex % 35)
+      const otherSum = water + elec + prop + garbage + shared + gas + network + late + otherFee
       const rent = Math.max(0, totalAmount - otherSum)
       const items = [
         { name: '租金', amount: rent },
@@ -310,6 +545,7 @@ async function main() {
         { name: '燃气费', amount: gas },
         { name: '网络费', amount: network },
         { name: '滞纳金', amount: late },
+        { name: '其他费用', amount: otherFee },
       ]
       for (const it of items) {
         if (it.amount <= 0) continue
@@ -888,6 +1124,277 @@ async function main() {
 
   // eslint-disable-next-line no-console
   console.log(`Demo: 已更新 ${contractsForExpiryDemo.length} 条合同 endDate 用于「到期提醒」列表展示。`)
+
+  // 一单三套合并合同：未结清月度账单（月账单行含分套 breakdown）
+  const MERGED_PHONE = '13900001730'
+  const MERGED_CONTRACT_NO = 'HT20260288118'
+  const existingMerged = await prisma.contract.findFirst({ where: { contractNo: MERGED_CONTRACT_NO } })
+  if (!existingMerged) {
+    const byExt = await prisma.house.findMany({
+      where: { externalId: { in: ['H051', 'H052', 'H053'] } },
+      include: { apartment: { include: { store: true } } },
+      orderBy: { externalId: 'asc' },
+    })
+    const picked =
+      byExt.length === 3 && byExt.every((h) => h.status === 'VACANT' && h.isPublished)
+        ? byExt
+        : null
+
+    const pick = picked
+      ? picked
+      : await prisma.house.findMany({
+          where: { status: 'VACANT', isPublished: true },
+          include: { apartment: { include: { store: true } } },
+          orderBy: { externalId: 'asc' },
+          take: 30,
+        })
+    const chosen: typeof pick = []
+    if (!picked) {
+      const seenApt = new Set<string>()
+      for (const h of pick) {
+        if (chosen.length >= 3) break
+        if (seenApt.has(h.apartmentId)) continue
+        seenApt.add(h.apartmentId)
+        chosen.push(h)
+      }
+    } else {
+      chosen.push(...picked)
+    }
+
+    if (chosen.length === 3) {
+      const [h0, h1, h2] = chosen
+      const rent0 = h0.rentMonthly
+      const rent1 = h1.rentMonthly
+      const rent2 = h2.rentMonthly
+      const sumRent = rent0 + rent1 + rent2
+      const sumDep = h0.deposit + h1.deposit + h2.deposit
+
+      let mergeTenant = await prisma.tenant.findFirst({ where: { phone: MERGED_PHONE } })
+      if (!mergeTenant) {
+        mergeTenant = await prisma.tenant.create({
+          data: {
+            name: '陆晨',
+            idNumber: '450108199402151826',
+            phone: MERGED_PHONE,
+            creditTier: 'B',
+          },
+        })
+      }
+
+      const moveIn = new Date()
+      moveIn.setDate(1)
+      const startDate = moveIn
+      const endDate = new Date(moveIn)
+      endDate.setMonth(endDate.getMonth() + 12)
+
+      const order = await prisma.order.create({
+        data: {
+          houseId: h0.id,
+          tenantId: mergeTenant.id,
+          leaseMonths: 12,
+          moveInDate: moveIn,
+          isMergedBundle: true,
+          status: 'APPROVED',
+          lines: {
+            create: [
+              { houseId: h0.id, rentMonthlySnapshot: rent0, depositSnapshot: h0.deposit, sortOrder: 0 },
+              { houseId: h1.id, rentMonthlySnapshot: rent1, depositSnapshot: h1.deposit, sortOrder: 1 },
+              { houseId: h2.id, rentMonthlySnapshot: rent2, depositSnapshot: h2.deposit, sortOrder: 2 },
+            ],
+          },
+        },
+      })
+
+      const contract = await prisma.contract.create({
+        data: {
+          contractNo: MERGED_CONTRACT_NO,
+          houseId: h0.id,
+          tenantId: mergeTenant.id,
+          orderId: order.id,
+          status: 'PENDING_PAYMENT',
+          startDate,
+          endDate,
+          rentMonthly: sumRent,
+          deposit: sumDep,
+          confirmedAt: new Date(),
+          signedAt: new Date(),
+          stampedAt: new Date(),
+        },
+      })
+
+      function addMonthsMerged(d: Date, n: number) {
+        const x = new Date(d)
+        x.setMonth(x.getMonth() + n)
+        return x
+      }
+      function fmtBillPeriodMerged(d: Date) {
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+      }
+
+      const EXTRA_POOL_MERGED: Record<string, number> = {
+        水费: 216,
+        电费: 368,
+        物业费: 285,
+        垃圾处理费: 84,
+        公摊电费: 118,
+        燃气费: 52,
+        网络费: 156,
+        滞纳金: 0,
+      }
+
+      function splitPoolMerged(pool: number, rents: [number, number, number]): number[] {
+        const sumR = rents[0] + rents[1] + rents[2]
+        const parts = rents.map((r) => Math.floor((pool * r) / sumR))
+        let diff = pool - parts.reduce((a, b) => a + b, 0)
+        for (let i = parts.length - 1; diff > 0 && i >= 0; i -= 1, diff -= 1) {
+          parts[i]! += 1
+        }
+        return parts
+      }
+
+      for (let mi = 0; mi < 6; mi += 1) {
+        const d = addMonthsMerged(startDate, mi)
+        const periodStr = fmtBillPeriodMerged(d)
+        const rentsTuple: [number, number, number] = [rent0, rent1, rent2]
+        const houses = [h0, h1, h2] as const
+        const unitPayloads = [0, 1, 2].map((idx) => {
+          const rent = rentsTuple[idx]!
+          const breakdown: { label: string; amount: number }[] = [{ label: '月租', amount: rent }]
+          for (const [label, pool] of Object.entries(EXTRA_POOL_MERGED)) {
+            if (pool <= 0) continue
+            const parts = splitPoolMerged(pool, rentsTuple)
+            breakdown.push({ label, amount: parts[idx]! })
+          }
+          const amount = breakdown.reduce((s, x) => s + x.amount, 0)
+          return { amount, breakdown }
+        })
+        const billTotal = unitPayloads.reduce((s, u) => s + u.amount, 0)
+
+        const bill = await prisma.bill.create({
+          data: {
+            contractId: contract.id,
+            period: periodStr,
+            dueDate: new Date(d.getFullYear(), d.getMonth(), 8),
+            totalAmount: billTotal,
+            status: 'UNPAID',
+            kind: 'BASE',
+          },
+        })
+        for (let i = 0; i < 3; i += 1) {
+          const h = houses[i]!
+          const u = unitPayloads[i]!
+          await prisma.billItem.create({
+            data: {
+              billId: bill.id,
+              name: `${h.apartment.name} · ${h.houseNo}`,
+              amount: u.amount,
+              breakdownJson: JSON.stringify(u.breakdown),
+            },
+          })
+        }
+      }
+
+      const adjBase = addMonthsMerged(startDate, 2)
+      const adjPeriod = fmtBillPeriodMerged(adjBase)
+      const adjBill = await prisma.bill.create({
+        data: {
+          contractId: contract.id,
+          period: adjPeriod,
+          dueDate: new Date(adjBase.getFullYear(), adjBase.getMonth(), 22),
+          totalAmount: 186,
+          status: 'UNPAID',
+          kind: 'ADJUSTMENT',
+        },
+      })
+      await prisma.billItem.createMany({
+        data: [
+          { billId: adjBill.id, name: '水费', amount: 68 },
+          { billId: adjBill.id, name: '电费', amount: 74 },
+          { billId: adjBill.id, name: '物业费', amount: 44 },
+        ],
+      })
+
+      await prisma.house.updateMany({
+        where: { id: { in: [h0.id, h1.id, h2.id] } },
+        data: { status: 'SIGNED' },
+      })
+    }
+  }
+
+  // Demo：水/电表号、店长账单备注、账期锁定（与后台账单/导入联动展示）
+  const demoMeterHouses = await prisma.house.findMany({
+    where: { externalId: { in: ['H001', 'H002', 'H003', 'H004', 'H005'] } },
+    select: { id: true, externalId: true },
+    orderBy: { externalId: 'asc' },
+  })
+  for (let i = 0; i < demoMeterHouses.length; i += 1) {
+    const ext = demoMeterHouses[i].externalId ?? `H${i}`
+    const ws = [`WS-${ext}-A`, ...(i % 2 === 0 ? [`WS-${ext}-B`] : [])]
+    const es = [`EL-${ext}-1`]
+    await prisma.house.update({
+      where: { id: demoMeterHouses[i].id },
+      data: { waterMeterNosJson: JSON.stringify(ws), electricMeterNosJson: JSON.stringify(es) },
+    })
+  }
+
+  const forRemark = await prisma.bill.findMany({ take: 8, orderBy: { createdAt: 'asc' } })
+  for (const b of forRemark.slice(0, 3)) {
+    await prisma.bill.update({
+      where: { id: b.id },
+      data: { billingRemark: '演示：本月含上月抄表补差及公区耗材' },
+    })
+  }
+
+  const lockBill = await prisma.bill.findFirst({
+    where: { status: { in: ['UNPAID', 'OVERDUE'] } },
+    include: { contract: { include: { house: { include: { apartment: true } } } } },
+    orderBy: { createdAt: 'asc' },
+  })
+  if (lockBill && /^\d{4}-\d{2}$/.test(lockBill.period)) {
+    const lockStoreId = lockBill.contract.house.apartment.storeId
+    const lockPeriod = lockBill.period
+    const sameStoreBills = await prisma.bill.findMany({
+      where: {
+        period: lockPeriod,
+        contract: { house: { apartment: { storeId: lockStoreId } } },
+      },
+      take: 800,
+    })
+    const contractIds = new Set(sameStoreBills.map((x) => x.contractId))
+    const totalAmount = sameStoreBills.reduce((s, x) => s + x.totalAmount, 0)
+    const dueDates = sameStoreBills.map((x) => x.dueDate).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+    const dueFrom = dueDates[0] ?? new Date(`${lockPeriod}-01`)
+    const dueTo = dueDates[dueDates.length - 1] ?? dueFrom
+    const lockedAt = new Date()
+    lockedAt.setDate(lockedAt.getDate() - 3)
+    await prisma.billPeriod.upsert({
+      where: { storeId_period: { storeId: lockStoreId, period: lockPeriod } },
+      create: {
+        storeId: lockStoreId,
+        period: lockPeriod,
+        lockedAt,
+        lockedByAdminId: systemAdmin.id,
+        snapshotContractCount: contractIds.size,
+        snapshotBillCount: sameStoreBills.length,
+        snapshotTotalAmount: totalAmount,
+        snapshotDueDateFrom: dueFrom,
+        snapshotDueDateTo: dueTo,
+      },
+      update: {
+        lockedAt,
+        lockedByAdminId: systemAdmin.id,
+        snapshotContractCount: contractIds.size,
+        snapshotBillCount: sameStoreBills.length,
+        snapshotTotalAmount: totalAmount,
+        snapshotDueDateFrom: dueFrom,
+        snapshotDueDateTo: dueTo,
+      },
+    })
+  }
+
+  await seedHouseChangeLogsForDemo(prisma, systemAdmin, manager)
+
+  await seedDemoContractPrepayments(prisma)
 
   const totalContracts = await prisma.contract.count()
   // eslint-disable-next-line no-console

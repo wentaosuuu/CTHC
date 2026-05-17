@@ -16,22 +16,55 @@ import { apiGet } from '../api'
 
 type Stat = {
   houses: number
-  orders: number
+  pendingOrders: number
   contracts: number
-  bills: number
-  overdueBills: number
 }
 
-type HouseMini = { isPublished: boolean; status: string }
+type DimRow = {
+  storeName: string
+  projectName?: string | null
+  assetType: string
+  rentCollectionUnit?: string | null
+  managerName?: string | null
+}
 
-type BillMini = { dueDate: string; totalAmount: number; status: string }
+type HouseItem = {
+  isPublished: boolean
+  status: string
+  storeName: string
+  projectName?: string | null
+  assetType: string
+  rentCollectionUnit?: string | null
+  managerName?: string | null
+  area: number | null
+}
+
+type OrderListItem = {
+  status: string
+  house: DimRow
+}
+
+type ContractListItem = {
+  house: DimRow
+}
+
+type BillMini = {
+  dueDate: string
+  totalAmount: number
+  status: string
+} & DimRow
+
+type OverdueItem = {
+  dueDate: string
+  totalAmount: number
+  penalty: number
+} & DimRow
 
 type TrendPoint = {
   label: string
   房源: number
-  订单: number
+  待办订单: number
   合同: number
-  账单: number
 }
 
 type RateTrendPoint = {
@@ -86,19 +119,14 @@ function formatLabel(d: Date, preset: TimePreset): string {
   return `${d.getMonth() + 1}/${d.getDate()}`
 }
 
-/** 根据当前统计量与时间范围生成趋势数据（模拟） */
-function buildTrendData(
-  stat: Stat,
-  range: { start: Date; end: Date },
-  preset: TimePreset
-): TrendPoint[] {
+function buildTrendData(stat: Stat, range: { start: Date; end: Date }, preset: TimePreset): TrendPoint[] {
   const result: TrendPoint[] = []
   const start = new Date(range.start)
   const end = new Date(range.end)
   const days = Math.round((end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000)) + 1
   const totalDays = Math.min(Math.max(days, 1), 31)
 
-  for (let i = 0; i < totalDays; i++) {
+  for (let i = 0; i < totalDays; i += 1) {
     const d = new Date(start)
     d.setDate(d.getDate() + i)
     if (d.getTime() > end.getTime()) break
@@ -106,20 +134,16 @@ function buildTrendData(
     result.push({
       label: formatLabel(d, preset),
       房源: Math.max(0, Math.round(stat.houses * (0.6 + 0.4 * ratio))),
-      订单: Math.max(0, Math.round(stat.orders * (0.55 + 0.45 * ratio))),
+      待办订单: Math.max(0, Math.round(stat.pendingOrders * (0.55 + 0.45 * ratio))),
       合同: Math.max(0, Math.round(stat.contracts * (0.55 + 0.45 * ratio))),
-      账单: Math.max(0, Math.round(stat.bills * (0.5 + 0.5 * ratio))),
     })
   }
   if (preset === 'yesterday' && result.length === 1) {
-    const today = new Date(range.start)
-    today.setDate(today.getDate() + 1)
     result.push({
       label: '今日',
       房源: stat.houses,
-      订单: stat.orders,
+      待办订单: stat.pendingOrders,
       合同: stat.contracts,
-      账单: stat.bills,
     })
   }
   return result
@@ -135,9 +159,25 @@ const PRESETS: { key: TimePreset; label: string }[] = [
 
 const CHART_COLORS = {
   房源: '#2563eb',
-  订单: '#0ea5e9',
+  待办订单: '#0ea5e9',
   合同: '#22c55e',
-  账单: '#f59e0b',
+}
+
+function projectLabel(row: DimRow) {
+  const p = row.projectName?.trim()
+  return p || row.storeName
+}
+
+function uniqSorted(values: string[]) {
+  return Array.from(new Set(values.filter(Boolean))).sort()
+}
+
+function matchDim(row: DimRow, project: string, asset: string, rent: string, mgr: string) {
+  if (project && projectLabel(row) !== project) return false
+  if (asset && row.assetType !== asset) return false
+  if (rent && (row.rentCollectionUnit?.trim() || '') !== rent) return false
+  if (mgr && (row.managerName?.trim() || '') !== mgr) return false
+  return true
 }
 
 function toYmd(d: Date): string {
@@ -158,23 +198,68 @@ function hash01(seed: string) {
   return (h % 1000) / 1000
 }
 
+function toDate(ymd: string): Date {
+  const [y, m, d] = ymd.split('-').map((x) => Number(x))
+  return new Date(y, (m ?? 1) - 1, d ?? 1)
+}
+
+function formatPct(v: number): string {
+  if (!Number.isFinite(v)) return '-'
+  return `${(Math.round(v * 1000) / 10).toFixed(1)}%`
+}
+
+function formatCurrencyYuan(n: number): string {
+  if (!Number.isFinite(n)) return '-'
+  return `¥${n.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`
+}
+
+function formatAreaSqm(n: number): string {
+  if (!Number.isFinite(n)) return '-'
+  return `${n.toLocaleString('zh-CN', { maximumFractionDigits: 0 })} ㎡`
+}
+
+/** 领导看板：租金/面积类 demo，随筛选维度变化 */
+function buildDemoLedger(seed: string, houseCount: number) {
+  const h = hash01(seed)
+  const receivable = Math.round((1_580_000 + h * 920_000) * (1 + Math.min(houseCount, 80) * 0.012))
+  const payRatio = 0.76 + hash01(`${seed}|pay`) * 0.18
+  const received = Math.round(receivable * payRatio)
+  const totalArea = Math.round((9_200 + h * 5_100) + houseCount * 32)
+  const leaseRatio = 0.68 + hash01(`${seed}|ar`) * 0.26
+  const leasedArea = Math.round(totalArea * leaseRatio)
+  const cumulativeRentalRate = leasedArea / Math.max(totalArea, 1)
+  return { receivable, received, totalArea, leasedArea, cumulativeRentalRate }
+}
+
 export function HomePage() {
-  const [stat, setStat] = useState<Stat | null>(null)
-  const [housesMini, setHousesMini] = useState<HouseMini[]>([])
-  const [billsMini, setBillsMini] = useState<BillMini[]>([])
+  const [housesItems, setHousesItems] = useState<HouseItem[]>([])
+  const [orderItems, setOrderItems] = useState<OrderListItem[]>([])
+  const [contractItems, setContractItems] = useState<ContractListItem[]>([])
+  const [billItems, setBillItems] = useState<BillMini[]>([])
+  const [overdueItems, setOverdueItems] = useState<OverdueItem[]>([])
   const [error, setError] = useState('')
+
+  const [filterProject, setFilterProject] = useState('')
+  const [filterAsset, setFilterAsset] = useState('')
+  const [filterRentUnit, setFilterRentUnit] = useState('')
+  const [filterManager, setFilterManager] = useState('')
+
   const [timePreset, setTimePreset] = useState<TimePreset>('thisMonth')
   const [customStart, setCustomStart] = useState('')
   const [customEnd, setCustomEnd] = useState('')
+
+  const [overduePreset, setOverduePreset] = useState<TimePreset>('thisMonth')
+  const [overdueCustomStart, setOverdueCustomStart] = useState('')
+  const [overdueCustomEnd, setOverdueCustomEnd] = useState('')
 
   useEffect(() => {
     async function load() {
       try {
         const [houses, orders, contracts, overdue, bills] = await Promise.all([
-          apiGet<{ items: HouseMini[] }>('/api/admin/houses'),
-          apiGet<{ items: unknown[] }>('/api/admin/orders'),
-          apiGet<{ items: unknown[] }>('/api/admin/contracts'),
-          apiGet<{ items: unknown[]; rule: string }>('/api/admin/bills/overdue'),
+          apiGet<{ items: HouseItem[] }>('/api/admin/houses'),
+          apiGet<{ items: OrderListItem[] }>('/api/admin/orders'),
+          apiGet<{ items: ContractListItem[] }>('/api/admin/contracts'),
+          apiGet<{ items: OverdueItem[]; rule: string }>('/api/admin/bills/overdue'),
           apiGet<{ items: BillMini[] }>('/api/admin/bills'),
         ])
         if (!houses.ok || !orders.ok || !contracts.ok || !overdue.ok || !bills.ok) {
@@ -192,15 +277,11 @@ export function HomePage() {
                       : '加载失败'
           throw new Error(err)
         }
-        setStat({
-          houses: houses.data.items.length,
-          orders: orders.data.items.length,
-          contracts: contracts.data.items.length,
-          bills: bills.data.items.length,
-          overdueBills: overdue.data.items.length,
-        })
-        setHousesMini(houses.data.items)
-        setBillsMini(bills.data.items)
+        setHousesItems(houses.data.items)
+        setOrderItems(orders.data.items)
+        setContractItems(contracts.data.items)
+        setOverdueItems(overdue.data.items)
+        setBillItems(bills.data.items)
       } catch (e: unknown) {
         setError((e as Error)?.message || '加载失败')
       }
@@ -208,72 +289,129 @@ export function HomePage() {
     load()
   }, [])
 
-  function toDate(ymd: string): Date {
-    // ymd: YYYY-MM-DD
-    const [y, m, d] = ymd.split('-').map((x) => Number(x))
-    return new Date(y, (m ?? 1) - 1, d ?? 1)
-  }
+  const projectOptions = useMemo(() => {
+    return ['', ...uniqSorted(housesItems.map((h) => projectLabel(h)))]
+  }, [housesItems])
 
-  function formatPct(v: number): string {
-    if (!Number.isFinite(v)) return '-'
-    // 展示习惯：尽量避免极值 0% / 100%，且显示更“常规”
-    return `${(Math.round(v * 1000) / 10).toFixed(1)}%`
-  }
+  const assetOptions = useMemo(() => {
+    return ['', ...uniqSorted(housesItems.map((h) => h.assetType))]
+  }, [housesItems])
+
+  const rentUnitOptions = useMemo(() => {
+    return ['', ...uniqSorted(housesItems.map((h) => h.rentCollectionUnit?.trim() || ''))]
+  }, [housesItems])
+
+  const managerOptions = useMemo(() => {
+    return ['', ...uniqSorted(housesItems.map((h) => h.managerName?.trim() || ''))]
+  }, [housesItems])
+
+  const filterSeed = useMemo(
+    () => `${filterProject}|${filterAsset}|${filterRentUnit}|${filterManager}`,
+    [filterProject, filterAsset, filterRentUnit, filterManager],
+  )
+
+  const filteredHouses = useMemo(
+    () => housesItems.filter((h) => matchDim(h, filterProject, filterAsset, filterRentUnit, filterManager)),
+    [housesItems, filterProject, filterAsset, filterRentUnit, filterManager],
+  )
+
+  const filteredBills = useMemo(
+    () => billItems.filter((b) => matchDim(b, filterProject, filterAsset, filterRentUnit, filterManager)),
+    [billItems, filterProject, filterAsset, filterRentUnit, filterManager],
+  )
+
+  const filteredContracts = useMemo(
+    () =>
+      contractItems.filter((c) => matchDim(c.house, filterProject, filterAsset, filterRentUnit, filterManager)),
+    [contractItems, filterProject, filterAsset, filterRentUnit, filterManager],
+  )
+
+  const filteredOverdue = useMemo(
+    () => overdueItems.filter((o) => matchDim(o, filterProject, filterAsset, filterRentUnit, filterManager)),
+    [overdueItems, filterProject, filterAsset, filterRentUnit, filterManager],
+  )
+
+  const pendingOrders = useMemo(
+    () =>
+      orderItems.filter(
+        (o) =>
+          o.status === 'PENDING_REVIEW' &&
+          matchDim(o.house, filterProject, filterAsset, filterRentUnit, filterManager),
+      ).length,
+    [orderItems, filterProject, filterAsset, filterRentUnit, filterManager],
+  )
+
+  const stat = useMemo<Stat>(
+    () => ({
+      houses: filteredHouses.length,
+      pendingOrders,
+      contracts: filteredContracts.length,
+    }),
+    [filteredHouses.length, pendingOrders, filteredContracts.length],
+  )
+
+  const demoLedger = useMemo(
+    () => buildDemoLedger(filterSeed, filteredHouses.length),
+    [filterSeed, filteredHouses.length],
+  )
 
   const range = useMemo(() => {
     return getRangeForPreset(timePreset, customStart || undefined, customEnd || undefined)
   }, [timePreset, customStart, customEnd])
 
+  const overdueRange = useMemo(() => {
+    return getRangeForPreset(overduePreset, overdueCustomStart || undefined, overdueCustomEnd || undefined)
+  }, [overduePreset, overdueCustomStart, overdueCustomEnd])
+
   const trendData = useMemo(() => {
-    if (!stat) return []
     return buildTrendData(stat, range, timePreset)
   }, [stat, range, timePreset])
 
   const rentalRate = useMemo(() => {
-    const published = housesMini.filter((h) => h.isPublished)
+    const published = filteredHouses.filter((h) => h.isPublished)
     const total = published.length
     if (total === 0) return null
     const occupied = published.filter((h) => h.status !== 'VACANT').length
     return clampRate(occupied / total)
-  }, [housesMini])
+  }, [filteredHouses])
 
   const vacancyRate = useMemo(() => {
-    // 保持与出租率互补，避免两端分别钳制造成“不相加为 100%”
     if (rentalRate == null) return null
     return 1 - rentalRate
-  }, [housesMini])
+  }, [rentalRate])
 
   const collectionRate = useMemo(() => {
-    if (!billsMini.length) return null
+    if (!filteredBills.length) return null
     const start = range.start.getTime()
-    const end = range.end.getTime()
-    const inRange = billsMini.filter((b) => {
+    const endDay = new Date(range.end)
+    endDay.setHours(23, 59, 59, 999)
+    const inRange = filteredBills.filter((b) => {
       if (!b.dueDate) return false
       const t = toDate(b.dueDate).getTime()
-      return t >= start && t <= end
+      return t >= start && t <= endDay.getTime()
     })
     const dueSum = inRange.reduce((s, b) => s + (b.totalAmount ?? 0), 0)
     if (dueSum <= 0) return null
     const paidSum = inRange.filter((b) => b.status === 'PAID').reduce((s, b) => s + (b.totalAmount ?? 0), 0)
     return clampRate(paidSum / dueSum)
-  }, [billsMini, range])
+  }, [filteredBills, range])
 
   const cumulativeCollectionRate = useMemo(() => {
-    if (!billsMini.length) return null
-    const end = range.end.getTime()
-    const upto = billsMini.filter((b) => {
+    if (!filteredBills.length) return null
+    const endDay = new Date(range.end)
+    endDay.setHours(23, 59, 59, 999)
+    const upto = filteredBills.filter((b) => {
       if (!b.dueDate) return false
       const t = toDate(b.dueDate).getTime()
-      return t <= end
+      return t <= endDay.getTime()
     })
     const dueSum = upto.reduce((s, b) => s + (b.totalAmount ?? 0), 0)
     if (dueSum <= 0) return null
     const paidSum = upto.filter((b) => b.status === 'PAID').reduce((s, b) => s + (b.totalAmount ?? 0), 0)
     return clampRate(paidSum / dueSum)
-  }, [billsMini, range])
+  }, [filteredBills, range])
 
   const rateTrendData = useMemo<RateTrendPoint[]>(() => {
-    // demo 趋势：围绕当前计算值做“可解释的”小幅波动，累计收缴率保持缓慢上升
     const baseRental = rentalRate ?? 0.86
     const baseCollection = collectionRate ?? 0.91
     const baseCum = cumulativeCollectionRate ?? 0.88
@@ -290,19 +428,18 @@ export function HomePage() {
       if (d.getTime() > end.getTime()) break
 
       const label = formatLabel(d, timePreset)
-      // 让曲线更有“可视化变化”，便于演示：周期波动（周内/半月）+ 轻微随机扰动（可复现）
       const progress = totalDays <= 1 ? 1 : i / (totalDays - 1)
       const waveWeekly = Math.sin(progress * Math.PI * 2) * 0.07
       const waveHalfMonth = Math.cos(progress * Math.PI) * 0.04
-      const noiseRental = (hash01(`${label}-${i}`) - 0.5) * 0.08 // ±4%
-      const noiseCollection = (hash01(`c-${label}-${i}`) - 0.5) * 0.1 // ±5%
-      const spike = (hash01(`sp-${label}-${i}`) > 0.92 ? -0.06 : 0) + (hash01(`sp2-${label}-${i}`) < 0.08 ? 0.04 : 0)
+      const noiseRental = (hash01(`${label}-${i}`) - 0.5) * 0.08
+      const noiseCollection = (hash01(`c-${label}-${i}`) - 0.5) * 0.1
+      const spike =
+        (hash01(`sp-${label}-${i}`) > 0.92 ? -0.06 : 0) + (hash01(`sp2-${label}-${i}`) < 0.08 ? 0.04 : 0)
 
       const rental = clampRate(baseRental + waveWeekly + waveHalfMonth + noiseRental, 0.58, 0.96)
       const vacancy = clampRate(1 - rental, 0.02, 0.45)
 
       const collection = clampRate(baseCollection + waveWeekly * 0.6 + noiseCollection + spike, 0.62, 0.97)
-      // 累计收缴率：缓慢爬升 + 轻微波动（不会剧烈跳）
       const cumStart = clampRate(Math.min(baseCum - 0.08, baseCum * 0.9), 0.5, 0.95)
       const cum = clampRate(
         cumStart + (baseCum - cumStart) * (0.25 + 0.75 * (i + 1) / totalDays) + waveHalfMonth * 0.15,
@@ -321,6 +458,22 @@ export function HomePage() {
     return out
   }, [rentalRate, collectionRate, cumulativeCollectionRate, range, timePreset])
 
+  const overdueRangeEnd = useMemo(() => {
+    const d = new Date(overdueRange.end)
+    d.setHours(23, 59, 59, 999)
+    return d.getTime()
+  }, [overdueRange])
+
+  const overdueStats = useMemo(() => {
+    const start = overdueRange.start.getTime()
+    const rows = filteredOverdue.filter((o) => {
+      const t = toDate(o.dueDate).getTime()
+      return t >= start && t <= overdueRangeEnd
+    })
+    const amount = rows.reduce((s, o) => s + (o.totalAmount ?? 0) + (o.penalty ?? 0), 0)
+    return { amount, count: rows.length }
+  }, [filteredOverdue, overdueRange, overdueRangeEnd])
+
   const applyPreset = (preset: TimePreset) => {
     setTimePreset(preset)
     const r = preset === 'custom' ? getRangeForPreset('thisMonth') : getRangeForPreset(preset)
@@ -328,162 +481,306 @@ export function HomePage() {
     setCustomEnd(toYmd(r.end))
   }
 
+  const applyOverduePreset = (preset: TimePreset) => {
+    setOverduePreset(preset)
+    const r = preset === 'custom' ? getRangeForPreset('thisMonth') : getRangeForPreset(preset)
+    setOverdueCustomStart(toYmd(r.start))
+    setOverdueCustomEnd(toYmd(r.end))
+  }
+
   const rangeLabel = useMemo(() => {
     if (timePreset === 'custom' && customStart && customEnd) return `${customStart} 至 ${customEnd}`
     return `${toYmd(range.start)} 至 ${toYmd(range.end)}`
   }, [timePreset, customStart, customEnd, range])
 
+  const overdueRangeLabel = useMemo(() => {
+    if (overduePreset === 'custom' && overdueCustomStart && overdueCustomEnd)
+      return `${overdueCustomStart} 至 ${overdueCustomEnd}`
+    return `${toYmd(overdueRange.start)} 至 ${toYmd(overdueRange.end)}`
+  }, [overduePreset, overdueCustomStart, overdueCustomEnd, overdueRange])
+
   const showRateTrend = rateTrendData.length > 0
-  const showStatTrend = Boolean(stat && trendData.length > 0)
+  const showStatTrend = trendData.length > 0
 
   return (
-    <div className="a-col" style={{ width: '100%', minWidth: 0 }}>
+    <div className="a-home-dashboard a-col">
       {error ? (
-        <div className="a-card" style={{ borderColor: '#f87171', background: 'rgba(248,113,113,0.08)' }}>
-          加载失败：{error}
+        <div className="a-home-alert" role="alert">
+          <span className="a-home-alert-title">加载失败</span>
+          <span className="a-home-alert-msg">{error}</span>
         </div>
       ) : null}
 
-      {/* 全局时间维度筛选：统一控制本页所有指标与图表 */}
-      <div className="a-card" style={{ overflow: 'hidden' }}>
-        <div className="a-row" style={{ flexWrap: 'wrap', alignItems: 'center', gap: 10 }}>
-          <span className="a-h2" style={{ margin: 0 }}>时间维度</span>
+      <header className="a-home-hero">
+        <div className="a-home-hero-top">
+          <div>
+            <p className="a-home-eyebrow">管理驾驶舱</p>
+            <h1 className="a-home-title">经营总览</h1>
+            <p className="a-home-subtitle">
+              先按项目与资产维度收窄范围，再查看资金、面积与运营指标；租金/面积为演示汇总，可对接财务中台。
+            </p>
+          </div>
+        </div>
+        <div className="a-home-filter-panel">
+          <div className="a-dashboard-filters a-home-filter-grid">
+            <label className="a-filter-field">
+              <span className="a-filter-label">项目名称</span>
+              <select
+                className="a-filter-input a-home-select"
+                value={filterProject}
+                onChange={(e) => setFilterProject(e.target.value)}
+              >
+                <option value="">全部项目</option>
+                {projectOptions
+                  .filter(Boolean)
+                  .map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <label className="a-filter-field">
+              <span className="a-filter-label">资产类型</span>
+              <select
+                className="a-filter-input a-home-select"
+                value={filterAsset}
+                onChange={(e) => setFilterAsset(e.target.value)}
+              >
+                <option value="">全部类型</option>
+                {assetOptions
+                  .filter(Boolean)
+                  .map((at) => (
+                    <option key={at} value={at}>
+                      {at}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <label className="a-filter-field">
+              <span className="a-filter-label">收租单位</span>
+              <select
+                className="a-filter-input a-home-select"
+                value={filterRentUnit}
+                onChange={(e) => setFilterRentUnit(e.target.value)}
+              >
+                <option value="">全部</option>
+                {rentUnitOptions
+                  .filter(Boolean)
+                  .map((u) => (
+                    <option key={u} value={u}>
+                      {u}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <label className="a-filter-field">
+              <span className="a-filter-label">管理人</span>
+              <select
+                className="a-filter-input a-home-select"
+                value={filterManager}
+                onChange={(e) => setFilterManager(e.target.value)}
+              >
+                <option value="">全部</option>
+                {managerOptions
+                  .filter(Boolean)
+                  .map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+              </select>
+            </label>
+          </div>
+        </div>
+      </header>
+
+      <section className="a-home-section a-home-section--time">
+        <div className="a-home-section-head">
+          <h2 className="a-home-section-title">统计周期</h2>
+          <p className="a-home-section-meta">{rangeLabel}</p>
+        </div>
+        <div className="a-time-segments">
           {PRESETS.map(({ key, label }) => (
             <button
               key={key}
               type="button"
-              className={timePreset === key ? 'a-btn' : 'a-btn ghost'}
-              style={{ padding: '6px 10px', fontSize: 13 }}
+              className={`a-time-seg${timePreset === key ? ' is-active' : ''}`}
               onClick={() => applyPreset(key)}
             >
               {label}
             </button>
           ))}
-          <span className="a-muted" style={{ fontSize: 12 }}>{rangeLabel}</span>
-
           {timePreset === 'custom' ? (
-            <div className="a-row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div className="a-time-custom">
               <input
                 type="date"
-                className="a-filter-input"
+                className="a-filter-input a-home-date"
                 value={customStart}
                 onChange={(e) => setCustomStart(e.target.value)}
-                style={{ width: 130 }}
               />
               <span className="a-muted">至</span>
               <input
                 type="date"
-                className="a-filter-input"
+                className="a-filter-input a-home-date"
                 value={customEnd}
                 onChange={(e) => setCustomEnd(e.target.value)}
-                style={{ width: 130 }}
               />
             </div>
           ) : null}
         </div>
-        <div className="a-muted" style={{ fontSize: 12, marginTop: 8 }}>
-          说明：本页所有比例指标与趋势图均按该时间范围统计（demo 口径）。
-        </div>
-      </div>
+        <p className="a-home-hint">
+          收缴率、累计收缴率及下方「比率趋势」按本周期与筛选维度统计；与逾期板块的时间口径相互独立。
+        </p>
+      </section>
 
-      {/* 核心指标卡片：统一高度 */}
-      <div className="a-row a-row-stat-cards" style={{ flexWrap: 'wrap', gap: 10 }}>
-        <div
-          className="a-card stat-card"
-          style={{ minHeight: 108, height: 108, display: 'flex', flexDirection: 'column', justifyContent: 'space-between', overflow: 'hidden' }}
-        >
-          <div className="a-muted">房源数</div>
-          <div style={{ fontSize: 24, fontWeight: 900 }}>{stat ? stat.houses : '-'}</div>
-          <div className="a-muted stat-card-desc">来自资产系统同步的在管房源</div>
+      <section className="a-home-section">
+        <div className="a-home-section-head">
+          <h2 className="a-home-section-title">资金与面积（演示）</h2>
+          <p className="a-home-section-meta">随筛选维度联动</p>
         </div>
-        <div
-          className="a-card stat-card"
-          style={{ minHeight: 108, height: 108, display: 'flex', flexDirection: 'column', justifyContent: 'space-between', overflow: 'hidden' }}
-        >
-          <div className="a-muted">订单数</div>
-          <div style={{ fontSize: 24, fontWeight: 900 }}>{stat ? stat.orders : '-'}</div>
-          <div className="a-muted stat-card-desc">租客在 H5 发起的租房订单</div>
+        <div className="a-home-kpi-grid">
+          <article className="a-home-kpi a-home-kpi--blue">
+            <p className="a-home-kpi-label">应收租金（演示）</p>
+            <p className="a-home-kpi-num">{formatCurrencyYuan(demoLedger.receivable)}</p>
+            <p className="a-home-kpi-foot">含本期应付、已出账未到期</p>
+          </article>
+          <article className="a-home-kpi a-home-kpi--green">
+            <p className="a-home-kpi-label">实收租金（演示）</p>
+            <p className="a-home-kpi-num">{formatCurrencyYuan(demoLedger.received)}</p>
+            <p className="a-home-kpi-foot">银行流水 + 线下核销</p>
+          </article>
+          <article className="a-home-kpi a-home-kpi--slate">
+            <p className="a-home-kpi-label">总面积（演示）</p>
+            <p className="a-home-kpi-num">{formatAreaSqm(demoLedger.totalArea)}</p>
+            <p className="a-home-kpi-foot">在管可租面积口径</p>
+          </article>
+          <article className="a-home-kpi a-home-kpi--amber">
+            <p className="a-home-kpi-label">出租面积（演示）</p>
+            <p className="a-home-kpi-num">{formatAreaSqm(demoLedger.leasedArea)}</p>
+            <p className="a-home-kpi-foot">已租出面积</p>
+          </article>
         </div>
-        <div
-          className="a-card stat-card"
-          style={{ minHeight: 108, height: 108, display: 'flex', flexDirection: 'column', justifyContent: 'space-between', overflow: 'hidden' }}
-        >
-          <div className="a-muted">合同数</div>
-          <div style={{ fontSize: 24, fontWeight: 900 }}>{stat ? stat.contracts : '-'}</div>
-          <div className="a-muted stat-card-desc">已生成的租赁合同（含待支付/生效/终止等）</div>
-        </div>
-        <div
-          className="a-card stat-card"
-          style={{ minHeight: 108, height: 108, display: 'flex', flexDirection: 'column', justifyContent: 'space-between', overflow: 'hidden' }}
-        >
-          <div className="a-muted">账单数</div>
-          <div style={{ fontSize: 24, fontWeight: 900 }}>{stat ? stat.bills : '-'}</div>
-          <div className="a-muted stat-card-desc">已生成租金账单</div>
-        </div>
-        <div
-          className="a-card stat-card"
-          style={{
-            minHeight: 108,
-            height: 108,
-            display: 'flex',
-            flexDirection: 'column',
-            justifyContent: 'space-between',
-            overflow: 'hidden',
-            borderColor: stat?.overdueBills ? '#f87171' : undefined,
-          }}
-        >
-          <div className="a-muted">逾期账单</div>
-          <div style={{ fontSize: 24, fontWeight: 900, color: stat?.overdueBills ? '#b91c1c' : undefined }}>
-            {stat ? stat.overdueBills : '-'}
-          </div>
-          <div className="a-muted stat-card-desc">已超到期日未完全支付的账单</div>
-        </div>
-      </div>
+      </section>
 
-      {/* 经营率指标：出租率/收缴率/空置率 */}
-      <div className="a-row a-row-stat-cards" style={{ flexWrap: 'wrap', gap: 10 }}>
-        <div className="a-card stat-card" style={{ minHeight: 108, height: 108, justifyContent: 'space-between' }}>
+      <section className="a-home-section">
+        <div className="a-home-section-head">
+          <h2 className="a-home-section-title">运营快照</h2>
+          <p className="a-home-section-meta">与当前筛选一致</p>
+        </div>
+        <div className="a-home-metric-strip">
+          <article className="a-home-metric a-home-metric--accent">
+            <p className="a-home-metric-label">累计出租率（演示）</p>
+            <p className="a-home-metric-value">{formatPct(demoLedger.cumulativeRentalRate)}</p>
+            <p className="a-home-metric-desc">与「出租面积 ÷ 总面积」演示口径一致</p>
+          </article>
+          <article className="a-home-metric">
+            <p className="a-home-metric-label">房源数</p>
+            <p className="a-home-metric-value">{stat.houses}</p>
+            <p className="a-home-metric-desc">在管房源套数</p>
+          </article>
+          <article className="a-home-metric">
+            <p className="a-home-metric-label">待办订单数</p>
+            <p className="a-home-metric-value">{stat.pendingOrders}</p>
+            <p className="a-home-metric-desc">待审核（PENDING_REVIEW）</p>
+          </article>
+          <article className="a-home-metric">
+            <p className="a-home-metric-label">合同数</p>
+            <p className="a-home-metric-value">{stat.contracts}</p>
+            <p className="a-home-metric-desc">合同条数</p>
+          </article>
+        </div>
+      </section>
+
+      <section className="a-home-overdue">
+        <div className="a-home-overdue-head">
           <div>
-            <div className="a-muted">出租率</div>
-            <div style={{ fontSize: 24, fontWeight: 900 }}>{rentalRate == null ? '-' : formatPct(rentalRate)}</div>
+            <h2 className="a-home-overdue-title">逾期风险</h2>
+            <p className="a-home-overdue-desc">
+              按账单「到期日」落在下列区间内汇总：本金 + 滞纳金；时间口径与顶部「统计周期」完全独立。
+            </p>
           </div>
-          <div className="a-muted stat-card-desc">已发布房源中：非「空置」占比</div>
+          <p className="a-home-overdue-range">{overdueRangeLabel}</p>
         </div>
-
-        <div className="a-card stat-card" style={{ minHeight: 108, height: 108, justifyContent: 'space-between' }}>
-          <div>
-            <div className="a-muted">空置率</div>
-            <div style={{ fontSize: 24, fontWeight: 900 }}>{vacancyRate == null ? '-' : formatPct(vacancyRate)}</div>
-          </div>
-          <div className="a-muted stat-card-desc">已发布房源中：VACANT 占比（demo 口径）</div>
-        </div>
-
-        <div className="a-card stat-card" style={{ minHeight: 108, height: 108, justifyContent: 'space-between' }}>
-          <div>
-            <div className="a-muted">收缴率</div>
-            <div style={{ fontSize: 24, fontWeight: 900 }}>{collectionRate == null ? '-' : formatPct(collectionRate)}</div>
-          </div>
-          <div className="a-muted stat-card-desc">当前时间范围内：PAID 金额 / 应收金额（demo 口径）</div>
-        </div>
-
-        <div className="a-card stat-card" style={{ minHeight: 108, height: 108, justifyContent: 'space-between' }}>
-          <div>
-            <div className="a-muted">累计收缴率</div>
-            <div style={{ fontSize: 24, fontWeight: 900 }}>
-              {cumulativeCollectionRate == null ? '-' : formatPct(cumulativeCollectionRate)}
+        <div className="a-time-segments a-time-segments--compact">
+          {PRESETS.map(({ key, label }) => (
+            <button
+              key={key}
+              type="button"
+              className={`a-time-seg${overduePreset === key ? ' is-active' : ''}`}
+              onClick={() => applyOverduePreset(key)}
+            >
+              {label}
+            </button>
+          ))}
+          {overduePreset === 'custom' ? (
+            <div className="a-time-custom">
+              <input
+                type="date"
+                className="a-filter-input a-home-date"
+                value={overdueCustomStart}
+                onChange={(e) => setOverdueCustomStart(e.target.value)}
+              />
+              <span className="a-muted">至</span>
+              <input
+                type="date"
+                className="a-filter-input a-home-date"
+                value={overdueCustomEnd}
+                onChange={(e) => setOverdueCustomEnd(e.target.value)}
+              />
             </div>
-          </div>
-          <div className="a-muted stat-card-desc">截至当前范围结束：PAID 金额 / 累计应收金额</div>
+          ) : null}
         </div>
-      </div>
+        <div className="a-home-overdue-sum">
+          <div>
+            <p className="a-home-overdue-sum-label">逾期金额合计</p>
+            <p className="a-home-overdue-sum-num">{formatCurrencyYuan(overdueStats.amount)}</p>
+          </div>
+          <p className="a-home-overdue-count">
+            命中账单 <strong>{overdueStats.count}</strong> 笔（当前筛选）
+          </p>
+        </div>
+      </section>
 
-      {/* 两块图表：左右排列（宽屏），窄屏自动上下 */}
+      <section className="a-home-section">
+        <div className="a-home-section-head">
+          <h2 className="a-home-section-title">出租与收缴</h2>
+          <p className="a-home-section-meta">基于真实在管数据 + 本周期账单</p>
+        </div>
+        <div className="a-home-metric-strip a-home-metric-strip--dense">
+          <article className="a-home-metric">
+            <p className="a-home-metric-label">出租率</p>
+            <p className="a-home-metric-value">{rentalRate == null ? '-' : formatPct(rentalRate)}</p>
+            <p className="a-home-metric-desc">已发布房源中非空置占比</p>
+          </article>
+          <article className="a-home-metric">
+            <p className="a-home-metric-label">空置率</p>
+            <p className="a-home-metric-value">{vacancyRate == null ? '-' : formatPct(vacancyRate)}</p>
+            <p className="a-home-metric-desc">与出租率互补</p>
+          </article>
+          <article className="a-home-metric">
+            <p className="a-home-metric-label">收缴率</p>
+            <p className="a-home-metric-value">{collectionRate == null ? '-' : formatPct(collectionRate)}</p>
+            <p className="a-home-metric-desc">本周期内 PAID / 到期应收</p>
+          </article>
+          <article className="a-home-metric">
+            <p className="a-home-metric-label">累计收缴率</p>
+            <p className="a-home-metric-value">{cumulativeCollectionRate == null ? '-' : formatPct(cumulativeCollectionRate)}</p>
+            <p className="a-home-metric-desc">截至周期结束日累计</p>
+          </article>
+        </div>
+      </section>
+
       {showRateTrend || showStatTrend ? (
-        <div className="a-dashboard-charts">
-          {/* 经营指标趋势（领导偏爱可视化折线/柱状） */}
+        <section className="a-home-section a-home-section--charts">
+          <div className="a-home-section-head">
+            <h2 className="a-home-section-title">趋势分析</h2>
+            <p className="a-home-section-meta">曲线为基于当前汇总量的演示序列</p>
+          </div>
+          <div className="a-home-charts">
           {showRateTrend ? (
-            <div className="a-card" style={{ overflow: 'hidden' }}>
-              <div className="a-h2" style={{ marginBottom: 8, fontSize: 14 }}>出租率 / 空置率</div>
+            <div className="a-home-chart-card">
+              <p className="a-home-chart-title">出租率 / 空置率</p>
               <div style={{ width: '100%', height: 240 }}>
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={rateTrendData} margin={{ top: 16, right: 16, left: 0, bottom: 0 }}>
@@ -507,7 +804,7 @@ export function HomePage() {
                 </ResponsiveContainer>
               </div>
 
-              <div className="a-h2" style={{ marginBottom: 8, marginTop: 14, fontSize: 14 }}>收缴率 / 累计收缴率</div>
+              <p className="a-home-chart-title a-home-chart-title--spaced">收缴率 / 累计收缴率</p>
               <div style={{ width: '100%', height: 260 }}>
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={rateTrendData} margin={{ top: 16, right: 16, left: 0, bottom: 0 }}>
@@ -533,10 +830,9 @@ export function HomePage() {
             </div>
           ) : null}
 
-          {/* 趋势图 */}
           {showStatTrend ? (
-            <div className="a-card" style={{ overflow: 'hidden' }}>
-              <div className="a-h2" style={{ marginBottom: 8, fontSize: 14 }}>房源数</div>
+            <div className="a-home-chart-card">
+              <p className="a-home-chart-title">房源数</p>
               <div style={{ width: '100%', height: 240 }}>
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={trendData} margin={{ top: 24, right: 16, left: 0, bottom: 0 }}>
@@ -555,7 +851,7 @@ export function HomePage() {
                 </ResponsiveContainer>
               </div>
 
-              <div className="a-h2" style={{ marginBottom: 8, marginTop: 16, fontSize: 14 }}>订单 / 合同 / 账单</div>
+              <p className="a-home-chart-title a-home-chart-title--spaced">待办订单 / 合同</p>
               <div style={{ width: '100%', height: 260 }}>
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={trendData} margin={{ top: 24, right: 16, left: 0, bottom: 0 }}>
@@ -567,25 +863,28 @@ export function HomePage() {
                       labelFormatter={(label) => `时间：${label}`}
                     />
                     <Legend />
-                    <Line type="monotone" dataKey="订单" stroke={CHART_COLORS.订单} strokeWidth={2} dot={{ r: 4 }} name="订单数">
-                      <LabelList dataKey="订单" position="top" style={{ fontSize: 10, fontWeight: 700 }} />
+                    <Line
+                      type="monotone"
+                      dataKey="待办订单"
+                      stroke={CHART_COLORS.待办订单}
+                      strokeWidth={2}
+                      dot={{ r: 4 }}
+                      name="待办订单数"
+                    >
+                      <LabelList dataKey="待办订单" position="top" style={{ fontSize: 10, fontWeight: 700 }} />
                     </Line>
                     <Line type="monotone" dataKey="合同" stroke={CHART_COLORS.合同} strokeWidth={2} dot={{ r: 4 }} name="合同数">
                       <LabelList dataKey="合同" position="top" style={{ fontSize: 10, fontWeight: 700 }} />
-                    </Line>
-                    <Line type="monotone" dataKey="账单" stroke={CHART_COLORS.账单} strokeWidth={2} dot={{ r: 4 }} name="账单数">
-                      <LabelList dataKey="账单" position="top" style={{ fontSize: 10, fontWeight: 700 }} />
                     </Line>
                   </LineChart>
                 </ResponsiveContainer>
               </div>
 
-              <div className="a-muted" style={{ fontSize: 12, marginTop: 12 }}>
-                基于当前数据模拟的趋势，供管理层参考；接入历史统计接口后可展示真实曲线。
-              </div>
+              <p className="a-home-chart-foot">接入按日汇总接口后可替换为真实序列。</p>
             </div>
           ) : null}
-        </div>
+          </div>
+        </section>
       ) : null}
     </div>
   )

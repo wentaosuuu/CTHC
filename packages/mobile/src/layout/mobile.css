@@ -1,10 +1,16 @@
 .m-shell {
   max-width: 520px;
   margin: 0 auto;
-  min-height: 100vh;
+  /* 占满 #root 视口高度；中间区由子页面各自滚动（如 .m-col / .m-house-list-scroll） */
+  height: 100%;
+  min-height: 100%;
   display: flex;
   flex-direction: column;
   position: relative;
+  overflow: hidden;
+  /* 与底部 Tab 实际占位对齐，供迷你购物车 / 购物车结算条使用 */
+  --m-tabbar-stack: calc(56px + env(safe-area-inset-bottom, 0px));
+  --m-cart-dock-h: 60px;
 }
 
 .m-topbar {
@@ -45,11 +51,66 @@
 }
 
 .m-content {
-  padding: 14px 14px 70px;
+  padding: 14px;
+  padding-bottom: calc(var(--m-tabbar-stack) + 14px);
   display: flex;
   flex-direction: column;
   gap: 12px;
   flex: 1;
+  min-height: 0;
+  /* 由子级（如 .m-col 或 .m-house-list-scroll）承担纵向滚动，避免与固定底栏叠在同一滚动层 */
+  overflow: hidden;
+}
+
+/* 路由根节点铺满中间区域；默认 .m-col 整列滚动 */
+.m-content > * {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+.m-content > .m-col {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* 整列滚动时子块保持自身高度，避免在 flex 列里被纵向压扁 */
+.m-content > .m-col > * {
+  flex-shrink: 0;
+}
+
+/* 浏览房源时：迷你购物车条 + Tab，底部留白 = Tab + 购物车条 + 额外安全间距 */
+.m-shell--cart-dock .m-content {
+  padding-bottom: calc(var(--m-tabbar-stack) + var(--m-cart-dock-h) + 16px);
+}
+
+/* 房源首页：顶部筛选固定，仅中间列表滚动 */
+.m-house-list-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.m-house-list-top {
+  flex-shrink: 0;
+}
+
+.m-house-list-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 列表项保持内容高度，在区域内纵向滚动（勿因 flex-shrink 被压扁） */
+.m-house-list-scroll > * {
+  flex-shrink: 0;
 }
 
 /* 底部 Tab 导航 */
@@ -62,11 +123,308 @@
   width: 100%;
   border-top: 1px solid #e2e8f0;
   padding: 8px 10px;
+  padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
   background: #fff;
   display: flex;
   gap: 8px;
   z-index: 500;
 }
+
+/* 固定在底部 Tab 栏上方的购物车入口 */
+.m-cart-dock {
+  position: fixed;
+  left: 50%;
+  bottom: var(--m-tabbar-stack);
+  transform: translateX(-50%);
+  max-width: 520px;
+  width: 100%;
+  z-index: 499;
+  min-height: var(--m-cart-dock-h);
+  box-sizing: border-box;
+  padding: 10px 14px;
+  background: linear-gradient(180deg, #f1f5f9 0%, #ffffff 55%);
+  border-top: 1px solid #e2e8f0;
+  box-shadow: 0 -6px 20px rgba(15, 23, 42, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.m-cart-dock-link {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  text-decoration: none;
+  color: inherit;
+}
+
+.m-cart-dock-left {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.m-cart-dock-title {
+  font-weight: 900;
+  font-size: 15px;
+  color: #0f172a;
+  letter-spacing: 0.02em;
+}
+
+.m-cart-dock-sub {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.m-cart-dock-right {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.m-cart-dock-badge {
+  flex-shrink: 0;
+  min-width: 22px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #2563eb;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.m-cart-dock-chev {
+  flex-shrink: 0;
+  font-size: 18px;
+  color: #94a3b8;
+  font-weight: 700;
+}
+
+/* 购物车页：底部固定结算条（贴在 Tab 上方） */
+.m-cart-checkout-bar {
+  position: fixed;
+  left: 50%;
+  bottom: var(--m-tabbar-stack);
+  transform: translateX(-50%);
+  max-width: 520px;
+  width: 100%;
+  z-index: 498;
+  box-sizing: border-box;
+  padding: 10px 14px;
+  background: #fff;
+  border-top: 1px solid #e2e8f0;
+  box-shadow: 0 -8px 24px rgba(15, 23, 42, 0.1);
+}
+
+.m-cart-checkout-bar-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.m-cart-checkout-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.m-cart-checkout-total {
+  font-size: 20px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  color: #2563eb;
+  line-height: 1.2;
+}
+
+.m-cart-checkout-sub {
+  font-size: 12px;
+  color: #64748b;
+  margin-top: 2px;
+}
+
+.m-cart-checkout-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.m-cart-checkout-actions .m-btn {
+  padding: 10px 16px;
+  white-space: nowrap;
+}
+
+.m-cart-checkout-actions .m-btn-ghost-sm {
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 700;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  color: #64748b;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.m-cart-page--has-footer {
+  padding-bottom: calc(var(--m-tabbar-stack) + 72px + 12px);
+}
+
+.m-cart-tip {
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.5;
+  margin: 0;
+}
+.m-cart-tip--warn {
+  margin-top: 8px;
+  color: #b45309;
+  font-weight: 600;
+}
+.m-cart-lane + .m-cart-lane {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px dashed #e2e8f0;
+}
+.m-cart-lane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.m-cart-lane-title {
+  font-weight: 800;
+  font-size: 14px;
+  color: #0f172a;
+}
+.m-cart-lane-count {
+  font-size: 12px;
+  color: #64748b;
+}
+.m-cart-lane-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #f1f5f9;
+}
+.m-cart-lane-total {
+  font-weight: 800;
+  font-size: 15px;
+  color: #1e40af;
+}
+.m-cart-lane-checkout {
+  flex-shrink: 0;
+  padding: 8px 14px;
+  font-size: 13px;
+}
+
+.m-cart-line {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 0;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.m-cart-line:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.m-cart-line-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.m-cart-line-title {
+  font-weight: 800;
+  font-size: 15px;
+  color: #0f172a;
+  line-height: 1.35;
+  min-width: 0;
+}
+
+.m-cart-line-price {
+  font-weight: 900;
+  font-size: 15px;
+  color: #2563eb;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.m-cart-line-sub {
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-cart-line-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.m-cart-line-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: #94a3b8;
+  width: 52px;
+  flex-shrink: 0;
+}
+
+.m-cart-line-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 6px 8px;
+  font-size: 14px;
+  font-weight: 600;
+  background: #fff;
+  color: #0f172a;
+}
+
+.m-cart-line-input--months {
+  max-width: 88px;
+  flex: 0 0 auto;
+}
+
+.m-cart-line-input--date {
+  flex: 1;
+  min-width: 0;
+}
+
+.m-cart-line-remove {
+  border: 0;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 4px 6px;
+  cursor: pointer;
+  margin-left: auto;
+}
+
+.m-cart-line-remove:active {
+  color: #ef4444;
+}
+
 .m-tabbar-btn {
   flex: 1;
   border: 0;
@@ -295,6 +653,81 @@
   border-color: #c7d2fe;
 }
 
+/* 我的订单：合同确认 / 首期款 倒计时条 */
+.m-order-deadline {
+  margin-top: 12px;
+  padding: 12px 12px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.m-order-deadline--muted {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+  color: #64748b;
+}
+.m-order-deadline--sign {
+  background: #fff7ed;
+  border-color: #fdba74;
+  color: #9a3412;
+}
+.m-order-deadline--stamp {
+  background: #f5f3ff;
+  border-color: #ddd6fe;
+  color: #5b21b6;
+}
+.m-order-deadline--pay {
+  background: #eff6ff;
+  border-color: #93c5fd;
+  color: #1e3a8a;
+}
+.m-order-deadline--expired {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #991b1b;
+}
+.m-order-deadline__label {
+  font-weight: 800;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  opacity: 0.95;
+}
+.m-order-deadline__time {
+  margin-top: 6px;
+  font-size: 22px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+.m-order-deadline__sub {
+  margin-top: 6px;
+  font-size: 12px;
+  opacity: 0.92;
+}
+.m-order-deadline__actions {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.m-order-deadline__btn {
+  padding: 8px 14px !important;
+  font-size: 13px !important;
+}
+.m-order-deadline__demo {
+  display: inline-block;
+  margin-bottom: 8px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: #64748b;
+  background: rgba(255, 255, 255, 0.75);
+  border: 1px solid rgba(100, 116, 139, 0.35);
+  border-radius: 6px;
+}
+
 /* 我的账单：合同信息提炼 + 账期突出展示 */
 .m-bill-contract {
   padding: 12px 12px;
@@ -307,6 +740,18 @@
   color: #0f172a;
   line-height: 1.25;
 }
+
+.m-bill-bundle-units {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: #475569;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
 .m-bill-contract-meta {
   margin-top: 4px;
   font-size: 12px;
@@ -398,19 +843,47 @@
 .m-house-card {
   display: flex;
   background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 14px;
+  border: 1px solid #e8edf4;
+  border-radius: 16px;
   overflow: hidden;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.05);
+  color: inherit;
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.m-house-card:active {
+  border-color: #cbd5e1;
+  box-shadow: 0 1px 6px rgba(15, 23, 42, 0.06);
+}
+.m-house-card-link {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  gap: 12px;
   text-decoration: none;
   color: inherit;
 }
+.m-house-card-aside {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 12px 10px 4px;
+}
+.m-house-card-aside .m-house-card-rent {
+  font-weight: 700;
+  color: #1e40af;
+  font-size: 16px;
+  white-space: nowrap;
+}
 .m-house-card-img-wrap {
   position: relative;
-  flex: 0 0 120px;
-  width: 120px;
-  height: 100px;
-  background: #f1f5f9;
+  flex: 0 0 108px;
+  width: 108px;
+  align-self: stretch;
+  min-height: 108px;
+  background: linear-gradient(145deg, #f1f5f9 0%, #e2e8f0 100%);
 }
 .m-house-card-lock {
   position: absolute;
@@ -428,40 +901,86 @@
 .m-house-card-img {
   width: 100%;
   height: 100%;
+  min-height: 108px;
   object-fit: cover;
-}
-.m-house-card-body {
-  flex: 1;
-  min-width: 0;
-  padding: 10px 12px;
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
 }
 .m-house-card-main {
   flex: 1;
   min-width: 0;
+  padding: 12px 10px 12px 2px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+}
+.m-house-card-head {
+  display: flex;
+  align-items: center;
+  margin-bottom: 2px;
+}
+.m-house-asset-pill {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.2;
+  padding: 4px 8px;
+  border-radius: 999px;
+  letter-spacing: 0.03em;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.m-house-card-meta-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.45;
+}
+.m-house-card-meta-dot {
+  color: #cbd5e1;
+  user-select: none;
+}
+.m-house-asset-pill--bowan {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-color: #bfdbfe;
+}
+.m-house-asset-pill--talent {
+  background: #ecfdf5;
+  color: #047857;
+  border-color: #a7f3d0;
+}
+.m-house-asset-pill--shop {
+  background: #fffbeb;
+  color: #b45309;
+  border-color: #fde68a;
+}
+.m-house-asset-pill--factory {
+  background: #f5f3ff;
+  color: #5b21b6;
+  border-color: #ddd6fe;
+}
+.m-house-asset-pill--residential {
+  background: #f0fdfa;
+  color: #0f766e;
+  border-color: #99f6e4;
+}
+.m-house-asset-pill--default {
+  background: #f1f5f9;
+  color: #475569;
+  border-color: #e2e8f0;
 }
 .m-house-card-title {
   font-weight: 800;
   font-size: 15px;
-  margin-bottom: 4px;
-  line-height: 1.3;
-}
-.m-house-card-meta {
-  font-size: 12px;
-  color: #64748b;
-  margin-bottom: 2px;
-  line-height: 1.4;
-}
-.m-house-card-meta:last-child {
-  margin-bottom: 0;
-}
-.m-house-card-price-block {
-  flex-shrink: 0;
-  text-align: right;
+  line-height: 1.35;
+  letter-spacing: -0.02em;
+  color: #0f172a;
 }
 .m-house-card-price-block .m-house-card-rent {
   font-weight: 700;
@@ -472,6 +991,132 @@
 .m-house-card-price-block .m-house-card-deposit {
   font-size: 12px;
   color: #64748b;
+}
+.m-house-card-add-cart {
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  border: 1px solid #bfdbfe;
+  background: #f8fafc;
+  color: #1d4ed8;
+  box-shadow: 0 1px 3px rgba(30, 64, 175, 0.1);
+  -webkit-tap-highlight-color: transparent;
+  cursor: pointer;
+}
+.m-house-card-add-cart:active {
+  transform: scale(0.94);
+}
+.m-house-card-add-cart.is-in-cart {
+  background: linear-gradient(145deg, #2563eb 0%, #1d4ed8 100%);
+  border-color: #1d4ed8;
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.35);
+}
+
+/* 详情：房屋配置 */
+.m-detail-intro .m-h1 {
+  letter-spacing: -0.02em;
+}
+.m-house-config-card {
+  padding: 10px 12px;
+}
+.m-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.m-section-head--compact {
+  margin-bottom: 8px;
+  align-items: center;
+}
+.m-section-title {
+  font-weight: 900;
+  font-size: 16px;
+  color: #0f172a;
+}
+.m-section-title--sm {
+  font-size: 14px;
+  font-weight: 800;
+}
+.m-section-sub {
+  margin-top: 2px;
+  font-size: 11px;
+  color: #94a3b8;
+}
+.m-section-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #fffbeb;
+  color: #b45309;
+  border: 1px solid #fde68a;
+}
+.m-section-badge--sm {
+  font-size: 9px;
+  padding: 2px 6px;
+}
+.m-config-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.m-config-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #334155;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+}
+.m-config-chip-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+.m-bill-pay-blocked {
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.45;
+  color: #dc2626;
+}
+.m-bill-pay-blocked--card {
+  margin-top: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+}
+.m-detail-cart-goto {
+  display: block;
+  margin-top: 8px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: #1d4ed8;
+  text-decoration: none;
+}
+.m-detail-cart-row:has(.m-detail-cart-strip--in) {
+  flex-direction: column;
+  align-items: stretch;
+}
+button.m-detail-cart-strip {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  border: none;
+  font: inherit;
 }
 
 /* 详情页信息网格 */
@@ -492,6 +1137,126 @@
 .m-detail-value {
   font-size: 15px;
   font-weight: 600;
+}
+
+/* 详情页底部：主按钮行 + 购物车收纳条（与「直接下单」区分层级） */
+.m-detail-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.m-detail-actions-row {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.m-detail-actions-half {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  text-decoration: none;
+  box-sizing: border-box;
+}
+
+.m-detail-actions-half--disabled {
+  opacity: 0.5;
+  pointer-events: none;
+  cursor: default;
+}
+
+.m-detail-cart-row {
+  border-radius: 12px;
+  border: 1px solid #c7d2fe;
+  background: linear-gradient(165deg, #eef2ff 0%, #e0e7ff 55%, #dbe4ff 100%);
+  overflow: hidden;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.7) inset;
+}
+
+.m-detail-cart-row:has(.m-detail-cart-strip--in) {
+  border-color: #6ee7b7;
+  background: linear-gradient(165deg, #ecfdf5 0%, #d1fae5 50%, #ccfbf1 100%);
+}
+
+.m-detail-cart-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  box-sizing: border-box;
+}
+
+.m-detail-cart-strip:active {
+  background: rgba(67, 56, 202, 0.1);
+}
+
+.m-detail-cart-row:has(.m-detail-cart-strip--in) .m-detail-cart-strip:active {
+  background: rgba(5, 150, 105, 0.12);
+}
+
+a.m-detail-cart-strip {
+  text-decoration: none;
+  color: inherit;
+}
+
+.m-detail-cart-strip--in {
+  border-left: 3px solid #059669;
+}
+
+.m-detail-cart-strip-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.m-detail-cart-strip-main {
+  font-weight: 800;
+  font-size: 14px;
+  color: #312e81;
+  letter-spacing: 0.02em;
+}
+
+.m-detail-cart-strip--in .m-detail-cart-strip-main {
+  color: #065f46;
+}
+
+.m-detail-cart-strip-sub {
+  font-size: 12px;
+  color: #4338ca;
+  line-height: 1.45;
+}
+
+.m-detail-cart-strip--in .m-detail-cart-strip-sub {
+  color: #0f766e;
+}
+
+.m-detail-cart-strip:not(.m-detail-cart-strip--in) .m-detail-cart-strip-chev {
+  color: #6366f1;
+}
+
+.m-detail-cart-strip--in .m-detail-cart-strip-chev {
+  color: #14b8a6;
+}
+
+.m-detail-cart-strip-chev {
+  flex-shrink: 0;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1;
 }
 
 /* 详情页大图（多图左右滑动） */
@@ -614,6 +1379,200 @@
   border-radius: 12px;
   cursor: pointer;
   font-size: 15px;
+}
+
+/* 结算页：房源表 + 合同形式 */
+.m-checkout-summary {
+  padding: 0;
+  overflow: hidden;
+}
+
+.m-checkout-summary-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 12px 14px 8px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.m-checkout-summary-title {
+  font-weight: 900;
+  font-size: 16px;
+  color: #0f172a;
+}
+
+.m-checkout-summary-count {
+  font-size: 12px;
+  font-weight: 800;
+  color: #64748b;
+}
+
+.m-checkout-line-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.m-checkout-line {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.m-checkout-line:last-child {
+  border-bottom: 0;
+}
+
+.m-checkout-line-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.m-checkout-line-title {
+  font-weight: 800;
+  font-size: 14px;
+  color: #0f172a;
+  line-height: 1.3;
+}
+
+.m-checkout-line-sub {
+  margin-top: 3px;
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.35;
+}
+
+.m-checkout-line-tag {
+  margin-top: 6px;
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 800;
+  color: #1e40af;
+  background: #eef2ff;
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+
+.m-checkout-line-rent {
+  flex-shrink: 0;
+  text-align: right;
+}
+
+.m-checkout-line-rent-num {
+  font-size: 16px;
+  font-weight: 900;
+  color: #2563eb;
+  font-variant-numeric: tabular-nums;
+}
+
+.m-checkout-line-rent-suf {
+  font-size: 11px;
+  color: #94a3b8;
+  margin-left: 2px;
+}
+
+.m-checkout-summary-foot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 14px 12px;
+  font-size: 12px;
+  color: #64748b;
+  background: #f8fafc;
+}
+
+.m-checkout-summary-total {
+  font-size: 16px;
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+}
+
+.m-checkout-edit-link {
+  margin-left: auto;
+  font-size: 13px;
+  font-weight: 800;
+  color: #2563eb;
+}
+
+.m-checkout-mode {
+  padding: 12px 14px;
+}
+
+.m-checkout-sec-title {
+  font-weight: 900;
+  font-size: 15px;
+  margin-bottom: 8px;
+  color: #0f172a;
+}
+
+.m-checkout-radio {
+  margin-top: 6px;
+  align-items: flex-start;
+}
+
+.m-checkout-radio span {
+  line-height: 1.45;
+}
+
+.m-checkout-mode-hint {
+  margin-top: 10px;
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.5;
+}
+
+.m-checkout-merge-strip {
+  margin: 0 0 2px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid #bfdbfe;
+  background: linear-gradient(165deg, #eff6ff 0%, #dbeafe 100%);
+  font-size: 12px;
+  font-weight: 700;
+  color: #1e3a8a;
+  line-height: 1.45;
+}
+
+.m-checkout-note {
+  padding: 12px 14px;
+}
+
+.m-checkout-note-title {
+  font-weight: 900;
+  font-size: 15px;
+  margin-bottom: 6px;
+  color: #0f172a;
+}
+
+.m-checkout-note-body {
+  margin: 0;
+  font-size: 13px;
+  color: #64748b;
+  line-height: 1.5;
+}
+
+.m-checkout-lease-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 12px;
+  padding: 12px 14px;
+}
+
+@media (max-width: 360px) {
+  .m-checkout-lease-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.m-checkout-lease-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  color: #64748b;
+  margin-bottom: 4px;
 }
 
 /* 下单页：意向信息标题区 */
@@ -755,7 +1714,9 @@
   width: 100%;
   height: 360px;
   border: 0;
-}/* 我的订单详情：合同文件预览与下载 */
+}
+
+/* 我的订单详情：合同文件预览与下载 */
 .m-contract-file {
   margin-top: 10px;
   display: flex;
@@ -929,4 +1890,83 @@
   font-size: 13px;
   color: #475569;
   line-height: 1.5;
+}
+
+/* 我的账单：多选合并支付 */
+.m-bill-card-inner {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.m-bill-select-hit {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding: 2px 4px 2px 0;
+  cursor: pointer;
+}
+
+.m-bill-select-hit input[type='checkbox'] {
+  width: 18px;
+  height: 18px;
+  accent-color: #1e40af;
+  cursor: pointer;
+}
+
+.m-bill-card-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.m-bill-card-link {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: stretch;
+}
+
+.m-bill-card-link .m-bill-row {
+  flex: 1;
+}
+
+.m-col.m-col--batch-dock {
+  padding-bottom: calc(var(--m-tabbar-stack) + 76px);
+}
+
+.m-batch-pay-dock {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(var(--m-tabbar-stack) + 8px);
+  width: min(520px, calc(100vw - 28px));
+  z-index: 30;
+  pointer-events: none;
+}
+
+.m-batch-pay-dock-inner {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid #bfdbfe;
+  background: rgba(248, 250, 252, 0.96);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  backdrop-filter: blur(8px);
+}
+
+.m-batch-pay-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.m-batch-pay-btn {
+  flex-shrink: 0;
+  padding: 10px 16px;
+  font-size: 14px;
 }

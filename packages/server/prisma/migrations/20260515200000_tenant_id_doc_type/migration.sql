@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "Tenant" ADD COLUMN "idDocType" TEXT NOT NULL DEFAULT 'IDCARD';

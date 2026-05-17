@@ -1,8 +1,32 @@
 import { useEffect, useMemo, useState } from 'react'
-import { apiDeleteContractAttachment, apiGet, apiPatch, apiPost, apiUploadContractAttachment } from '../api'
+import { apiDeleteContractAttachment, apiDeleteMoveOutFile, apiGet, apiPatch, apiPost, apiUploadContractAttachment, apiUploadMoveOutFile } from '../api'
 import { ContractRemarkEditor } from '../components/ContractRemarkEditor'
+import { contractAttachmentsLockedUntilPaid } from '../contractAttachmentPolicy'
 import { downloadFileWithAuth, previewFileWithAuth } from '../fileAuth'
 import { Pagination, paginate } from '../components/Pagination'
+
+/** 与合同 rentCycle 字段及后端校验一致 */
+type RentCycle = 'MONTHLY' | 'BIMONTHLY' | 'QUARTERLY' | 'YEARLY'
+
+function normalizeRentCycle(v: string | undefined | null): RentCycle {
+  if (v === 'BIMONTHLY' || v === 'QUARTERLY' || v === 'YEARLY') return v
+  return 'MONTHLY'
+}
+
+/** 一单多房源合并签约：列表/详情与订单 OrderLine 对齐 */
+type MergedBundleListInfo = {
+  lineCount: number
+  lineHistoryCount?: number
+  rentMonthlySum: number
+  lines: {
+    houseId: string
+    houseBizId: string
+    apartmentName: string
+    houseNo: string
+    rentMonthlySnapshot: number
+    releasedAt?: string | null
+  }[]
+}
 
 type ContractItem = {
   id: string
@@ -18,6 +42,8 @@ type ContractItem = {
     apartmentName: string
     houseNo: string
   }
+  /** 非合并合同为 null；合并时为各子资产快照（合同主房源为 lines[0] 之一） */
+  mergedBundle: MergedBundleListInfo | null
   housingReportStatus: string | null
   modificationRequestedAt: string | null
   modificationRejectedAt: string | null
@@ -28,6 +54,14 @@ type ContractItem = {
   changeHouseFromContractNo: string | null
   depositRefunded?: boolean
   refundedDepositAmount?: number
+  /** 待租客确认退租时的签字截止（ISO） */
+  moveOutSignDeadlineAt?: string | null
+  billingPaused?: boolean
+  billingPausedAt?: string | null
+  billingResumeFrom?: string | null
+  houseStatus?: string
+  leaseDaysLeft?: number
+  leaseExpired?: boolean
 }
 
 // 合同状态 -> 中文
@@ -36,6 +70,7 @@ const CONTRACT_STATUS_ZH: Record<string, string> = {
   WAIT_STAMP: '待盖章',
   PENDING_PAYMENT: '待支付',
   ACTIVE: '已生效',
+  WAIT_TENANT_MOVEOUT_SIGN: '待租客确认退租',
   VOID: '已作废',
   TERMINATED: '已终止',
 }
@@ -59,6 +94,8 @@ function statusBadgeClass(status: string) {
       return 'a-badge status-unpaid'
     case 'ACTIVE':
       return 'a-badge status-active'
+    case 'WAIT_TENANT_MOVEOUT_SIGN':
+      return 'a-badge status-wait-sign'
     case 'VOID':
       return 'a-badge status-void'
     case 'TERMINATED':
@@ -91,6 +128,25 @@ function formatContractNo(contractNo: string) {
   return digits ? `HT${digits}` : contractNo
 }
 
+/** 与 H5 合同签字倒计时风格一致（≥1 天用「X天Y小时」，否则 HH:MM:SS） */
+function formatCountdownHms(ms: number) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000))
+  const h = Math.floor(totalSeconds / 3600)
+  const m = Math.floor((totalSeconds % 3600) / 60)
+  const s = totalSeconds % 60
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(h)}:${pad(m)}:${pad(s)}`
+}
+
+function formatSignLikeCountdown(remainingMs: number | null) {
+  if (remainingMs == null) return null
+  const totalSeconds = Math.max(0, Math.floor(remainingMs / 1000))
+  const d = Math.floor(totalSeconds / 86400)
+  const h = Math.floor((totalSeconds % 86400) / 3600)
+  if (d >= 1) return `${d}天${h}小时`
+  return formatCountdownHms(remainingMs)
+}
+
 /** 与后端 `packages/server/src/time.ts` 的 `toYmd`（UTC 年月日）一致，避免东八区等时区把「未到期」算成「已过期」 */
 function calcDaysTo(ymd: string) {
   const parts = ymd.trim().split('-').map((x) => Number(x))
@@ -103,8 +159,9 @@ function calcDaysTo(ymd: string) {
   return Math.round((endUtc - todayUtc) / ms)
 }
 
+const EXPIRY_WARN_DAYS = 90
+
 function expiryWarnText(daysLeft: number) {
-  if (daysLeft < -30) return '已过期超过30天'
   if (daysLeft < 0) return `已过期${Math.abs(daysLeft)}天`
   if (daysLeft === 0) return '当天到期'
   return `还有${daysLeft}天到期`
@@ -124,6 +181,17 @@ const MOVE_OUT_REASON_OPTIONS = [
   { value: '其他', label: '其他' },
 ] as const
 
+/** 与后端 `DEPOSIT_REFUND_TEMPLATE_LABEL` 编码一致（占位模板名，后续可换真实文书） */
+const DEPOSIT_REFUND_TEMPLATES = [
+  { code: 'BOWAN_APT_STANDARD', label: '泊湾公寓 · 标准退押结算单' },
+  { code: 'SHOP_STANDARD', label: '商铺 · 退租退押结算模板' },
+  { code: 'FACTORY_STANDARD', label: '厂房 · 退租退押结算模板' },
+  { code: 'RESIDENTIAL_STANDARD', label: '住宅 · 退租退押结算模板' },
+  { code: 'CO_LIVING', label: '合租/分散式 · 退押结算模板' },
+  { code: 'SERVICED_APT', label: '服务式公寓 · 退押结算模板' },
+  { code: 'GENERIC_MINIMAL', label: '通用 · 简化退款确认书' },
+] as const
+
 function apiErrorZh(code: string) {
   const m: Record<string, string> = {
     BILLS_NOT_SETTLED: '请先结清该合同下所有未付/逾期账单（续签、换房均需费用结清）',
@@ -132,273 +200,35 @@ function apiErrorZh(code: string) {
     CROSS_STORE_NOT_ALLOWED: '换房仅支持同门店下的空置房源',
     SAME_HOUSE: '不能换到当前同一套房',
     CONTRACT_ENDED: '合同已结束，无法换房',
+    CONTRACT_EFFECTIVE_ORDER_LOCKED: '合同已生效/已终止/已作废，订单不可再修改',
+    INVALID_RELEASE_HOUSE: '部分退租所选的房源不属于本合同或未在租',
+    INVALID_SOURCE_HOUSE: '换房所选的子房源无效或已迁出',
+    SOURCE_HOUSE_NEED_MERGED: '仅合并多套的合同可指定迁出子房源',
     TARGET_FORBIDDEN: '无权限操作目标房源',
     TARGET_NOT_FOUND: '目标房源不存在',
     NEW_START_BEFORE_MOVE: '新合同起租日不能早于换房日',
     CHANGE_HOUSE_NEED_ACTIVE: '仅「已生效」的在租合同可办理换房',
     DEPOSIT_REFUND_NEED_TERMINATED: '仅已退租（已终止）合同可以退押金',
     DEPOSIT_REFUND_EXCEED_DEPOSIT: '退押金金额不能超过合同押金',
+    RENEW_WINDOW_NOT_OPEN: '续签须在合同到期前 2 个月内发起，当前未到窗口',
+    HOUSING_RECEIPT_NOT_READY: '报备未完成或尚无回执文件，无法下载',
+    HOUSING_RECEIPT_FILE_MISSING: '回执文件在服务器上不存在，请重新发起报备',
+    CONTRACT_SUMMARY_BUILD_FAILED: '生成合同摘要失败，请稍后重试',
+    CHANGE_HOUSE_NEED_BILLS_SETTLED:
+      '换房生成的新合同：请先在「账单」中结清换房补差及剩余租金账单，再支付押金完成生效',
+    USE_TERMINATE_REQUEST: '已生效合同请使用「发起退租确认」：上传附件后由租客在 7 日内电子签字确认',
+    MOVEOUT_FILE_MISSING: '退租附件未找到，请重新上传后再提交',
+    MOVEOUT_REQUEST_ALREADY_PENDING: '该合同已有待租客确认的退租申请，请先撤销或等待租客处理',
+    NO_MOVEOUT_PENDING: '当前没有待确认的退租申请',
+    TENANT_MOVEOUT_DEADLINE_EXCEEDED: '退租确认已超时，请重新发起或联系管理员',
+    CONTRACT_MOVEOUT_PENDING: '当前合同正在等待租客确认退租，暂不可进行此操作',
+    NEED_ACTIVE_CONTRACT: '仅「已生效」合同可暂停/恢复计费',
+    ALREADY_PAUSED: '该合同已处于暂停计费状态',
+    NOT_PAUSED: '该合同未暂停计费',
   }
   return m[code] ?? code
 }
 
-type DemoMode = {
-  enabled: boolean
-  reason: string
-}
-
-function buildDemoContracts(totalCount: number): ContractItem[] {
-  const apartments = [
-    { storeName: '华东一区', apartmentName: '星河公寓' },
-    { storeName: '华东一区', apartmentName: '云栖公寓' },
-    { storeName: '华南一区', apartmentName: '海岸公寓' },
-    { storeName: '华南一区', apartmentName: '榕城公寓' },
-    { storeName: '华北一区', apartmentName: '京华公寓' },
-    { storeName: '华北一区', apartmentName: '雪松公寓' },
-  ]
-  const tenants = [
-    { name: '张三', phone: '13800000001' },
-    { name: '李四', phone: '13800000002' },
-    { name: '王五', phone: '13800000003' },
-    { name: '赵六', phone: '13800000004' },
-    { name: '钱七', phone: '13800000005' },
-    { name: '孙八', phone: '13800000006' },
-    { name: '周九', phone: '13800000007' },
-    { name: '吴十', phone: '13800000008' },
-    { name: '郑一', phone: '13800000009' },
-    { name: '冯二', phone: '13800000010' },
-  ]
-
-  const contractStatuses: ContractItem['status'][] = [
-    'WAIT_TENANT_SIGN',
-    'WAIT_STAMP',
-    'PENDING_PAYMENT',
-    'ACTIVE',
-    'VOID',
-    'TERMINATED',
-  ]
-  const reportStatuses: Array<ContractItem['housingReportStatus']> = [null, 'PENDING', 'SUCCESS', 'FAILED']
-
-  function pick<T>(arr: T[], idx: number) {
-    return arr[idx % arr.length]
-  }
-
-  function buildContractNo(i: number) {
-    const base = 202603180000 + i
-    return String(base)
-  }
-
-  function buildHouseBizId(i: number) {
-    return String(100000 + i)
-  }
-
-  function buildHouseNo(i: number) {
-    const building = (Math.floor(i / 10) % 9) + 1
-    const room = (i % 10) + 1
-    return `${building}${String(room).padStart(2, '0')}`
-  }
-
-  function buildAttachmentFiles(i: number) {
-    if (i % 7 !== 0) return { attachmentCount: 0, attachmentFiles: [] as { name: string; file: string }[] }
-    const attachmentCount = (i % 2) + 1
-    const attachmentFiles = Array.from({ length: attachmentCount }).map((_, idx) => {
-      return {
-        name: idx === 0 ? '合同PDF.pdf' : '身份证照片.png',
-        file: `demo_${i}_${idx}.bin`,
-      }
-    })
-    return { attachmentCount, attachmentFiles }
-  }
-
-  function buildRemarkPreview(i: number, status: string) {
-    if (i % 9 === 0) return '租客申请修改条款'
-    if (status === 'VOID') return '未支付，已作废'
-    if (status === 'TERMINATED') return '已退租结案'
-    if (status === 'ACTIVE' && i % 5 === 0) return '在租中，按季付'
-    return '—'
-  }
-
-  const items: ContractItem[] = []
-  // 演示用 endDate：按合同序号 i 分配「距到期天数」，保证预警列各不相同
-  // - i=1..31：还有 30、29、…、1 天到期 + 当天到期（从 30 天起完整倒计时）
-  // - i=32..61：已过期 1…30 天
-  // - i>61：少量「已过期超过30天」/ 更远到期（列表不展示预警）
-  function buildEndDateByIndex(i: number) {
-    const now = new Date()
-    const y = now.getUTCFullYear()
-    const m = now.getUTCMonth()
-    const d = now.getUTCDate()
-    const n = Math.max(1, i)
-    let offsetDays: number
-    if (n <= 31) {
-      offsetDays = 31 - n
-    } else if (n <= 61) {
-      offsetDays = -(n - 31)
-    } else {
-      const tail = [-38, -42, -55, 45, 52, 60, 70, -33, 48]
-      offsetDays = tail[(n - 62) % tail.length]!
-    }
-    const t = new Date(Date.UTC(y, m, d + offsetDays))
-    const yy = t.getUTCFullYear()
-    const mm = String(t.getUTCMonth() + 1).padStart(2, '0')
-    const dd = String(t.getUTCDate()).padStart(2, '0')
-    return `${yy}-${mm}-${dd}`
-  }
-
-  // 1) 先构造一批“换房”链路：旧合同（已生效/已终止） + 新合同（待签字/待盖章/待支付）
-  const changeHousePairs = 10
-  for (let p = 0; p < changeHousePairs; p++) {
-    const oldIndex = items.length + 1
-    const newIndex = oldIndex + 1
-    const tenant = pick(tenants, p)
-    const oldApartment = pick(apartments, p)
-    const newApartment = pick(apartments, p + 2)
-
-    const oldContractNo = buildContractNo(oldIndex)
-    const newContractNo = buildContractNo(newIndex)
-
-    const oldContract: ContractItem = {
-      id: `demo_old_change_${p}`,
-      contractNo: oldContractNo,
-      status: p % 2 === 0 ? 'ACTIVE' : 'TERMINATED',
-      tenant,
-      house: {
-        id: `demo_house_old_${p}`,
-        houseBizId: buildHouseBizId(oldIndex),
-        storeName: oldApartment.storeName,
-        apartmentName: oldApartment.apartmentName,
-        houseNo: buildHouseNo(oldIndex),
-      },
-      housingReportStatus: p % 3 === 0 ? 'SUCCESS' : null,
-      modificationRequestedAt: p % 4 === 0 ? new Date().toISOString() : null,
-      modificationRejectedAt: p % 6 === 0 ? new Date().toISOString() : null,
-      remarkPreview: buildRemarkPreview(oldIndex, p % 2 === 0 ? 'ACTIVE' : 'TERMINATED'),
-      ...buildAttachmentFiles(oldIndex),
-      renewedFromContractNo: null,
-      changeHouseFromContractNo: null,
-      endDate: buildEndDateByIndex(oldIndex),
-    }
-
-    const newContractStatus: ContractItem['status'] =
-      p % 3 === 0 ? 'WAIT_TENANT_SIGN' : p % 3 === 1 ? 'WAIT_STAMP' : 'PENDING_PAYMENT'
-    const newContract: ContractItem = {
-      id: `demo_new_change_${p}`,
-      contractNo: newContractNo,
-      status: newContractStatus,
-      tenant,
-      house: {
-        id: `demo_house_new_${p}`,
-        houseBizId: buildHouseBizId(newIndex),
-        storeName: newApartment.storeName,
-        apartmentName: newApartment.apartmentName,
-        houseNo: buildHouseNo(newIndex + 20),
-      },
-      housingReportStatus: null,
-      modificationRequestedAt: p % 5 === 0 ? new Date().toISOString() : null,
-      modificationRejectedAt: null,
-      remarkPreview: buildRemarkPreview(newIndex, newContractStatus),
-      ...buildAttachmentFiles(newIndex),
-      renewedFromContractNo: null,
-      changeHouseFromContractNo: oldContractNo,
-      endDate: buildEndDateByIndex(newIndex),
-    }
-
-    items.push(newContract, oldContract)
-  }
-
-  // 2) 再构造一批“续签”链路：旧合同（已生效/已终止） + 新合同（待签字）
-  const renewPairs = 8
-  for (let p = 0; p < renewPairs; p++) {
-    const oldIndex = items.length + 1
-    const newIndex = oldIndex + 1
-    const tenant = pick(tenants, p + 3)
-    const apt = pick(apartments, p + 1)
-
-    const oldContractNo = buildContractNo(oldIndex)
-    const newContractNo = buildContractNo(newIndex)
-
-    const oldContract: ContractItem = {
-      id: `demo_old_renew_${p}`,
-      contractNo: oldContractNo,
-      status: p % 2 === 0 ? 'ACTIVE' : 'TERMINATED',
-      tenant,
-      house: {
-        id: `demo_house_renew_old_${p}`,
-        houseBizId: buildHouseBizId(oldIndex),
-        storeName: apt.storeName,
-        apartmentName: apt.apartmentName,
-        houseNo: buildHouseNo(oldIndex + 30),
-      },
-      housingReportStatus: pick(reportStatuses, p + 1),
-      modificationRequestedAt: null,
-      modificationRejectedAt: null,
-      remarkPreview: buildRemarkPreview(oldIndex, p % 2 === 0 ? 'ACTIVE' : 'TERMINATED'),
-      ...buildAttachmentFiles(oldIndex),
-      renewedFromContractNo: null,
-      changeHouseFromContractNo: null,
-      endDate: buildEndDateByIndex(oldIndex),
-    }
-
-    const newContract: ContractItem = {
-      id: `demo_new_renew_${p}`,
-      contractNo: newContractNo,
-      status: 'WAIT_TENANT_SIGN',
-      tenant,
-      house: {
-        id: `demo_house_renew_new_${p}`,
-        houseBizId: buildHouseBizId(newIndex),
-        storeName: apt.storeName,
-        apartmentName: apt.apartmentName,
-        houseNo: buildHouseNo(newIndex + 31),
-      },
-      housingReportStatus: null,
-      modificationRequestedAt: null,
-      modificationRejectedAt: null,
-      remarkPreview: buildRemarkPreview(newIndex, 'WAIT_TENANT_SIGN'),
-      ...buildAttachmentFiles(newIndex),
-      renewedFromContractNo: oldContractNo,
-      changeHouseFromContractNo: null,
-      endDate: buildEndDateByIndex(newIndex),
-    }
-
-    items.push(newContract, oldContract)
-  }
-
-  // 3) 其余补齐各种状态的“独立合同”
-  while (items.length < totalCount) {
-    const i = items.length + 1
-    const tenant = pick(tenants, i)
-    const apartment = pick(apartments, i)
-    const status = pick(contractStatuses, i)
-    const reportStatus = status === 'ACTIVE' ? pick(reportStatuses, i + 2) : null
-    const { attachmentCount, attachmentFiles } = buildAttachmentFiles(i)
-
-    items.push({
-      id: `demo_${i}`,
-      contractNo: buildContractNo(i),
-      status,
-      endDate: buildEndDateByIndex(i),
-      tenant,
-      house: {
-        id: `demo_house_${i}`,
-        houseBizId: buildHouseBizId(i),
-        storeName: apartment.storeName,
-        apartmentName: apartment.apartmentName,
-        houseNo: buildHouseNo(i),
-      },
-      housingReportStatus: reportStatus,
-      modificationRequestedAt: i % 11 === 0 ? new Date().toISOString() : null,
-      modificationRejectedAt: i % 13 === 0 ? new Date().toISOString() : null,
-      remarkPreview: buildRemarkPreview(i, status),
-      attachmentCount,
-      attachmentFiles,
-      renewedFromContractNo: null,
-      changeHouseFromContractNo: null,
-    })
-  }
-
-  return items.slice(0, totalCount)
-}
 
 type ContractDetail = {
   id: string
@@ -407,8 +237,11 @@ type ContractDetail = {
   source?: string
   tenant: { name: string; phone: string; idNumber?: string; wechat?: string | null }
   house: { storeName: string; apartmentName: string; houseNo: string }
+  mergedBundle?: MergedBundleListInfo | null
   startDate: string
   endDate: string
+  /** 书面合同签订日期（可与电子签字时间不同） */
+  agreementSignDate?: string | null
   rentMonthly: number
   deposit: number
   rentCycle?: string
@@ -420,13 +253,40 @@ type ContractDetail = {
   renewedFromId?: string | null
   changeHouseFromContractNo?: string | null
   changeHouseFromId?: string | null
+  changeHouseMoney?: {
+    version: number
+    moveDateYmd: string
+    oldContractId: string
+    oldContractNo: string
+    prepaidRentCredit: number
+    prepaidRentSources: { period: string; amount: number }[]
+    prepaidAppliedToPeriods: { period: string; amount: number }[]
+    depositSupplement: number
+    prepaidSkippedReason: string | null
+    ruleSummary: string
+  } | null
   createdAt: string
   confirmedAt: string | null
   signedAt: string | null
   stampedAt: string | null
   voidedAt: string | null
   terminatedAt: string | null
-  housingReport: { status: string; receiptPdfPath: string | null; reportedAt: string | null; lastError: string | null } | null
+  tenantSignDeadlineAt?: string | null
+  moveOutSignDeadlineAt?: string | null
+  moveOutPending?: {
+    deadlineAt: string
+    reasonFull: string
+    terminateDate: string
+    partial: boolean
+    attachments: { id: string; name: string; file: string; previewUrl: string; downloadUrl: string }[]
+  } | null
+  housingReport: {
+    status: string
+    bureauRecordNo?: string | null
+    receiptPdfPath: string | null
+    reportedAt: string | null
+    lastError: string | null
+  } | null
   depositRefunded?: boolean
   refundedDepositAmount?: number
   refunds: { amount: number; reason: string; createdAt: string }[]
@@ -451,7 +311,6 @@ export function ContractsPage() {
   const [items, setItems] = useState<ContractItem[]>([])
   const [error, setError] = useState('')
   const [msg, setMsg] = useState('')
-  const [demoMode, setDemoMode] = useState<DemoMode>({ enabled: false, reason: '' })
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [q, setQ] = useState('')
@@ -482,10 +341,15 @@ export function ContractsPage() {
   const [moveOutReasonOther, setMoveOutReasonOther] = useState('')
   const [moveOutRemark, setMoveOutRemark] = useState('')
   const [moveOutSubmitting, setMoveOutSubmitting] = useState(false)
+  /** 合并合同退租：整套 / 仅部分子房源 */
+  const [moveOutScope, setMoveOutScope] = useState<'ALL' | 'PARTIAL'>('ALL')
+  const [moveOutReleaseHouseIds, setMoveOutReleaseHouseIds] = useState<string[]>([])
+  const [moveOutAttachments, setMoveOutAttachments] = useState<{ id: string; name: string; file: string }[]>([])
   // 退押金
   const [refundDepositModal, setRefundDepositModal] = useState<ContractItem | null>(null)
   const [refundDepositAmount, setRefundDepositAmount] = useState('')
   const [refundDepositRemark, setRefundDepositRemark] = useState('')
+  const [refundDepositTemplate, setRefundDepositTemplate] = useState('')
   const [refundDepositSubmitting, setRefundDepositSubmitting] = useState(false)
 
   // 续签
@@ -506,11 +370,14 @@ export function ContractsPage() {
     moveInDate: '',
     rentMonthly: 0,
     depositMultiple: 1,
-    rentCycle: 'MONTHLY' as 'MONTHLY' | 'QUARTERLY' | 'YEARLY',
+    rentCycle: 'MONTHLY' as RentCycle,
     penaltyFormula: 'amount*0.1%*days',
     latestRentGraceDays: '',
   })
   const [renewSubmitting, setRenewSubmitting] = useState(false)
+  const [billingResumeModal, setBillingResumeModal] = useState<ContractItem | null>(null)
+  const [billingResumeFrom, setBillingResumeFrom] = useState('')
+  const [billingActionSubmitting, setBillingActionSubmitting] = useState(false)
   const [renewRemarkHtml, setRenewRemarkHtml] = useState('')
   const [renewPendingFiles, setRenewPendingFiles] = useState<File[]>([])
 
@@ -527,6 +394,9 @@ export function ContractsPage() {
   const [chOldDeposit, setChOldDeposit] = useState(0)
   const [chNewRent, setChNewRent] = useState(0)
   const [chNewDeposit, setChNewDeposit] = useState(0)
+  /** 合并合同换房：整套迁出签新房 / 仅迁出一条子资产 */
+  const [chScope, setChScope] = useState<'ALL' | 'PARTIAL'>('ALL')
+  const [chSourceHouseId, setChSourceHouseId] = useState('')
 
   // 查看详情弹窗
   const [detailContract, setDetailContract] = useState<ContractDetail | null>(null)
@@ -538,9 +408,10 @@ export function ContractsPage() {
   const [editForm, setEditForm] = useState({
     startDate: '',
     endDate: '',
+    agreementSignDate: '' as string,
     rentMonthly: 0,
     deposit: 0,
-    rentCycle: 'MONTHLY' as 'MONTHLY' | 'QUARTERLY' | 'YEARLY',
+    rentCycle: 'MONTHLY' as RentCycle,
     penaltyFormula: 'amount*0.1%*days',
     latestRentGraceDays: '' as string, // 天数，空表示未设置
   })
@@ -560,10 +431,11 @@ export function ContractsPage() {
     tenantPhone: '',
     tenantIdNumber: '',
     startDate: todayYmd(),
+    agreementSignDate: '' as string,
     leaseMonths: 12,
     rentMonthly: 0,
     deposit: 0,
-    rentCycle: 'MONTHLY' as 'MONTHLY' | 'QUARTERLY' | 'YEARLY',
+    rentCycle: 'MONTHLY' as RentCycle,
     penaltyFormula: 'amount*0.1%*days',
     latestRentGraceDays: '',
     remarkHtml: '',
@@ -571,38 +443,38 @@ export function ContractsPage() {
   const [createPendingFiles, setCreatePendingFiles] = useState<File[]>([])
   const [createSubmitting, setCreateSubmitting] = useState(false)
 
+  const [nowTick, setNowTick] = useState(() => Date.now())
+
   async function load() {
     setError('')
+    setMsg('')
     const r = await apiGet<{ items: ContractItem[] }>('/api/admin/contracts')
     if (!r.ok) {
-      // 未登录或 token 失效：api 层会清 token 并回到登录页，不要进入「演示模式」以免按钮全废
       if (r.error === 'UNAUTHORIZED') {
-        setDemoMode({ enabled: false, reason: '' })
         setItems([])
-        setMsg('')
         setError('登录已失效，请重新登录')
         return
       }
-      const demoItems = buildDemoContracts(70)
-      setDemoMode({ enabled: true, reason: `接口失败：${r.error}` })
-      setItems(demoItems)
-      setMsg('已加载 70 条演示合同数据（用于演示，不会影响真实数据）')
+      setItems([])
+      setError(r.error)
       return
     }
     const list = r.data.items ?? []
-    if (list.length === 0) {
-      const demoItems = buildDemoContracts(70)
-      setDemoMode({ enabled: true, reason: '接口返回为空' })
-      setItems(demoItems)
-      setMsg('已加载 70 条演示合同数据（用于演示，不会影响真实数据）')
-      return
-    }
-    setDemoMode({ enabled: false, reason: '' })
-    setItems(list)
+    setItems(
+      list.map((c) => ({
+        ...c,
+        mergedBundle: c.mergedBundle ?? null,
+      })),
+    )
   }
 
   useEffect(() => {
     load()
+  }, [])
+
+  useEffect(() => {
+    const t = window.setInterval(() => setNowTick(Date.now()), 1000)
+    return () => window.clearInterval(t)
   }, [])
 
   useEffect(() => {
@@ -617,9 +489,10 @@ export function ContractsPage() {
       setEditForm({
         startDate: d.startDate,
         endDate: d.endDate,
+        agreementSignDate: d.agreementSignDate ?? '',
         rentMonthly: d.rentMonthly,
         deposit: d.deposit,
-        rentCycle: (d.rentCycle === 'QUARTERLY' || d.rentCycle === 'YEARLY' ? d.rentCycle : 'MONTHLY') as 'MONTHLY' | 'QUARTERLY' | 'YEARLY',
+        rentCycle: normalizeRentCycle(d.rentCycle),
         penaltyFormula: d.penaltyFormula ?? 'amount*0.1%*days',
         latestRentGraceDays: d.latestRentGraceDays != null ? String(d.latestRentGraceDays) : '',
       })
@@ -637,6 +510,9 @@ export function ContractsPage() {
     setMoveOutReason('')
     setMoveOutReasonOther('')
     setMoveOutRemark('')
+    setMoveOutScope('ALL')
+    setMoveOutReleaseHouseIds([])
+    setMoveOutAttachments([])
   }
 
   async function openRenewModal(c: ContractItem) {
@@ -664,9 +540,7 @@ export function ContractsPage() {
         moveInDate: nextStart,
         rentMonthly: r.data.rentMonthly,
         depositMultiple: r.data.depositMultiple ?? 1,
-        rentCycle: (r.data.rentCycle === 'QUARTERLY' || r.data.rentCycle === 'YEARLY'
-          ? r.data.rentCycle
-          : 'MONTHLY') as 'MONTHLY' | 'QUARTERLY' | 'YEARLY',
+        rentCycle: normalizeRentCycle(r.data.rentCycle),
         penaltyFormula: r.data.penaltyFormula ?? 'amount*0.1%*days',
         latestRentGraceDays:
           d.ok && d.data.latestRentGraceDays != null ? String(d.data.latestRentGraceDays) : '',
@@ -678,6 +552,8 @@ export function ContractsPage() {
     setError('')
     setChangeHouseModal(c)
     setChangeHouseTargetId('')
+    setChScope('ALL')
+    setChSourceHouseId('')
     const t = todayYmd()
     setChMoveDate(t)
     setChNewStart(t)
@@ -734,7 +610,7 @@ export function ContractsPage() {
     const r = await apiGet<ContractDetail>('/api/admin/contracts/' + contractId)
     setDetailLoadingId(null)
     if (!r.ok) return setError(r.error)
-    setDetailContract(r.data)
+    setDetailContract({ ...r.data, mergedBundle: r.data.mergedBundle ?? null })
   }
 
   async function submitEditConfig() {
@@ -753,6 +629,7 @@ export function ContractsPage() {
     const r = await apiPatch<{ ok: true }>('/api/admin/contracts/' + editContract.id, {
       startDate: editForm.startDate,
       endDate: editForm.endDate,
+      agreementSignDate: editForm.agreementSignDate.trim() === '' ? null : editForm.agreementSignDate,
       rentMonthly: editForm.rentMonthly,
       deposit: editForm.deposit,
       rentCycle: editForm.rentCycle,
@@ -795,16 +672,40 @@ export function ContractsPage() {
       }
       setMsg('已办理退租（未支付合同已作废，房源已释放）')
     } else if (moveOutModal.status === 'ACTIVE') {
-      const r = await apiPost<{ ok: true }>('/api/admin/contracts/' + moveOutModal.id + '/terminate', {
-        terminateDate: moveOutDate,
-        reason: reasonText,
-        remark: moveOutRemark.trim() || undefined,
-      })
+      const active = moveOutModal.mergedBundle?.lines?.filter((l) => !l.releasedAt) ?? []
+      if (moveOutScope === 'PARTIAL') {
+        if (active.length <= 1) {
+          setMoveOutSubmitting(false)
+          return setError('仅当仍有 2 套及以上在租子资产时，才可选择「部分退租」')
+        }
+        if (moveOutReleaseHouseIds.length === 0) {
+          setMoveOutSubmitting(false)
+          return setError('部分退租请至少勾选一套子房源')
+        }
+        if (moveOutReleaseHouseIds.length >= active.length) {
+          setMoveOutSubmitting(false)
+          return setError('部分退租不能勾选全部在租资产，请改用「整套退租」')
+        }
+      }
+      const r = await apiPost<{ ok: true; deadlineAt?: string; partial?: boolean }>(
+        '/api/admin/contracts/' + moveOutModal.id + '/terminate-request',
+        {
+          terminateDate: moveOutDate,
+          reason: reasonText,
+          remark: moveOutRemark.trim() || undefined,
+          attachments: moveOutAttachments,
+          ...(moveOutScope === 'PARTIAL' && moveOutReleaseHouseIds.length > 0
+            ? { releaseHouseIds: moveOutReleaseHouseIds }
+            : {}),
+        },
+      )
       if (!r.ok) {
         setMoveOutSubmitting(false)
         return setError(typeof r.error === 'string' ? apiErrorZh(r.error) : String(r.error))
       }
-      setMsg('已办理退租，合同已终止')
+      setMsg(
+        '已向租客发起退租确认：对方须在 7 日内于「我的合同」完成电子签字；超时未确认将自动撤销。确认后将按所选范围执行退租结案。',
+      )
     } else {
       setMoveOutSubmitting(false)
       return setError('当前状态不可在此办理退租（支持：待支付作废、已生效退租）')
@@ -814,10 +715,20 @@ export function ContractsPage() {
     await load()
   }
 
+  async function cancelMoveOutRequest(c: ContractItem) {
+    setError('')
+    setMsg('')
+    const r = await apiPost<{ ok: true }>('/api/admin/contracts/' + c.id + '/cancel-move-out-request', {})
+    if (!r.ok) return setError(typeof r.error === 'string' ? apiErrorZh(r.error) : String(r.error))
+    setMsg(`已撤销退租确认申请：${formatContractNo(c.contractNo)}`)
+    await load()
+  }
+
   function openRefundDepositModal(c: ContractItem) {
     setRefundDepositModal(c)
     setRefundDepositAmount('')
     setRefundDepositRemark('')
+    setRefundDepositTemplate(DEPOSIT_REFUND_TEMPLATES[0]?.code ?? '')
   }
 
   async function submitRefundDeposit() {
@@ -831,11 +742,16 @@ export function ContractsPage() {
       setError('退押金金额需为整数（单位：元）')
       return
     }
+    if (!refundDepositTemplate) {
+      setError('请选择退押金模板类型')
+      return
+    }
     setRefundDepositSubmitting(true)
     setError('')
     const r = await apiPost<{ ok: true }>('/api/admin/contracts/' + refundDepositModal.id + '/refund-deposit', {
       amount,
       remark: refundDepositRemark.trim() || undefined,
+      refundTemplateCode: refundDepositTemplate,
     })
     setRefundDepositSubmitting(false)
     if (!r.ok) return setError(apiErrorZh(String(r.error)))
@@ -904,6 +820,15 @@ export function ContractsPage() {
       setError('请填写新月租与新押金')
       return
     }
+    const active = changeHouseModal.mergedBundle?.lines?.filter((l) => !l.releasedAt) ?? []
+    if (chScope === 'PARTIAL') {
+      if (active.length <= 1) {
+        return setError('仅当仍有 2 套及以上在租子资产时，才可选择「仅迁出一套」')
+      }
+      if (!chSourceHouseId) {
+        return setError('请选择要迁出的子房源')
+      }
+    }
     setChangeHouseSubmitting(true)
     setError('')
     const r = await apiPost<{
@@ -912,6 +837,7 @@ export function ContractsPage() {
       contractNo: string
       supplementBillCreated: boolean
       supplementTotal: number
+      partial?: boolean
     }>('/api/admin/contracts/' + changeHouseModal.id + '/change-house', {
       targetHouseId: changeHouseTargetId,
       moveDate: chMoveDate,
@@ -919,6 +845,7 @@ export function ContractsPage() {
       leaseMonths: chLeaseMonths,
       newRentMonthly: chNewRent,
       newDeposit: chNewDeposit,
+      ...(chScope === 'PARTIAL' && chSourceHouseId ? { sourceHouseId: chSourceHouseId } : {}),
     })
     setChangeHouseSubmitting(false)
     if (!r.ok) return setError(apiErrorZh(String(r.error)))
@@ -926,7 +853,9 @@ export function ContractsPage() {
       ? `已生成换房补差账单 ¥${r.data.supplementTotal}。`
       : '未生成补差账单（新押金不高于旧押金）。'
     setMsg(
-      `换房完成：旧合同已于 ${chMoveDate} 终止；新合同 ${formatContractNo(r.data.contractNo)} 已生成（待租客签字/支付后在新房生效）。${sup}`,
+      r.data.partial
+        ? `部分换房已提交：原合并合同仍在租部分已重算后续账单；新合同 ${formatContractNo(r.data.contractNo)} 已生成（待租客签字/支付）。${sup}`
+        : `换房完成：旧合同已于 ${chMoveDate} 终止；新合同 ${formatContractNo(r.data.contractNo)} 已生成（待租客签字/支付后在新房生效）。${sup}`,
     )
     setChangeHouseModal(null)
     await load()
@@ -934,7 +863,19 @@ export function ContractsPage() {
 
   const filterOptions = useMemo(() => {
     const stores = Array.from(new Set(items.map((c) => c.house.storeName).filter(Boolean))).sort()
-    const apartments = Array.from(new Set(items.map((c) => c.house.apartmentName).filter(Boolean))).sort()
+    const apartments = Array.from(
+      new Set(
+        items.flatMap((c) => {
+          const names = [c.house.apartmentName]
+          if (c.mergedBundle?.lines?.length) {
+            for (const ln of c.mergedBundle.lines) {
+              if (ln.apartmentName) names.push(ln.apartmentName)
+            }
+          }
+          return names
+        }).filter(Boolean),
+      ),
+    ).sort()
     return { stores, apartments }
   }, [items])
 
@@ -952,14 +893,17 @@ export function ContractsPage() {
         if (cur !== key) return false
       }
       if (storeFilter && c.house.storeName !== storeFilter) return false
-      if (apartmentFilter && c.house.apartmentName !== apartmentFilter) return false
+      if (apartmentFilter) {
+        const hitPrimary = c.house.apartmentName === apartmentFilter
+        const hitBundle = Boolean(c.mergedBundle?.lines?.some((ln) => ln.apartmentName === apartmentFilter))
+        if (!hitPrimary && !hitBundle) return false
+      }
 
       if (expiryWarnMin.trim() || expiryWarnMax.trim()) {
         const min = expiryWarnMin.trim() ? Number(expiryWarnMin.trim()) : -Infinity
         const max = expiryWarnMax.trim() ? Number(expiryWarnMax.trim()) : Infinity
         const daysLeft = calcDaysTo(c.endDate)
-        // 到期预警列只在 daysLeft <= 30 时展示；筛选也基于同样规则
-        if (Number.isNaN(daysLeft) || daysLeft > 30) return false
+        if (Number.isNaN(daysLeft) || daysLeft > EXPIRY_WARN_DAYS) return false
         const low = Math.min(min, max)
         const high = Math.max(min, max)
         if (daysLeft < low || daysLeft > high) return false
@@ -972,8 +916,13 @@ export function ContractsPage() {
           : (c.source ?? 'SYSTEM') === 'SYSTEM'
             ? '系统生成'
             : String(c.source ?? '')
+      const bundleHay =
+        c.mergedBundle?.lines
+          ?.map((ln) => `${ln.houseBizId} ${ln.apartmentName} ${ln.houseNo}`)
+          .join(' ')
+          .toLowerCase() ?? ''
       const hay =
-        `${c.contractNo} ${c.house.houseBizId} ${c.tenant.name} ${c.tenant.phone} ${c.house.storeName} ${c.house.apartmentName} ${c.house.houseNo} ${srcZh}`.toLowerCase()
+        `${c.contractNo} ${c.house.houseBizId} ${c.tenant.name} ${c.tenant.phone} ${c.house.storeName} ${c.house.apartmentName} ${c.house.houseNo} ${bundleHay} ${srcZh}`.toLowerCase()
       return hay.includes(kw)
     })
   }, [items, q, status, sourceFilter, reportStatusFilter, storeFilter, apartmentFilter, expiryWarnMin, expiryWarnMax])
@@ -990,6 +939,7 @@ export function ContractsPage() {
       ...f,
       houseId: opts.length === 1 ? opts[0].id : f.houseId,
       startDate: todayYmd(),
+      agreementSignDate: '',
       remarkHtml: '',
     }))
     setCreatePendingFiles([])
@@ -1017,6 +967,7 @@ export function ContractsPage() {
         idNumber: createForm.tenantIdNumber.trim(),
       },
       startDate: createForm.startDate,
+      agreementSignDate: createForm.agreementSignDate.trim() === '' ? null : createForm.agreementSignDate,
       leaseMonths: createForm.leaseMonths,
       rentMonthly: createForm.rentMonthly,
       deposit: createForm.deposit,
@@ -1067,7 +1018,6 @@ export function ContractsPage() {
     <div className="a-col">
       <div className="a-card">
         <div className="a-h1">合同管理</div>
-        <div className="a-muted">合同生效后，系统会在次日自动报备（定时任务）。这里也支持手动触发一次。</div>
       </div>
 
       {error ? <div className="a-card a-error">操作失败：{error}</div> : null}
@@ -1113,6 +1063,7 @@ export function ContractsPage() {
               <option value="WAIT_STAMP">待盖章</option>
               <option value="PENDING_PAYMENT">待支付</option>
               <option value="ACTIVE">已生效</option>
+              <option value="WAIT_TENANT_MOVEOUT_SIGN">待租客确认退租</option>
               <option value="VOID">已作废</option>
               <option value="TERMINATED">已终止</option>
             </select>
@@ -1161,11 +1112,7 @@ export function ContractsPage() {
                 style={{ minWidth: 120 }}
                 title="到期日-今天的最大值，支持负数"
               />
-              <button
-                className="a-btn ghost"
-                onClick={() => setPage(1)}
-                title="使用当前筛选条件进行查询（当前页面为前端过滤演示）"
-              >
+              <button className="a-btn ghost" onClick={() => setPage(1)}>
                 查询
               </button>
               <button className="a-btn ghost" onClick={resetContractFilters} title="清空筛选条件">
@@ -1183,12 +1130,6 @@ export function ContractsPage() {
             </button>
           </div>
         </div>
-        {demoMode.enabled ? (
-          <div className="a-muted" style={{ marginTop: 8, fontSize: 12, lineHeight: 1.6 }}>
-            当前为<strong>演示数据模式</strong>（{demoMode.reason}）。列表中的“查看详情/续签/换房/退租/修改合同配置”等操作将不会调用后端。
-          </div>
-        ) : null}
-        <div style={{ height: 10 }} />
         <div className="a-table-wrap">
         <table className="a-table a-table-sticky-op">
           <thead>
@@ -1202,11 +1143,11 @@ export function ContractsPage() {
               <th>手机号</th>
               <th>状态</th>
               <th>报备</th>
-              <th title="从「还有30天到期」起倒计时至当天；已到期则显示「已过期N天」（超30天另有汇总文案）">到期提醒</th>
+              <th>到期提醒</th>
               <th>备注</th>
               <th>附件</th>
-              <th title="换房/续签时新旧合同互相关联">关联来源</th>
-              <th title="系统流程/管理员手动创建">合同来源</th>
+              <th>关联来源</th>
+              <th>合同来源</th>
               <th className="contracts-op-col">操作</th>
             </tr>
           </thead>
@@ -1215,10 +1156,62 @@ export function ContractsPage() {
               <tr key={c.id}>
                 <td>
                   <span style={{ fontWeight: 600 }}>{formatContractNo(c.contractNo)}</span>
+                  {c.mergedBundle && c.mergedBundle.lines.length > 0 ? (
+                    <div className="a-muted" style={{ fontSize: 12, marginTop: 4, lineHeight: 1.45 }}>
+                      合并合同 · 在租 {c.mergedBundle.lineCount} 套
+                      {c.mergedBundle.lineHistoryCount != null &&
+                      c.mergedBundle.lineHistoryCount > c.mergedBundle.lineCount
+                        ? `（共 ${c.mergedBundle.lineHistoryCount} 条资产记录）`
+                        : ''}
+                      · 在租月租合计 ¥{c.mergedBundle.rentMonthlySum}
+                    </div>
+                  ) : null}
                 </td>
-                <td style={{ fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>{c.house.houseBizId}</td>
-                <td style={{ fontWeight: 600 }}>{c.house.apartmentName}</td>
-                <td style={{ fontWeight: 600 }}>{c.house.houseNo}</td>
+                <td style={{ fontVariantNumeric: 'tabular-nums' }}>
+                  <div style={{ fontWeight: 800 }}>{c.house.houseBizId}</div>
+                  {c.mergedBundle && c.mergedBundle.lines.length > 0 ? (
+                    <div className="a-muted" style={{ fontSize: 11, marginTop: 4, lineHeight: 1.45 }}>
+                      {c.mergedBundle.lines
+                        .filter((ln) => !ln.releasedAt && ln.houseBizId !== c.house.houseBizId)
+                        .map((ln) => ln.houseBizId)
+                        .join(' · ')}
+                    </div>
+                  ) : null}
+                </td>
+                <td style={{ fontWeight: 600 }}>
+                  {c.mergedBundle && c.mergedBundle.lines.length > 0 ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      {c.mergedBundle.lines.map((ln) => (
+                        <div key={ln.houseBizId} style={{ opacity: ln.releasedAt ? 0.55 : 1 }}>
+                          {ln.apartmentName}
+                          <span className="a-muted" style={{ fontWeight: 700 }}>
+                            {' '}
+                            · {ln.houseNo}
+                          </span>
+                          {ln.releasedAt ? (
+                            <span className="a-badge status-void" style={{ marginLeft: 6, fontSize: 11 }}>
+                              已迁出
+                            </span>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    c.house.apartmentName
+                  )}
+                </td>
+                <td style={{ fontWeight: 600 }}>
+                  {c.mergedBundle && c.mergedBundle.lines.length > 0 ? (
+                    <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+                      {c.mergedBundle.lines
+                        .filter((ln) => !ln.releasedAt)
+                        .map((ln) => ln.houseNo)
+                        .join('、') || '—'}
+                    </span>
+                  ) : (
+                    c.house.houseNo
+                  )}
+                </td>
                 <td className="a-muted">{c.house.storeName}</td>
                 <td>{formatTenantName(c.tenant.name)}</td>
                 <td>{c.tenant.phone}</td>
@@ -1235,11 +1228,17 @@ export function ContractsPage() {
                 <td>
                   {(() => {
                     const daysLeft = calcDaysTo(c.endDate)
-                    if (Number.isNaN(daysLeft) || daysLeft > 30) return null
+                    if (Number.isNaN(daysLeft) || daysLeft > EXPIRY_WARN_DAYS) return null
                     const isSoon = daysLeft <= 7
+                    const isExpired = daysLeft < 0
                     return (
-                      <span style={{ fontWeight: 800, color: isSoon ? '#b91c1c' : '#f59e0b' }}>
+                      <span style={{ fontWeight: 800, color: isExpired || isSoon ? '#b91c1c' : '#f59e0b' }}>
                         {expiryWarnText(daysLeft)}
+                        {c.leaseExpired && c.houseStatus === 'VACANT' ? (
+                          <span className="a-muted" style={{ display: 'block', fontWeight: 500, fontSize: 11, marginTop: 2 }}>
+                            房源已空置
+                          </span>
+                        ) : null}
                       </span>
                     )
                   })()}
@@ -1253,7 +1252,9 @@ export function ContractsPage() {
                   ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                       <span>{c.attachmentCount} 个</span>
-                      {(c.attachmentFiles ?? []).map((a) => (
+                      {(c.attachmentFiles ?? []).map((a) => {
+                        const attLocked = contractAttachmentsLockedUntilPaid(c.status)
+                        return (
                         <span key={a.file} style={{ whiteSpace: 'nowrap' }}>
                           <span title={a.name}>{a.name.length > 14 ? `${a.name.slice(0, 14)}…` : a.name}</span>{' '}
                           <button
@@ -1263,7 +1264,7 @@ export function ContractsPage() {
                             onClick={() =>
                               previewFileWithAuth(
                                 `/api/admin/contracts/${c.id}/attachment/${encodeURIComponent(a.file)}`,
-                              ).catch(() => setError('预览失败'))
+                              ).catch((e) => setError(e instanceof Error ? e.message : '预览失败'))
                             }
                           >
                             预览
@@ -1272,17 +1273,20 @@ export function ContractsPage() {
                             type="button"
                             className="a-btn ghost"
                             style={{ padding: '0 6px', fontSize: 11 }}
+                            disabled={attLocked}
+                            title={attLocked ? '租客完成首笔缴费后方可下载' : undefined}
                             onClick={() =>
                               downloadFileWithAuth(
                                 `/api/admin/contracts/${c.id}/attachment/${encodeURIComponent(a.file)}?download=1`,
                                 a.name,
-                              ).catch(() => setError('下载失败'))
+                              ).catch((e) => setError(e instanceof Error ? e.message : '下载失败'))
                             }
                           >
                             下载
                           </button>
                         </span>
-                      ))}
+                        )
+                      })}
                     </div>
                   )}
                 </td>
@@ -1349,43 +1353,113 @@ export function ContractsPage() {
                     <button
                       className="a-btn ghost"
                       onClick={() => {
-                        if (demoMode.enabled) return setMsg('演示数据不支持查看详情（请连接真实数据后体验）')
                         loadDetail(c.id)
                       }}
                       disabled={detailLoadingId === c.id}
                     >
                       {detailLoadingId === c.id ? '加载中…' : '查看详情'}
                     </button>
+                    <button
+                      className="a-btn ghost"
+                      onClick={() => {
+                        downloadFileWithAuth(
+                          '/api/admin/contracts/' + c.id + '/download',
+                          `合同摘要-${c.contractNo}.txt`,
+                        ).catch((e) => setError(e instanceof Error ? e.message : '下载失败'))
+                      }}
+                    >
+                      下载
+                    </button>
                     {c.status === 'ACTIVE' ? (
                       <div className="contracts-op-group">
                         <button
                           className="a-btn"
                           onClick={() => {
-                            if (demoMode.enabled) return setMsg('演示数据不支持续签（请连接真实数据后体验）')
                             openRenewModal(c)
                           }}
-                          title="须费用结清"
                         >
                           续签
                         </button>
                         <button
                           className="a-btn ghost"
                           onClick={() => {
-                            if (demoMode.enabled) return setMsg('演示数据不支持换房（请连接真实数据后体验）')
                             openChangeHouseModal(c)
                           }}
-                          title="生成新合同"
                         >
                           换房
                         </button>
                         <button
                           className="a-btn secondary"
                           onClick={() => {
-                            if (demoMode.enabled) return setMsg('演示数据不支持退租（请连接真实数据后体验）')
                             openMoveOutModal(c)
                           }}
                         >
                           退租
+                        </button>
+                        {c.billingPaused ? (
+                          <button
+                            type="button"
+                            className="a-btn ghost"
+                            disabled={billingActionSubmitting}
+                            onClick={() => {
+                              setBillingResumeFrom(new Date().toISOString().slice(0, 10))
+                              setBillingResumeModal(c)
+                            }}
+                          >
+                            恢复计费
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="a-btn ghost"
+                            disabled={billingActionSubmitting}
+                            onClick={async () => {
+                              if (!window.confirm(`确认暂停合同 ${formatContractNo(c.contractNo)} 的计费？\n暂停后不再计入应收报表，也不再推送新费用；租客 H5 仍可查看应缴账单。`)) return
+                              setBillingActionSubmitting(true)
+                              setError('')
+                              const r = await apiPost<{ ok: true }>(`/api/admin/contracts/${c.id}/billing-pause`, {})
+                              setBillingActionSubmitting(false)
+                              if (!r.ok) return setError(apiErrorZh(r.error))
+                              setMsg('已暂停计费')
+                              await load()
+                            }}
+                          >
+                            暂停计费
+                          </button>
+                        )}
+                        {c.billingPaused ? (
+                          <span className="a-badge status-wait-stamp" style={{ fontSize: 11 }}>
+                            计费已暂停
+                            {c.billingResumeFrom ? ` · ${c.billingResumeFrom} 起恢复` : ''}
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {c.status === 'WAIT_TENANT_MOVEOUT_SIGN' && c.moveOutSignDeadlineAt ? (
+                      <div className="contracts-op-group" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
+                        <div
+                          style={{
+                            padding: '10px 12px',
+                            borderRadius: 8,
+                            background: '#fffbeb',
+                            border: '1px solid #fcd34d',
+                          }}
+                        >
+                          <div style={{ fontWeight: 800, color: '#92400e' }}>退租确认签字倒计时（7 天）</div>
+                          <div
+                            style={{
+                              fontSize: 26,
+                              fontWeight: 900,
+                              marginTop: 6,
+                              color: '#b45309',
+                              fontVariantNumeric: 'tabular-nums',
+                            }}
+                          >
+                            {formatSignLikeCountdown(new Date(c.moveOutSignDeadlineAt).getTime() - nowTick) ?? '—'}
+                          </div>
+                        </div>
+                        <button className="a-btn ghost" type="button" onClick={() => void cancelMoveOutRequest(c)}>
+                          撤销退租申请
                         </button>
                       </div>
                     ) : null}
@@ -1393,10 +1467,8 @@ export function ContractsPage() {
                       <button
                         className="a-btn"
                         onClick={() => {
-                          if (demoMode.enabled) return setMsg('演示数据不支持退押金（请连接真实数据后体验）')
                           openRefundDepositModal(c)
                         }}
-                        title={c.depositRefunded ? '该合同已存在退押金记录，可继续补退' : '为该退租合同办理退押金'}
                       >
                         {c.depositRefunded ? '再次退押金' : '退押金'}
                       </button>
@@ -1405,11 +1477,14 @@ export function ContractsPage() {
                       <button
                         className="a-btn ghost"
                         onClick={() => {
-                          if (demoMode.enabled) return setMsg('演示数据不支持修改合同配置（请连接真实数据后体验）')
                           setEditLoadingId(c.id)
                         }}
-                        disabled={editLoadingId === c.id || c.status === 'VOID' || c.status === 'TERMINATED'}
-                        title={c.modificationRejectedAt ? '租客申请已驳回，可重新配置' : '租客已申请修改，点击处理'}
+                        disabled={
+                          editLoadingId === c.id ||
+                          c.status === 'VOID' ||
+                          c.status === 'TERMINATED' ||
+                          c.status === 'WAIT_TENANT_MOVEOUT_SIGN'
+                        }
                       >
                         {editLoadingId === c.id ? '加载中…' : '修改合同配置'}
                       </button>
@@ -1461,8 +1536,58 @@ export function ContractsPage() {
               <div className="a-muted" style={{ marginBottom: 10 }}>
                 {moveOutModal.status === 'PENDING_PAYMENT'
                   ? '当前为待支付：确认后合同作废，房源释放为空置。'
-                  : '当前为在租：确认后退租结案，房源标记为已退租。'}
+                  : '当前为在租：提交后合同进入「待租客确认退租」，租客须在 7 日内电子签字；确认后再按所选范围执行退租结案（超时自动撤销申请）。'}
               </div>
+              {moveOutModal.status === 'ACTIVE' &&
+              moveOutModal.mergedBundle &&
+              moveOutModal.mergedBundle.lines.filter((l) => !l.releasedAt).length > 1 ? (
+                <div style={{ marginBottom: 14, padding: 10, background: '#f8fafc', borderRadius: 8 }}>
+                  <div style={{ fontWeight: 800, marginBottom: 8 }}>退租范围</div>
+                  <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+                    <input
+                      type="radio"
+                      name="moveOutScope"
+                      checked={moveOutScope === 'ALL'}
+                      onChange={() => {
+                        setMoveOutScope('ALL')
+                        setMoveOutReleaseHouseIds([])
+                      }}
+                    />
+                    <span>整套退租（合同终止，全部在租子房源一并结案）</span>
+                  </label>
+                  <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 8 }}>
+                    <input
+                      type="radio"
+                      name="moveOutScope"
+                      checked={moveOutScope === 'PARTIAL'}
+                      onChange={() => setMoveOutScope('PARTIAL')}
+                    />
+                    <span>仅退部分子房源（其余仍在租；未结清的 BASE 账单将按剩余套数重算，不再对已退套计费）</span>
+                  </label>
+                  {moveOutScope === 'PARTIAL' ? (
+                    <div style={{ marginLeft: 24, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {moveOutModal.mergedBundle.lines
+                        .filter((ln) => !ln.releasedAt)
+                        .map((ln) => (
+                          <label key={ln.houseId} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                            <input
+                              type="checkbox"
+                              checked={moveOutReleaseHouseIds.includes(ln.houseId)}
+                              onChange={(e) => {
+                                setMoveOutReleaseHouseIds((prev) =>
+                                  e.target.checked ? [...prev, ln.houseId] : prev.filter((x) => x !== ln.houseId),
+                                )
+                              }}
+                            />
+                            <span className="a-muted">
+                              {ln.apartmentName} · {ln.houseNo}（月租 ¥{ln.rentMonthlySnapshot}）
+                            </span>
+                          </label>
+                        ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               <div className="a-kv">
                 <div className="a-kv-row">
                   <div className="a-kv-k">{moveOutModal.status === 'PENDING_PAYMENT' ? '作废日期' : '退租日期'}</div>
@@ -1518,6 +1643,65 @@ export function ContractsPage() {
                     />
                   </div>
                 </div>
+                {moveOutModal.status === 'ACTIVE' ? (
+                  <div className="a-kv-row">
+                    <div className="a-kv-k">退租附件</div>
+                    <div className="a-kv-v">
+                      <div className="a-muted" style={{ marginBottom: 8 }}>
+                        将向租客展示。须由租客在 <strong>7 天</strong> 内在「我的合同」完成电子签字后，系统才执行退租结案；超时未确认将自动撤销。
+                      </div>
+                      <input
+                        type="file"
+                        className="a-filter-input"
+                        onChange={async (e) => {
+                          const f = e.target.files?.[0]
+                          e.target.value = ''
+                          if (!f || !moveOutModal) return
+                          const r = await apiUploadMoveOutFile(moveOutModal.id, f)
+                          if (!r.ok) return setError(r.error)
+                          setMoveOutAttachments((prev) => [...prev, r.data.attachment])
+                        }}
+                      />
+                      {moveOutAttachments.length > 0 ? (
+                        <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
+                          {moveOutAttachments.map((a) => (
+                            <li key={a.file} style={{ marginBottom: 4 }}>
+                              <span>{a.name}</span>{' '}
+                              <button
+                                type="button"
+                                className="a-btn ghost"
+                                style={{ padding: '2px 8px', fontSize: 12 }}
+                                onClick={async () => {
+                                  if (!moveOutModal) return
+                                  const r = await apiDeleteMoveOutFile(moveOutModal.id, a.file)
+                                  if (!r.ok) return setError(r.error)
+                                  setMoveOutAttachments((prev) => prev.filter((x) => x.file !== a.file))
+                                }}
+                              >
+                                移除
+                              </button>
+                              <button
+                                type="button"
+                                className="a-btn ghost"
+                                style={{ padding: '2px 8px', fontSize: 12 }}
+                                onClick={() =>
+                                  previewFileWithAuth(
+                                    '/api/admin/contracts/' +
+                                      moveOutModal.id +
+                                      '/move-out-file/' +
+                                      encodeURIComponent(a.file),
+                                  ).catch((e) => setError(e instanceof Error ? e.message : '预览失败'))
+                                }
+                              >
+                                预览
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
               </div>
               <div style={{ marginTop: 14, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                 <button
@@ -1525,7 +1709,11 @@ export function ContractsPage() {
                   onClick={submitMoveOut}
                   disabled={moveOutSubmitting}
                 >
-                  {moveOutSubmitting ? '提交中…' : '确认办理退租'}
+                  {moveOutSubmitting
+                    ? '提交中…'
+                    : moveOutModal.status === 'PENDING_PAYMENT'
+                      ? '确认办理作废'
+                      : '发起退租确认'}
                 </button>
                 <button className="a-btn ghost" onClick={() => setMoveOutModal(null)}>
                   取消
@@ -1560,6 +1748,25 @@ export function ContractsPage() {
                 已退累计：<strong>¥{refundDepositModal.refundedDepositAmount ?? 0}</strong>
               </div>
               <div className="a-kv">
+                <div className="a-kv-row">
+                  <div className="a-kv-k">模板类型</div>
+                  <div className="a-kv-v">
+                    <select
+                      className="a-filter-select"
+                      value={refundDepositTemplate}
+                      onChange={(e) => setRefundDepositTemplate(e.target.value)}
+                    >
+                      {DEPOSIT_REFUND_TEMPLATES.map((t) => (
+                        <option key={t.code} value={t.code}>
+                          {t.label}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="a-muted" style={{ marginTop: 6, fontSize: 12 }}>
+                      按资产类型选择占位模板，后续可对接真实退押文书；将写入退款记录备注。
+                    </div>
+                  </div>
+                </div>
                 <div className="a-kv-row">
                   <div className="a-kv-k">退押金金额（元）</div>
                   <div className="a-kv-v">
@@ -1672,6 +1879,10 @@ export function ContractsPage() {
                           value={renewForm.moveInDate}
                           onChange={(e) => setRenewForm((f) => ({ ...f, moveInDate: e.target.value }))}
                         />
+                        <div className="a-muted" style={{ marginTop: 6, fontSize: 12, lineHeight: 1.5 }}>
+                          一般为旧合同结束日的次日（即新合同第一天）。支持倒签（可早于今天）。租客须在该日起 24
+                          小时内完成确认、签字与首期款支付，超时新合同自动作废。
+                        </div>
                       </div>
                     </div>
                     <div className="a-kv-row">
@@ -1727,11 +1938,12 @@ export function ContractsPage() {
                           onChange={(e) =>
                             setRenewForm((f) => ({
                               ...f,
-                              rentCycle: e.target.value as 'MONTHLY' | 'QUARTERLY' | 'YEARLY',
+                              rentCycle: e.target.value as RentCycle,
                             }))
                           }
                         >
                           <option value="MONTHLY">月付</option>
+                          <option value="BIMONTHLY">双月</option>
                           <option value="QUARTERLY">季付</option>
                           <option value="YEARLY">年付</option>
                         </select>
@@ -1815,6 +2027,69 @@ export function ContractsPage() {
         </div>
       )}
 
+      {billingResumeModal && (
+        <div
+          className="a-modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !billingActionSubmitting) setBillingResumeModal(null)
+          }}
+        >
+          <div className="a-modal" style={{ maxWidth: 480 }} onClick={(e) => e.stopPropagation()}>
+            <div className="a-modal-header">
+              <div className="a-modal-title">恢复计费 · {formatContractNo(billingResumeModal.contractNo)}</div>
+              <button type="button" className="a-modal-close" onClick={() => setBillingResumeModal(null)} disabled={billingActionSubmitting}>
+                关闭
+              </button>
+            </div>
+            <div className="a-modal-body" style={{ display: 'block' }}>
+              <p className="a-muted" style={{ marginTop: 0, lineHeight: 1.55 }}>
+                可指定从某一日起恢复推送租金、水电、滞纳金等计费；若选未来日期，则到期前仍视为暂停（不计入应收报表）。
+              </p>
+              <div className="a-kv" style={{ marginTop: 12 }}>
+                <div className="a-kv-row">
+                  <div className="a-kv-k">恢复计费日</div>
+                  <div className="a-kv-v">
+                    <input
+                      className="a-filter-input"
+                      type="date"
+                      value={billingResumeFrom}
+                      onChange={(e) => setBillingResumeFrom(e.target.value)}
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className="a-row" style={{ marginTop: 16, gap: 10 }}>
+                <button
+                  type="button"
+                  className="a-btn"
+                  disabled={billingActionSubmitting || !billingResumeFrom}
+                  onClick={async () => {
+                    setBillingActionSubmitting(true)
+                    setError('')
+                    const r = await apiPost<{ ok: true; billingPaused: boolean }>(
+                      `/api/admin/contracts/${billingResumeModal.id}/billing-resume`,
+                      { resumeFrom: billingResumeFrom },
+                    )
+                    setBillingActionSubmitting(false)
+                    if (!r.ok) return setError(apiErrorZh(r.error))
+                    setMsg(r.data.billingPaused ? `已设定 ${billingResumeFrom} 起恢复计费` : '已恢复计费')
+                    setBillingResumeModal(null)
+                    await load()
+                  }}
+                >
+                  {billingActionSubmitting ? '提交中…' : '确认恢复'}
+                </button>
+                <button type="button" className="a-btn ghost" onClick={() => setBillingResumeModal(null)} disabled={billingActionSubmitting}>
+                  取消
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 换房：新合同 + 补差账单 */}
       {changeHouseModal && (
         <div
@@ -1833,27 +2108,54 @@ export function ContractsPage() {
               </button>
             </div>
             <div className="a-modal-body" style={{ display: 'block' }}>
-              <div
-                style={{
-                  padding: 12,
-                  background: '#f8fafc',
-                  borderRadius: 10,
-                  marginBottom: 14,
-                  fontSize: 13,
-                  lineHeight: 1.6,
-                  border: '1px solid #e2e8f0',
-                }}
-              >
-                <strong>流程说明</strong>
-                <br />
-                1）旧合同在<strong>换房日</strong>当日结束后终止，旧房释放为空置。
-                <br />
-                2）系统生成<strong>新合同</strong>（新房），起租日以您填写的「新合同起租日」为准；租客完成签字并支付后，新合同在新房生效。
-                <br />
-                3）补差仅针对<strong>押金</strong>：若<strong>新押金 &gt; 旧押金</strong>，自动生成一笔「换房补差」账单（押金补足），租客需支付差额。若新押金 ≤ 旧押金：不生成补差账单；旧押金多于新押金的部分<strong>不退还</strong>租客。
-                <br />
-                4）须已结清本合同全部未付账单。
-              </div>
+              {changeHouseModal.mergedBundle &&
+              changeHouseModal.mergedBundle.lines.filter((l) => !l.releasedAt).length > 1 ? (
+                <div className="a-kv" style={{ marginBottom: 12 }}>
+                  <div className="a-kv-row">
+                    <div className="a-kv-k">换房范围</div>
+                    <div className="a-kv-v" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <input
+                          type="radio"
+                          name="chScope"
+                          checked={chScope === 'ALL'}
+                          onChange={() => {
+                            setChScope('ALL')
+                            setChSourceHouseId('')
+                          }}
+                        />
+                        <span>整套换房</span>
+                      </label>
+                      <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <input
+                          type="radio"
+                          name="chScope"
+                          checked={chScope === 'PARTIAL'}
+                          onChange={() => setChScope('PARTIAL')}
+                        />
+                        <span>仅迁出一套</span>
+                      </label>
+                      {chScope === 'PARTIAL' ? (
+                        <select
+                          className="a-filter-select"
+                          style={{ maxWidth: 380 }}
+                          value={chSourceHouseId}
+                          onChange={(e) => setChSourceHouseId(e.target.value)}
+                        >
+                          <option value="">请选择要迁出的子房源</option>
+                          {changeHouseModal.mergedBundle.lines
+                            .filter((l) => !l.releasedAt)
+                            .map((ln) => (
+                              <option key={ln.houseId} value={ln.houseId}>
+                                {ln.apartmentName} · {ln.houseNo}
+                              </option>
+                            ))}
+                        </select>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
 
               <div className="a-kv" style={{ marginBottom: 12 }}>
                 <div className="a-kv-row">
@@ -2061,6 +2363,20 @@ export function ContractsPage() {
                   </div>
                 </div>
                 <div className="a-kv-row">
+                  <div className="a-kv-k">签订日期</div>
+                  <div className="a-kv-v">
+                    <input
+                      className="a-filter-input"
+                      type="date"
+                      value={editForm.agreementSignDate}
+                      onChange={(e) => setEditForm((f) => ({ ...f, agreementSignDate: e.target.value }))}
+                    />
+                    <div className="a-muted" style={{ marginTop: 4, fontSize: 12 }}>
+                      可选；书面合同落款用「签订日期」。留空则不在档案中单独记录（与电子签字时间可能不同）。
+                    </div>
+                  </div>
+                </div>
+                <div className="a-kv-row">
                   <div className="a-kv-k">月租（元）</div>
                   <div className="a-kv-v">
                     <input
@@ -2090,9 +2406,10 @@ export function ContractsPage() {
                     <select
                       className="a-filter-select"
                       value={editForm.rentCycle}
-                      onChange={(e) => setEditForm((f) => ({ ...f, rentCycle: e.target.value as 'MONTHLY' | 'QUARTERLY' | 'YEARLY' }))}
+                      onChange={(e) => setEditForm((f) => ({ ...f, rentCycle: e.target.value as RentCycle }))}
                     >
                       <option value="MONTHLY">月付</option>
+                      <option value="BIMONTHLY">双月</option>
                       <option value="QUARTERLY">季付</option>
                       <option value="YEARLY">年付</option>
                     </select>
@@ -2139,6 +2456,11 @@ export function ContractsPage() {
                 <div className="a-kv-row" style={{ alignItems: 'flex-start' }}>
                   <div className="a-kv-k">附件</div>
                   <div className="a-kv-v">
+                    {contractAttachmentsLockedUntilPaid(editContract.status) ? (
+                      <div className="a-muted" style={{ fontSize: 12, marginBottom: 8, lineHeight: 1.6 }}>
+                        待支付：预览带水印，租客缴费生效后方可下载正式附件。
+                      </div>
+                    ) : null}
                     <input
                       type="file"
                       onChange={async (e) => {
@@ -2174,7 +2496,7 @@ export function ContractsPage() {
                             type="button"
                             className="a-btn ghost"
                             style={{ padding: '2px 8px', fontSize: 12 }}
-                            onClick={() => previewFileWithAuth(a.previewUrl).catch(() => setError('预览失败'))}
+                            onClick={() => previewFileWithAuth(a.previewUrl).catch((e) => setError(e instanceof Error ? e.message : '预览失败'))}
                           >
                             预览
                           </button>{' '}
@@ -2182,8 +2504,16 @@ export function ContractsPage() {
                             type="button"
                             className="a-btn ghost"
                             style={{ padding: '2px 8px', fontSize: 12 }}
+                            disabled={contractAttachmentsLockedUntilPaid(editContract.status)}
+                            title={
+                              contractAttachmentsLockedUntilPaid(editContract.status)
+                                ? '租客完成首笔缴费后方可下载'
+                                : undefined
+                            }
                             onClick={() =>
-                              downloadFileWithAuth(a.downloadUrl, a.name).catch(() => setError('下载失败'))
+                              downloadFileWithAuth(a.downloadUrl, a.name).catch((e) =>
+                                setError(e instanceof Error ? e.message : '下载失败'),
+                              )
                             }
                           >
                             下载
@@ -2317,6 +2647,23 @@ export function ContractsPage() {
                       value={createForm.startDate}
                       onChange={(e) => setCreateForm((f) => ({ ...f, startDate: e.target.value }))}
                     />
+                    <div className="a-muted" style={{ marginTop: 6, fontSize: 12 }}>
+                      支持倒签：起租日可早于今天（例如 1 月 2 日录入 1 月 1 日起租的合同）。
+                    </div>
+                  </div>
+                </div>
+                <div className="a-kv-row">
+                  <div className="a-kv-k">签订日期</div>
+                  <div className="a-kv-v">
+                    <input
+                      className="a-filter-input"
+                      type="date"
+                      value={createForm.agreementSignDate}
+                      onChange={(e) => setCreateForm((f) => ({ ...f, agreementSignDate: e.target.value }))}
+                    />
+                    <div className="a-muted" style={{ marginTop: 4, fontSize: 12 }}>
+                      可选；可与起租日或落款日不一致，用于合同档案展示。
+                    </div>
                   </div>
                 </div>
 
@@ -2363,14 +2710,15 @@ export function ContractsPage() {
                 </div>
 
                 <div className="a-kv-row">
-                  <div className="a-kv-k">租金周期</div>
+                  <div className="a-kv-k">缴费周期</div>
                   <div className="a-kv-v">
                     <select
                       className="a-filter-select"
                       value={createForm.rentCycle}
-                      onChange={(e) => setCreateForm((f) => ({ ...f, rentCycle: e.target.value as any }))}
+                      onChange={(e) => setCreateForm((f) => ({ ...f, rentCycle: e.target.value as RentCycle }))}
                     >
                       <option value="MONTHLY">月付</option>
+                      <option value="BIMONTHLY">双月</option>
                       <option value="QUARTERLY">季付</option>
                       <option value="YEARLY">年付</option>
                     </select>
@@ -2485,10 +2833,132 @@ export function ContractsPage() {
                     </span>
                   </div>
                 </div>
+                {detailContract.status === 'WAIT_TENANT_MOVEOUT_SIGN' &&
+                detailContract.moveOutSignDeadlineAt &&
+                detailContract.moveOutPending ? (
+                  <div className="a-kv-row">
+                    <div className="a-kv-k">退租确认</div>
+                    <div className="a-kv-v">
+                      <div
+                        style={{
+                          padding: '10px 12px',
+                          borderRadius: 8,
+                          background: '#fffbeb',
+                          border: '1px solid #fcd34d',
+                          marginBottom: 8,
+                        }}
+                      >
+                        <div style={{ fontWeight: 800, color: '#92400e' }}>租客签字倒计时（7 天）</div>
+                        <div
+                          style={{
+                            fontSize: 26,
+                            fontWeight: 900,
+                            marginTop: 6,
+                            color: '#b45309',
+                            fontVariantNumeric: 'tabular-nums',
+                          }}
+                        >
+                          {formatSignLikeCountdown(
+                            new Date(detailContract.moveOutSignDeadlineAt).getTime() - nowTick,
+                          ) ?? '—'}
+                        </div>
+                        <div className="a-muted" style={{ marginTop: 8, fontSize: 12 }}>
+                          截止：{new Date(detailContract.moveOutSignDeadlineAt).toLocaleString('zh-CN', { hour12: false })}
+                        </div>
+                      </div>
+                      <div className="a-muted" style={{ fontSize: 13, marginBottom: 6 }}>
+                        拟定退租日：<strong>{detailContract.moveOutPending.terminateDate}</strong>
+                        {detailContract.moveOutPending.partial ? '（部分退租）' : ''}
+                      </div>
+                      <div style={{ fontSize: 13, marginBottom: 8 }}>{detailContract.moveOutPending.reasonFull}</div>
+                      {detailContract.moveOutPending.attachments.length > 0 ? (
+                        <ul style={{ margin: 0, paddingLeft: 18 }}>
+                          {detailContract.moveOutPending.attachments.map((a) => (
+                            <li key={a.file} style={{ marginBottom: 4 }}>
+                              {a.name}{' '}
+                              <button
+                                type="button"
+                                className="a-btn ghost"
+                                style={{ padding: '2px 8px', fontSize: 12 }}
+                                onClick={() =>
+                                  previewFileWithAuth(a.previewUrl).catch((e) =>
+                                    setError(e instanceof Error ? e.message : '预览失败'),
+                                  )
+                                }
+                              >
+                                预览
+                              </button>
+                              <button
+                                type="button"
+                                className="a-btn ghost"
+                                style={{ padding: '2px 8px', fontSize: 12 }}
+                                onClick={() =>
+                                  downloadFileWithAuth(a.downloadUrl, a.name).catch((e) =>
+                                    setError(e instanceof Error ? e.message : '下载失败'),
+                                  )
+                                }
+                              >
+                                下载
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <span className="a-muted">无附件</span>
+                      )}
+                    </div>
+                  </div>
+                ) : null}
                 <div className="a-kv-row">
                   <div className="a-kv-k">房源</div>
                   <div className="a-kv-v">
-                    {detailContract.house.apartmentName} {detailContract.house.houseNo}（{detailContract.house.storeName}）
+                    {detailContract.mergedBundle && detailContract.mergedBundle.lines.length > 0 ? (
+                      <div>
+                        <div className="a-muted" style={{ fontSize: 12, marginBottom: 8, lineHeight: 1.5 }}>
+                          本合同为<strong>合并签约</strong>：当前在租 {detailContract.mergedBundle.lineCount} 套
+                          {detailContract.mergedBundle.lineHistoryCount != null &&
+                          detailContract.mergedBundle.lineHistoryCount > detailContract.mergedBundle.lineCount
+                            ? `（历史共 ${detailContract.mergedBundle.lineHistoryCount} 条子订单）`
+                            : ''}
+                          ；在租月租快照合计 ¥{detailContract.mergedBundle.rentMonthlySum}（与合同月租字段一致）。
+                        </div>
+                        <table className="a-table" style={{ fontSize: 13, width: '100%' }}>
+                          <thead>
+                            <tr>
+                              <th>房源ID</th>
+                              <th>公寓 · 房号</th>
+                              <th style={{ textAlign: 'right' }}>月租快照</th>
+                              <th>状态</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {detailContract.mergedBundle.lines.map((ln) => (
+                              <tr key={ln.houseBizId}>
+                                <td style={{ fontVariantNumeric: 'tabular-nums' }}>{ln.houseBizId}</td>
+                                <td>
+                                  {ln.apartmentName} · {ln.houseNo}
+                                </td>
+                                <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                                  ¥{ln.rentMonthlySnapshot}
+                                </td>
+                                <td className="a-muted" style={{ fontSize: 12 }}>
+                                  {ln.releasedAt ? '已迁出/退租' : '在租'}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        <div className="a-muted" style={{ fontSize: 12, marginTop: 8 }}>
+                          主房源（合同/报备挂接）：{detailContract.house.apartmentName} {detailContract.house.houseNo}（
+                          {detailContract.house.storeName}）
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        {detailContract.house.apartmentName} {detailContract.house.houseNo}（
+                        {detailContract.house.storeName}）
+                      </>
+                    )}
                   </div>
                 </div>
                 <div className="a-kv-row">
@@ -2519,11 +2989,70 @@ export function ContractsPage() {
                     </div>
                   </div>
                 ) : null}
+                {detailContract.changeHouseMoney ? (
+                  <div className="a-kv-row" style={{ alignItems: 'flex-start' }}>
+                    <div className="a-kv-k">换房资金</div>
+                    <div className="a-kv-v" style={{ fontSize: 13, lineHeight: 1.65 }}>
+                      <div className="a-muted" style={{ marginBottom: 8 }}>
+                        以下为换房生成新合同时的系统快照，便于财务核对；账单列表以「账单」页为准。
+                      </div>
+                      <div>
+                        旧合同：<strong>{formatContractNo(detailContract.changeHouseMoney.oldContractNo)}</strong>
+                        ，换房日 {detailContract.changeHouseMoney.moveDateYmd}
+                      </div>
+                      <div>预付租金可结转：¥{detailContract.changeHouseMoney.prepaidRentCredit}</div>
+                      {detailContract.changeHouseMoney.prepaidRentSources.length > 0 ? (
+                        <ul style={{ margin: '6px 0 0 18px' }}>
+                          {detailContract.changeHouseMoney.prepaidRentSources.map((s) => (
+                            <li key={s.period}>
+                              账期 {s.period}：¥{s.amount}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                      {detailContract.changeHouseMoney.prepaidAppliedToPeriods.length > 0 ? (
+                        <div style={{ marginTop: 8 }}>
+                          已抵扣至新合同账期：
+                          <ul style={{ margin: '4px 0 0 18px' }}>
+                            {detailContract.changeHouseMoney.prepaidAppliedToPeriods.map((s) => (
+                              <li key={s.period}>
+                                {s.period}：¥{s.amount}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
+                      <div style={{ marginTop: 8 }}>押金少补（换房补差账单）：¥{detailContract.changeHouseMoney.depositSupplement}</div>
+                      {detailContract.changeHouseMoney.prepaidSkippedReason ? (
+                        <div className="a-muted" style={{ marginTop: 8 }}>
+                          {detailContract.changeHouseMoney.prepaidSkippedReason}
+                        </div>
+                      ) : null}
+                      <pre
+                        style={{
+                          marginTop: 10,
+                          padding: 10,
+                          background: '#f8fafc',
+                          borderRadius: 8,
+                          fontSize: 12,
+                          whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-word',
+                        }}
+                      >
+                        {detailContract.changeHouseMoney.ruleSummary}
+                      </pre>
+                    </div>
+                  </div>
+                ) : null}
                 <div className="a-kv-row">
                   <div className="a-kv-k">租期</div>
                   <div className="a-kv-v">
                     {detailContract.startDate} 至 {detailContract.endDate}
                   </div>
+                </div>
+                <div className="a-kv-row">
+                  <div className="a-kv-k">签订日期</div>
+                  <div className="a-kv-v">{detailContract.agreementSignDate ?? '—'}</div>
                 </div>
                 <div className="a-kv-row">
                   <div className="a-kv-k">最晚交租宽限期（天）</div>
@@ -2603,6 +3132,11 @@ export function ContractsPage() {
                   <div className="a-kv-row" style={{ alignItems: 'flex-start' }}>
                     <div className="a-kv-k">附件</div>
                     <div className="a-kv-v">
+                      {contractAttachmentsLockedUntilPaid(detailContract.status) ? (
+                        <div className="a-muted" style={{ fontSize: 12, marginBottom: 8 }}>
+                          待支付：预览为带水印稿；租客完成首笔缴费后方可下载。
+                        </div>
+                      ) : null}
                       <ul style={{ margin: 0, paddingLeft: 18 }}>
                         {detailContract.attachments.map((a) => (
                           <li key={a.id} style={{ marginBottom: 6 }}>
@@ -2612,7 +3146,9 @@ export function ContractsPage() {
                               className="a-btn ghost"
                               style={{ padding: '2px 8px', fontSize: 12 }}
                               onClick={() =>
-                                previewFileWithAuth(a.previewUrl).catch(() => setError('预览失败'))
+                                previewFileWithAuth(a.previewUrl).catch((e) =>
+                                  setError(e instanceof Error ? e.message : '预览失败'),
+                                )
                               }
                             >
                               预览
@@ -2621,9 +3157,15 @@ export function ContractsPage() {
                               type="button"
                               className="a-btn ghost"
                               style={{ padding: '2px 8px', fontSize: 12 }}
+                              disabled={contractAttachmentsLockedUntilPaid(detailContract.status)}
+                              title={
+                                contractAttachmentsLockedUntilPaid(detailContract.status)
+                                  ? '租客完成首笔缴费后方可下载'
+                                  : undefined
+                              }
                               onClick={() =>
-                                downloadFileWithAuth(a.downloadUrl, a.name).catch(() =>
-                                  setError('下载失败'),
+                                downloadFileWithAuth(a.downloadUrl, a.name).catch((e) =>
+                                  setError(e instanceof Error ? e.message : '下载失败'),
                                 )
                               }
                             >
@@ -2636,11 +3178,39 @@ export function ContractsPage() {
                   </div>
                 ) : null}
                 <div className="a-kv-row">
-                  <div className="a-kv-k">住房报备</div>
+                  <div className="a-kv-k">住建报备</div>
                   <div className="a-kv-v">
-                    {detailContract.housingReport
-                      ? `${REPORT_STATUS_ZH[detailContract.housingReport.status] ?? detailContract.housingReport.status}${detailContract.housingReport.reportedAt ? ` · ${new Date(detailContract.housingReport.reportedAt).toLocaleString('zh-CN', { hour12: false })}` : ''}${detailContract.housingReport.lastError ? ` · ${detailContract.housingReport.lastError}` : ''}`
-                      : '未报备'}
+                    <div>
+                      {detailContract.housingReport
+                        ? `${REPORT_STATUS_ZH[detailContract.housingReport.status] ?? detailContract.housingReport.status}${detailContract.housingReport.reportedAt ? ` · ${new Date(detailContract.housingReport.reportedAt).toLocaleString('zh-CN', { hour12: false })}` : ''}${detailContract.housingReport.lastError ? ` · ${detailContract.housingReport.lastError}` : ''}`
+                        : '未报备'}
+                    </div>
+                    {detailContract.housingReport?.status === 'SUCCESS' ? (
+                      <div style={{ marginTop: 10 }}>
+                        <button
+                          type="button"
+                          className="a-btn ghost"
+                          onClick={() =>
+                            downloadFileWithAuth(
+                              '/api/admin/contracts/' + detailContract.id + '/housing-receipt',
+                              `住建报备回执-${detailContract.contractNo}.pdf`,
+                            ).catch((e) =>
+                              setError(
+                                e instanceof Error ? apiErrorZh(e.message) || e.message : '下载失败',
+                              ),
+                            )
+                          }
+                        >
+                          下载报备回执
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+                <div className="a-kv-row">
+                  <div className="a-kv-k">住建备案编号</div>
+                  <div className="a-kv-v" style={{ fontWeight: 600 }}>
+                    {detailContract.housingReport?.bureauRecordNo ?? '—'}
                   </div>
                 </div>
                 {detailContract.refunds.length > 0 && (

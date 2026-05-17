@@ -14,6 +14,7 @@ type BillPeriodSummary = {
   dueDateTo: string
   locked: boolean
   lockedAt: string | null
+  lockedByName?: string | null
 }
 
 type BillListItem = {
@@ -26,14 +27,39 @@ type BillListItem = {
   storeName: string
   tenantName: string
   tenantPhone: string
+  tenantIdNumber?: string
   period: string
   dueDate: string
   totalAmount: number
+  amountReceived: number
+  amountRemaining: number
   status: string
+  billingRemark?: string | null
+  contractBillingPaused?: boolean
   items?: { name: string; amount: number }[]
 }
 
+type BillPaymentQr = {
+  payUrl: string
+  qrImageUrl: string
+  billId: string
+  period: string
+  contractNo: string
+  tenantName: string
+  tenantPhone: string
+  totalAmount: number
+  amountRemaining: number
+}
+
+function guessMobilePayOrigin() {
+  if (typeof window === 'undefined') return 'http://localhost:5173'
+  const { protocol, hostname } = window.location
+  const port = hostname === 'localhost' || hostname === '127.0.0.1' ? '5173' : window.location.port || '5173'
+  return `${protocol}//${hostname}:${port}`
+}
+
 type BillDetail = BillListItem & {
+  contractPrepayBalance?: number
   paidAt: string | null
   offlineVerifiedAt?: string | null
   offlineVerifiedRemark?: string | null
@@ -48,6 +74,13 @@ type BillDetail = BillListItem & {
     beforeJson: string
     afterJson: string
   }[]
+}
+
+type BillPeriodDetailResponse = {
+  items: BillListItem[]
+  locked: boolean
+  lockedAt: string | null
+  lockedByName: string | null
 }
 
 type ContractOption = {
@@ -72,6 +105,17 @@ function formatBillNo(billId: string, digits = 10) {
   return `ZD${s.slice(-digits)}`
 }
 
+function formatLockAtDisplay(iso: string | null | undefined) {
+  if (!iso) return '—'
+  try {
+    const d = new Date(iso)
+    if (Number.isNaN(d.getTime())) return iso
+    return d.toLocaleString('zh-CN', { hour12: false })
+  } catch {
+    return iso
+  }
+}
+
 function statusBadgeClass(status: string) {
   switch (status) {
     case 'UNPAID':
@@ -91,8 +135,28 @@ const STATUS_ZH: Record<string, string> = {
   OVERDUE: '已逾期',
 }
 
-const FEE_ITEM_NAMES = ['租金', '水费', '电费', '物业费', '垃圾处理费', '公摊电费', '燃气费', '网络费', '滞纳金']
-const DEFAULT_FEE_NAMES = FEE_ITEM_NAMES
+function statusBadgeForBill(b: Pick<BillListItem, 'status' | 'amountReceived'>) {
+  if (b.status === 'PAID') return statusBadgeClass('PAID')
+  if ((b.amountReceived ?? 0) > 0) return 'a-badge status-partial'
+  return statusBadgeClass(b.status)
+}
+
+function statusLabelForBill(b: Pick<BillListItem, 'status' | 'amountReceived'>) {
+  if (b.status === 'PAID') return STATUS_ZH.PAID
+  if ((b.amountReceived ?? 0) > 0) return '部分收款'
+  return STATUS_ZH[b.status] ?? b.status
+}
+
+const FEE_ITEM_NAMES = ['租金', '水费', '电费', '物业费', '垃圾处理费', '公摊电费', '燃气费', '网络费', '滞纳金', '其他费用']
+
+function mergeFeeItemsForEdit(items: { name: string; amount: number }[]): { name: string; amount: number }[] {
+  const map = new Map(items.map((i) => [i.name, i.amount]))
+  const ordered = [...FEE_ITEM_NAMES]
+  for (const name of map.keys()) {
+    if (!ordered.includes(name)) ordered.push(name)
+  }
+  return ordered.map((name) => ({ name, amount: map.get(name) ?? 0 }))
+}
 
 function csvEscape(v: unknown) {
   const s = String(v ?? '')
@@ -123,16 +187,17 @@ export function BillsPage() {
   }
 
   // detail
-  const [current, setCurrent] = useState<{ storeId: string; storeName: string; period: string; locked: boolean } | null>(null)
+  const [current, setCurrent] = useState<{ storeId: string; storeName: string; period: string; locked: boolean; lockedAt?: string | null; lockedByName?: string | null } | null>(null)
   const [detailItems, setDetailItems] = useState<BillListItem[]>([])
   const [detailKeywordInput, setDetailKeywordInput] = useState('')
+  const [detailContractNoInput, setDetailContractNoInput] = useState('')
+  const [detailTenantNameInput, setDetailTenantNameInput] = useState('')
+  const [detailTenantIdInput, setDetailTenantIdInput] = useState('')
+  const [detailTenantPhoneInput, setDetailTenantPhoneInput] = useState('')
+  const [detailAssetNameInput, setDetailAssetNameInput] = useState('')
   const [detailStatusInput, setDetailStatusInput] = useState('')
   const [detailDueDateFromInput, setDetailDueDateFromInput] = useState('')
   const [detailDueDateToInput, setDetailDueDateToInput] = useState('')
-  const [detailKeyword, setDetailKeyword] = useState('')
-  const [detailStatus, setDetailStatus] = useState('')
-  const [detailDueDateFrom, setDetailDueDateFrom] = useState('')
-  const [detailDueDateTo, setDetailDueDateTo] = useState('')
 
   const [detailBill, setDetailBill] = useState<BillDetail | null>(null)
   const [detailLoadingId, setDetailLoadingId] = useState<string | null>(null)
@@ -143,15 +208,20 @@ export function BillsPage() {
   const [importContractId, setImportContractId] = useState('')
   const [importPeriod, setImportPeriod] = useState('')
   const [importDueDate, setImportDueDate] = useState('')
-  const [importItems, setImportItems] = useState<{ name: string; amount: number }[]>(DEFAULT_FEE_NAMES.map((name) => ({ name, amount: 0 })))
+  const [importItems, setImportItems] = useState<{ name: string; amount: number }[]>(FEE_ITEM_NAMES.map((name) => ({ name, amount: 0 })))
   const [importSubmitting, setImportSubmitting] = useState(false)
 
   const [fileImportSubmitting, setFileImportSubmitting] = useState(false)
   const [fileImportResult, setFileImportResult] = useState<{ created: number; errors: string[] } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const [importBillingRemark, setImportBillingRemark] = useState('')
+  const batchVerifyInputRef = useRef<HTMLInputElement>(null)
+  const [batchVerifySubmitting, setBatchVerifySubmitting] = useState(false)
+  const [batchVerifyResult, setBatchVerifyResult] = useState<{ verified: number; errors: string[] } | null>(null)
 
   // offline verify
   const [offlineVerifyBill, setOfflineVerifyBill] = useState<BillListItem | null>(null)
+  const [offlineVerifyAmount, setOfflineVerifyAmount] = useState('')
   const [offlineVerifyRemark, setOfflineVerifyRemark] = useState('')
   const [offlineVerifyFiles, setOfflineVerifyFiles] = useState<File[]>([])
   const [offlineVerifySubmitting, setOfflineVerifySubmitting] = useState(false)
@@ -161,6 +231,7 @@ export function BillsPage() {
   const [editItems, setEditItems] = useState<{ name: string; amount: number }[]>([])
   const [editDueDate, setEditDueDate] = useState('')
   const [editRemark, setEditRemark] = useState('')
+  const [editBillingRemark, setEditBillingRemark] = useState('')
   const [editSubmitting, setEditSubmitting] = useState(false)
 
   // 一级：新建账期
@@ -173,6 +244,13 @@ export function BillsPage() {
   const [createPeriodSubmitting, setCreatePeriodSubmitting] = useState(false)
   const [createPeriodResult, setCreatePeriodResult] = useState<Record<string, unknown> | null>(null)
 
+  const [payQrBillId, setPayQrBillId] = useState<string | null>(null)
+  const [payQrData, setPayQrData] = useState<BillPaymentQr | null>(null)
+  const [payQrLoading, setPayQrLoading] = useState(false)
+
+  const [meRoleCode, setMeRoleCode] = useState<string | null>(null)
+  const canEditBill = meRoleCode === 'SYSTEM_ADMIN'
+
   async function loadSummaries() {
     setError('')
     const r = await apiGet<{ items: BillPeriodSummary[] }>('/api/admin/bill-periods')
@@ -182,26 +260,137 @@ export function BillsPage() {
 
   useEffect(() => {
     loadSummaries()
+    apiGet<{ roleCode: string }>('/api/admin/me').then((r) => {
+      if (r.ok) setMeRoleCode(r.data.roleCode)
+    })
   }, [])
+
+  function periodDetailFiltersFromInputs(): {
+    keyword: string
+    contractNo: string
+    tenantName: string
+    tenantIdNumber: string
+    tenantPhone: string
+    assetName: string
+    status: string
+    dueDateFrom: string
+    dueDateTo: string
+  } {
+    return {
+      keyword: detailKeywordInput,
+      contractNo: detailContractNoInput,
+      tenantName: detailTenantNameInput,
+      tenantIdNumber: detailTenantIdInput,
+      tenantPhone: detailTenantPhoneInput,
+      assetName: detailAssetNameInput,
+      status: detailStatusInput,
+      dueDateFrom: detailDueDateFromInput,
+      dueDateTo: detailDueDateToInput,
+    }
+  }
+
+  async function loadPeriodBills(
+    storeId: string,
+    period: string,
+    filters: {
+      keyword?: string
+      contractNo?: string
+      tenantName?: string
+      tenantIdNumber?: string
+      tenantPhone?: string
+      assetName?: string
+      status?: string
+      dueDateFrom?: string
+      dueDateTo?: string
+    } = {},
+  ) {
+    setError('')
+    const p = new URLSearchParams()
+    const qset = (k: string, v: string | undefined) => {
+      const t = (v ?? '').trim()
+      if (t) p.set(k, t)
+    }
+    qset('keyword', filters.keyword)
+    qset('contractNo', filters.contractNo)
+    qset('tenantName', filters.tenantName)
+    qset('tenantIdNumber', filters.tenantIdNumber)
+    qset('tenantPhone', filters.tenantPhone)
+    qset('assetName', filters.assetName)
+    qset('status', filters.status)
+    qset('dueDateFrom', filters.dueDateFrom)
+    qset('dueDateTo', filters.dueDateTo)
+    const qs = p.toString()
+    const url = `/api/admin/bill-periods/${storeId}/${period}${qs ? `?${qs}` : ''}`
+    const r = await apiGet<BillPeriodDetailResponse>(url)
+    if (!r.ok) {
+      setError(r.error)
+      return false
+    }
+    setDetailItems(r.data.items ?? [])
+    setPayQrBillId(null)
+    setPayQrData(null)
+    setCurrent((prev) =>
+      prev && prev.storeId === storeId && prev.period === period
+        ? {
+            ...prev,
+            locked: Boolean(r.data.locked),
+            lockedAt: r.data.lockedAt ?? null,
+            lockedByName: r.data.lockedByName ?? null,
+          }
+        : prev,
+    )
+    return true
+  }
+
+  async function generatePaymentQr() {
+    if (!payQrBillId) {
+      setError('请先勾选一笔待付账单')
+      return
+    }
+    const bill = detailItems.find((b) => b.id === payQrBillId)
+    if (!bill) {
+      setError('未找到所选账单')
+      return
+    }
+    if (bill.status === 'PAID') {
+      setError('该账单已支付，无法生成付款码')
+      return
+    }
+    setPayQrLoading(true)
+    setError('')
+    setPayQrData(null)
+    const r = await apiPost<BillPaymentQr>(`/api/admin/bills/${payQrBillId}/payment-qr`, {
+      mobileOrigin: guessMobilePayOrigin(),
+    })
+    setPayQrLoading(false)
+    if (!r.ok) return setError(r.error)
+    setPayQrData(r.data)
+  }
 
   async function openDetail(s: BillPeriodSummary) {
     setMode('detail')
-    setCurrent({ storeId: s.storeId, storeName: s.storeName, period: s.period, locked: s.locked })
+    setCurrent({
+      storeId: s.storeId,
+      storeName: s.storeName,
+      period: s.period,
+      locked: s.locked,
+      lockedAt: s.lockedAt ?? null,
+      lockedByName: s.lockedByName ?? null,
+    })
     setDetailItems([])
     setError('')
     setMsg('')
     setDetailKeywordInput('')
+    setDetailContractNoInput('')
+    setDetailTenantNameInput('')
+    setDetailTenantIdInput('')
+    setDetailTenantPhoneInput('')
+    setDetailAssetNameInput('')
     setDetailStatusInput('')
     setDetailDueDateFromInput('')
     setDetailDueDateToInput('')
-    setDetailKeyword('')
-    setDetailStatus('')
-    setDetailDueDateFrom('')
-    setDetailDueDateTo('')
-    const r = await apiGet<{ items: BillListItem[]; locked: boolean }>(`/api/admin/bill-periods/${s.storeId}/${s.period}`)
-    if (!r.ok) return setError(r.error)
-    setDetailItems(r.data.items ?? [])
-    setCurrent((prev) => (prev ? { ...prev, locked: Boolean(r.data.locked) } : prev))
+    setBatchVerifyResult(null)
+    await loadPeriodBills(s.storeId, s.period, {})
   }
 
   async function backToSummary() {
@@ -211,32 +400,34 @@ export function BillsPage() {
     setDetailBill(null)
     setOfflineVerifyBill(null)
     setDetailKeywordInput('')
+    setDetailContractNoInput('')
+    setDetailTenantNameInput('')
+    setDetailTenantIdInput('')
+    setDetailTenantPhoneInput('')
+    setDetailAssetNameInput('')
     setDetailStatusInput('')
     setDetailDueDateFromInput('')
     setDetailDueDateToInput('')
-    setDetailKeyword('')
-    setDetailStatus('')
-    setDetailDueDateFrom('')
-    setDetailDueDateTo('')
+    setBatchVerifyResult(null)
     await loadSummaries()
   }
 
   function searchDetailItems() {
-    setDetailKeyword(detailKeywordInput.trim())
-    setDetailStatus(detailStatusInput)
-    setDetailDueDateFrom(detailDueDateFromInput)
-    setDetailDueDateTo(detailDueDateToInput)
+    if (!current) return
+    void loadPeriodBills(current.storeId, current.period, periodDetailFiltersFromInputs())
   }
 
   function resetDetailFilters() {
     setDetailKeywordInput('')
+    setDetailContractNoInput('')
+    setDetailTenantNameInput('')
+    setDetailTenantIdInput('')
+    setDetailTenantPhoneInput('')
+    setDetailAssetNameInput('')
     setDetailStatusInput('')
     setDetailDueDateFromInput('')
     setDetailDueDateToInput('')
-    setDetailKeyword('')
-    setDetailStatus('')
-    setDetailDueDateFrom('')
-    setDetailDueDateTo('')
+    if (current) void loadPeriodBills(current.storeId, current.period, {})
   }
 
   function formatGeneratePeriodError(code: string) {
@@ -339,11 +530,13 @@ export function BillsPage() {
     const r = await apiGet<{ items: BillListItem[]; locked: boolean }>(`/api/admin/bill-periods/${storeId}/${period}`)
     if (!r.ok) return setError(r.error)
     const rows = r.data.items ?? []
-    const header = ['账单编号', '合同', '租客', '手机号', '公寓', '房号', '门店', '账期', '到期日', '应收金额', '状态', '明细']
+    const header = ['账单编号', '合同', '租客', '手机号', '公寓', '房号', '门店', '账期', '到期日', '应收金额', '已收金额', '待付金额', '状态', '明细']
     const lines = [
       header.map(csvEscape).join(','),
       ...rows.map((b) => {
         const itemsStr = (b.items ?? []).map((it) => `${it.name}:${it.amount}`).join('；')
+        const recv = b.amountReceived ?? 0
+        const rem = b.amountRemaining ?? Math.max(0, b.totalAmount - recv)
         return [
           formatBillNo(b.id),
           formatContractNo(b.contractNo),
@@ -355,7 +548,9 @@ export function BillsPage() {
           b.period,
           b.dueDate,
           b.totalAmount,
-          STATUS_ZH[b.status] ?? b.status,
+          recv,
+          rem,
+          statusLabelForBill(b),
           itemsStr,
         ].map(csvEscape).join(',')
       }),
@@ -380,13 +575,15 @@ export function BillsPage() {
   }
 
   async function openEdit(billId: string) {
+    if (!canEditBill) return
     setError('')
     setMsg('')
     const r = await apiGet<BillDetail>('/api/admin/bills/' + billId)
     if (!r.ok) return setError(r.error)
     setEditBill(r.data)
-    setEditItems(r.data.items ?? [])
+    setEditItems(mergeFeeItemsForEdit(r.data.items ?? []))
     setEditDueDate(r.data.dueDate)
+    setEditBillingRemark((r.data.billingRemark ?? '').trim())
     setEditRemark('')
   }
 
@@ -405,7 +602,8 @@ export function BillsPage() {
     const m = String(new Date().getMonth() + 1).padStart(2, '0')
     setImportPeriod(current?.period ?? `${y}-${m}`)
     setImportDueDate(`${y}-${m}-01`)
-    setImportItems(DEFAULT_FEE_NAMES.map((name) => ({ name, amount: 0 })))
+    setImportItems(FEE_ITEM_NAMES.map((name) => ({ name, amount: 0 })))
+    setImportBillingRemark('')
     loadContractsForImport()
   }
 
@@ -421,17 +619,60 @@ export function BillsPage() {
       period: importPeriod,
       dueDate: importDueDate,
       items: itemsToSend,
+      ...(importBillingRemark.trim() ? { billingRemark: importBillingRemark.trim().slice(0, 500) } : {}),
     })
     setImportSubmitting(false)
     if (!r.ok) return setError(r.error)
     setMsg('账单导入成功')
     setImportOpen(false)
     if (current) {
-      const rr = await apiGet<{ items: BillListItem[]; locked: boolean }>(`/api/admin/bill-periods/${current.storeId}/${current.period}`)
-      if (rr.ok) setDetailItems(rr.data.items ?? [])
+      await loadPeriodBills(current.storeId, current.period, periodDetailFiltersFromInputs())
     } else {
       loadSummaries()
     }
+  }
+
+  async function downloadBatchVerifyTemplate() {
+    const token = getAdminToken()
+    const res = await fetch('/api/admin/bills/offline-verify-batch-template', {
+      method: 'GET',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+    if (!res.ok) return setError('下载批量核销模板失败')
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = '批量核销模板.xlsx'
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  async function uploadBatchVerifyFile(file: File) {
+    if (!current) return
+    setBatchVerifySubmitting(true)
+    setBatchVerifyResult(null)
+    setError('')
+    const form = new FormData()
+    form.append('file', file)
+    const token = getAdminToken()
+    const res = await fetch('/api/admin/bills/offline-verify-batch', {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: form,
+    })
+    const data = await res.json().catch(() => ({}))
+    setBatchVerifySubmitting(false)
+    if (!res.ok) {
+      setError(data.error || '批量核销失败')
+      return
+    }
+    setBatchVerifyResult({ verified: data.verified ?? 0, errors: data.errors ?? [] })
+    if (data.verified > 0) {
+      setMsg(`批量核销成功 ${data.verified} 条`)
+      await loadPeriodBills(current.storeId, current.period, periodDetailFiltersFromInputs())
+    }
+    if (batchVerifyInputRef.current) batchVerifyInputRef.current.value = ''
   }
 
   async function downloadTemplate() {
@@ -472,8 +713,7 @@ export function BillsPage() {
     if (data.created > 0) {
       setMsg(`成功导入 ${data.created} 条账单`)
       if (current) {
-        const rr = await apiGet<{ items: BillListItem[]; locked: boolean }>(`/api/admin/bill-periods/${current.storeId}/${current.period}`)
-        if (rr.ok) setDetailItems(rr.data.items ?? [])
+        await loadPeriodBills(current.storeId, current.period, periodDetailFiltersFromInputs())
       } else {
         loadSummaries()
       }
@@ -485,6 +725,8 @@ export function BillsPage() {
     setError('')
     setMsg('')
     setOfflineVerifyBill(b)
+    const rem = typeof b.amountRemaining === 'number' ? b.amountRemaining : Math.max(0, b.totalAmount - (b.amountReceived ?? 0))
+    setOfflineVerifyAmount(String(rem))
     setOfflineVerifyRemark('')
     setOfflineVerifyFiles([])
     if (offlineVerifyFileInputRef.current) offlineVerifyFileInputRef.current.value = ''
@@ -492,10 +734,16 @@ export function BillsPage() {
 
   async function submitOfflineVerify() {
     if (!offlineVerifyBill) return
+    const amt = parseInt(String(offlineVerifyAmount).trim(), 10)
+    if (!Number.isFinite(amt) || amt <= 0) {
+      setError('请输入大于 0 的核销金额（整数元）')
+      return
+    }
     setOfflineVerifySubmitting(true)
     setError('')
     setMsg('')
     const fd = new FormData()
+    fd.append('amount', String(amt))
     fd.append('remark', offlineVerifyRemark.trim())
     offlineVerifyFiles.forEach((f) => fd.append('files', f))
     const token = getAdminToken()
@@ -509,11 +757,16 @@ export function BillsPage() {
     const data = await res.json().catch(() => ({}))
     setOfflineVerifySubmitting(false)
     if (!res.ok) return setError(data.error || '线下核销失败')
-    setMsg('线下核销成功，账单已结清')
+    const prepaid = Number(data.prepaidCredited ?? 0)
+    const st = String(data.status ?? '')
+    const received = Number(data.amountReceived ?? 0)
+    const remain = Number(data.amountRemaining ?? 0)
+    let tip = st === 'PAID' ? '账单已全部结清。' : `账单仍待支付：已收 ¥${received}，尚欠 ¥${remain}。`
+    if (prepaid > 0) tip += ` 超额 ¥${prepaid} 已记入「合同预收款」余额，可在侧栏「合同预收款」查看。`
+    setMsg(tip)
     setOfflineVerifyBill(null)
     if (current) {
-      const rr = await apiGet<{ items: BillListItem[]; locked: boolean }>(`/api/admin/bill-periods/${current.storeId}/${current.period}`)
-      if (rr.ok) setDetailItems(rr.data.items ?? [])
+      await loadPeriodBills(current.storeId, current.period, periodDetailFiltersFromInputs())
     } else {
       loadSummaries()
     }
@@ -521,27 +774,6 @@ export function BillsPage() {
   }
 
   const importTotal = useMemo(() => importItems.reduce((s, i) => s + i.amount, 0), [importItems])
-  const filteredDetailItems = useMemo(() => {
-    const kw = detailKeyword.trim().toLowerCase()
-    return detailItems.filter((b) => {
-      if (detailStatus && b.status !== detailStatus) return false
-      if (detailDueDateFrom && b.dueDate < detailDueDateFrom) return false
-      if (detailDueDateTo && b.dueDate > detailDueDateTo) return false
-      if (!kw) return true
-      const hay = [
-        formatBillNo(b.id),
-        formatContractNo(b.contractNo),
-        b.houseBizId,
-        b.apartmentName,
-        b.houseNo,
-        b.tenantName,
-        b.tenantPhone,
-      ]
-        .join(' ')
-        .toLowerCase()
-      return hay.includes(kw)
-    })
-  }, [detailItems, detailKeyword, detailStatus, detailDueDateFrom, detailDueDateTo])
 
   return (
     <div className="a-col">
@@ -635,6 +867,8 @@ export function BillsPage() {
                   <th>应收金额</th>
                   <th>统计范围（到期日）</th>
                   <th>状态</th>
+                  <th>锁定日期</th>
+                  <th>操作人</th>
                   <th className="a-op-col">操作</th>
                 </tr>
               </thead>
@@ -669,6 +903,12 @@ export function BillsPage() {
                           <span className="a-badge status-unpaid">未锁定</span>
                         )}
                       </td>
+                      <td className="a-muted" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
+                        {s.locked && s.lockedAt ? formatLockAtDisplay(s.lockedAt) : '—'}
+                      </td>
+                      <td className="a-muted" style={{ fontSize: 12 }}>
+                        {s.locked ? (s.lockedByName ?? '—') : '—'}
+                      </td>
                       <td className="a-op-cell">
                         <div className="a-op-actions">
                           <button className="a-btn ghost" onClick={() => openDetail(s)}>
@@ -686,7 +926,7 @@ export function BillsPage() {
                 })}
                 {summaries.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="a-muted">
+                    <td colSpan={11} className="a-muted">
                       暂无账单汇总数据。生成合同后会自动生成对应账期的租金账单，也可在二级页面导入账单。
                     </td>
                   </tr>
@@ -714,30 +954,71 @@ export function BillsPage() {
                 二级明细 · {current?.storeName} · {current?.period}
               </div>
               <div className="a-muted" style={{ marginTop: 6 }}>
-                {current?.locked ? '该账期已锁定：不可再导入/新增账单。' : '该账期未锁定：可导入/新增账单。'}
+                {current?.locked ? (
+                  <>
+                    该账期已锁定：不可再导入/新增账单。
+                    {current.lockedAt ? (
+                      <span style={{ marginLeft: 8 }}>
+                        锁定时间 {formatLockAtDisplay(current.lockedAt)}
+                        {current.lockedByName ? ` · 操作人 ${current.lockedByName}` : ''}
+                      </span>
+                    ) : null}
+                  </>
+                ) : (
+                  '该账期未锁定：可导入/新增账单。'
+                )}
               </div>
             </div>
-            <div className="a-row" style={{ gap: 8 }}>
+            <div className="a-row" style={{ gap: 8, flexWrap: 'wrap' }}>
               <button className="a-btn ghost" onClick={backToSummary}>
                 返回
               </button>
               <button className="a-btn ghost" onClick={downloadTemplate}>
                 下载导入模板
               </button>
+              <button className="a-btn ghost" onClick={downloadBatchVerifyTemplate}>
+                下载批量核销模板
+              </button>
+              <input
+                ref={batchVerifyInputRef}
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  const f = e.target.files?.[0]
+                  if (f) void uploadBatchVerifyFile(f)
+                }}
+              />
+              <button
+                type="button"
+                className="a-btn ghost"
+                disabled={Boolean(current?.locked) || batchVerifySubmitting}
+                onClick={() => batchVerifyInputRef.current?.click()}
+              >
+                {batchVerifySubmitting ? '批量核销中…' : '批量核销'}
+              </button>
               <button className="a-btn" onClick={openImport} disabled={Boolean(current?.locked)}>
                 导入账单
+              </button>
+              <button
+                type="button"
+                className="a-btn ghost"
+                disabled={!payQrBillId || payQrLoading}
+                onClick={() => void generatePaymentQr()}
+              >
+                {payQrLoading ? '生成中…' : '生成付款二维码'}
               </button>
             </div>
           </div>
 
           <div className="a-card">
-            <div className="a-filterbar" style={{ flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+            <div className="a-filterbar" style={{ flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
               <span className="a-filter-label">筛选</span>
               <input
                 className="a-filter-input"
                 value={detailKeywordInput}
                 onChange={(e) => setDetailKeywordInput(e.target.value)}
-                placeholder="账单编号/合同/房源ID/公寓/房号/租客/手机号"
+                placeholder="快速搜索（账单编号/合同/房源/租客/手机/证件号）"
                 style={{ minWidth: 320 }}
               />
               <select
@@ -772,39 +1053,123 @@ export function BillsPage() {
               <button className="a-btn ghost" onClick={resetDetailFilters}>
                 重置
               </button>
-              <span className="a-muted">共 {filteredDetailItems.length} 条</span>
+              <span className="a-muted">共 {detailItems.length} 条</span>
             </div>
+            <div className="a-filterbar" style={{ flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+              <span className="a-filter-label">精确</span>
+              <input
+                className="a-filter-input"
+                value={detailContractNoInput}
+                onChange={(e) => setDetailContractNoInput(e.target.value)}
+                placeholder="合同编号"
+                style={{ minWidth: 140 }}
+              />
+              <input
+                className="a-filter-input"
+                value={detailTenantNameInput}
+                onChange={(e) => setDetailTenantNameInput(e.target.value)}
+                placeholder="租客名称"
+                style={{ minWidth: 120 }}
+              />
+              <input
+                className="a-filter-input"
+                value={detailTenantIdInput}
+                onChange={(e) => setDetailTenantIdInput(e.target.value)}
+                placeholder="身份证号"
+                style={{ minWidth: 160 }}
+              />
+              <input
+                className="a-filter-input"
+                value={detailTenantPhoneInput}
+                onChange={(e) => setDetailTenantPhoneInput(e.target.value)}
+                placeholder="手机号"
+                style={{ minWidth: 120 }}
+              />
+              <input
+                className="a-filter-input"
+                value={detailAssetNameInput}
+                onChange={(e) => setDetailAssetNameInput(e.target.value)}
+                placeholder="资产名称（公寓/房号/项目）"
+                style={{ minWidth: 220 }}
+              />
+            </div>
+            {batchVerifyResult && (batchVerifyResult.errors.length > 0 || batchVerifyResult.verified > 0) ? (
+              <div className="a-muted" style={{ marginBottom: 12, fontSize: 13 }}>
+                {batchVerifyResult.verified > 0 ? <div>本次成功核销 {batchVerifyResult.verified} 条</div> : null}
+                {batchVerifyResult.errors.length > 0 ? (
+                  <div style={{ color: '#b91c1c', marginTop: 4 }}>
+                    {batchVerifyResult.errors.slice(0, 8).map((e, i) => (
+                      <div key={i}>{e}</div>
+                    ))}
+                    {batchVerifyResult.errors.length > 8 ? <div>…等共 {batchVerifyResult.errors.length} 条提示</div> : null}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
             <div className="a-table-wrap">
             <table className="a-table a-table-sticky-op">
               <thead>
                 <tr>
+                  <th style={{ width: 42 }} aria-label="选择" />
                   <th>账单编号</th>
                   <th>合同</th>
                   <th>房源ID</th>
                   <th>公寓</th>
                   <th>房号</th>
                   <th>租客</th>
+                  <th>身份证</th>
                   <th>手机号</th>
+                  <th>店长备注</th>
                   <th>到期日</th>
-                  <th>金额</th>
+                  <th>应收</th>
+                  <th>已收</th>
+                  <th>待付</th>
                   <th>状态</th>
                   <th className="a-op-col">操作</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredDetailItems.map((b) => (
+                {detailItems.map((b) => (
                   <tr key={b.id}>
+                    <td>
+                      {b.status !== 'PAID' ? (
+                        <input
+                          type="checkbox"
+                          checked={payQrBillId === b.id}
+                          onChange={() => {
+                            setPayQrBillId((prev) => (prev === b.id ? null : b.id))
+                            setPayQrData(null)
+                          }}
+                          aria-label={`选择账单 ${formatBillNo(b.id)} 生成付款码`}
+                        />
+                      ) : (
+                        <span className="a-muted">—</span>
+                      )}
+                    </td>
                     <td style={{ fontWeight: 900, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{formatBillNo(b.id)}</td>
                     <td style={{ fontWeight: 700 }}>{formatContractNo(b.contractNo)}</td>
                     <td style={{ fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>{b.houseBizId}</td>
                     <td className="a-muted">{b.apartmentName}</td>
                     <td style={{ fontWeight: 700 }}>{b.houseNo}</td>
                     <td>{b.tenantName}</td>
+                    <td className="a-muted" style={{ fontSize: 12, maxWidth: 140, wordBreak: 'break-all' }}>{b.tenantIdNumber ?? '—'}</td>
                     <td className="a-muted">{b.tenantPhone}</td>
+                    <td className="a-muted" style={{ fontSize: 12, maxWidth: 160 }} title={(b.billingRemark ?? '').trim() || undefined}>
+                      {(b.billingRemark ?? '').trim() ? `${(b.billingRemark ?? '').trim().slice(0, 24)}${(b.billingRemark ?? '').trim().length > 24 ? '…' : ''}` : '—'}
+                    </td>
                     <td>{b.dueDate}</td>
                     <td style={{ fontWeight: 900 }}>¥{b.totalAmount}</td>
+                    <td className="a-muted" style={{ fontVariantNumeric: 'tabular-nums' }}>¥{b.amountReceived ?? 0}</td>
+                    <td style={{ fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: (b.amountRemaining ?? 0) > 0 ? '#b45309' : '#64748b' }}>
+                      ¥{b.amountRemaining ?? 0}
+                    </td>
                     <td>
-                      <span className={statusBadgeClass(b.status)}>{STATUS_ZH[b.status] ?? b.status}</span>
+                      <span className={statusBadgeForBill(b)}>{statusLabelForBill(b)}</span>
+                      {b.contractBillingPaused ? (
+                        <span className="a-badge status-wait-stamp" style={{ marginLeft: 6, fontSize: 11 }}>
+                          暂停计费
+                        </span>
+                      ) : null}
                     </td>
                     <td className="a-op-cell">
                       <div className="a-op-actions">
@@ -815,12 +1180,11 @@ export function BillsPage() {
                         >
                           {detailLoadingId === b.id ? '加载中…' : '查看详情'}
                         </button>
-                        <button
-                          className="a-btn ghost"
-                          onClick={() => openEdit(b.id)}
-                        >
-                          修改
-                        </button>
+                        {canEditBill ? (
+                          <button className="a-btn ghost" onClick={() => openEdit(b.id)}>
+                            修改
+                          </button>
+                        ) : null}
                         {b.status !== 'PAID' ? (
                           <button className="a-btn ghost" onClick={() => openOfflineVerify(b)}>
                             线下核销
@@ -830,9 +1194,9 @@ export function BillsPage() {
                     </td>
                   </tr>
                 ))}
-                {filteredDetailItems.length === 0 ? (
+                {detailItems.length === 0 ? (
                   <tr>
-                    <td colSpan={11} className="a-muted">该账期暂无账单明细。</td>
+                    <td colSpan={16} className="a-muted">该账期暂无账单明细。</td>
                   </tr>
                 ) : null}
               </tbody>
@@ -965,11 +1329,31 @@ export function BillsPage() {
                 <div className="a-kv-row"><div className="a-kv-k">到期日</div><div className="a-kv-v">{detailBill.dueDate}</div></div>
                 <div className="a-kv-row"><div className="a-kv-k">账单生成时间</div><div className="a-kv-v">{new Date(detailBill.createdAt).toLocaleString('zh-CN', { hour12: false })}</div></div>
                 <div className="a-kv-row"><div className="a-kv-k">房源</div><div className="a-kv-v">{detailBill.apartmentName} {detailBill.houseNo}（{detailBill.storeName}）</div></div>
-                <div className="a-kv-row"><div className="a-kv-k">租客</div><div className="a-kv-v">{detailBill.tenantName} {detailBill.tenantPhone}</div></div>
+                <div className="a-kv-row">
+                  <div className="a-kv-k">租客</div>
+                  <div className="a-kv-v">
+                    {[
+                      (detailBill.tenantName ?? '').replace(/undefined/g, '').trim(),
+                      (detailBill.tenantPhone ?? '').trim(),
+                    ]
+                      .filter(Boolean)
+                      .join(' ') || '—'}
+                  </div>
+                </div>
+                {detailBill.tenantIdNumber ? (
+                  <div className="a-kv-row">
+                    <div className="a-kv-k">证件号</div>
+                    <div className="a-kv-v" style={{ wordBreak: 'break-all', fontSize: 13 }}>{detailBill.tenantIdNumber}</div>
+                  </div>
+                ) : null}
+                <div className="a-kv-row">
+                  <div className="a-kv-k">店长备注</div>
+                  <div className="a-kv-v" style={{ whiteSpace: 'pre-wrap' }}>{(detailBill.billingRemark ?? '').trim() || '—'}</div>
+                </div>
                 <div className="a-kv-row">
                   <div className="a-kv-k">支付状态</div>
                   <div className="a-kv-v">
-                    <span className={statusBadgeClass(detailBill.status)}>{STATUS_ZH[detailBill.status] ?? detailBill.status}</span>
+                    <span className={statusBadgeForBill(detailBill)}>{statusLabelForBill(detailBill)}</span>
                     {detailBill.paidAt ? (
                       <span className="a-muted" style={{ marginLeft: 8 }}>
                         支付时间：{new Date(detailBill.paidAt).toLocaleString('zh-CN', { hour12: false })}
@@ -977,6 +1361,20 @@ export function BillsPage() {
                     ) : null}
                   </div>
                 </div>
+                <div className="a-kv-row">
+                  <div className="a-kv-k">已收 / 待付</div>
+                  <div className="a-kv-v">
+                    ¥{detailBill.amountReceived ?? 0} / 待付 ¥{detailBill.amountRemaining ?? Math.max(0, detailBill.totalAmount - (detailBill.amountReceived ?? 0))}
+                  </div>
+                </div>
+                {typeof detailBill.contractPrepayBalance === 'number' && detailBill.contractPrepayBalance > 0 ? (
+                  <div className="a-kv-row">
+                    <div className="a-kv-k">合同预收余额</div>
+                    <div className="a-kv-v" style={{ fontWeight: 800, color: '#0369a1' }}>
+                      ¥{detailBill.contractPrepayBalance}（见侧栏「合同预收款」）
+                    </div>
+                  </div>
+                ) : null}
                 {detailBill.offlineVerifiedAt ? (
                   <div className="a-kv-row">
                     <div className="a-kv-k">线下核销</div>
@@ -1003,22 +1401,12 @@ export function BillsPage() {
               </div>
               <div style={{ marginTop: 12, fontWeight: 700, color: '#475569' }}>收费明细</div>
               <div className="a-kv" style={{ marginTop: 6 }}>
-                {detailBill.items.map((it, i) => (
-                  <div key={i} className="a-kv-row">
+                {mergeFeeItemsForEdit(detailBill.items ?? []).map((it) => (
+                  <div key={it.name} className="a-kv-row">
                     <div className="a-kv-k">{it.name}</div>
                     <div className="a-kv-v">¥{it.amount}</div>
                   </div>
                 ))}
-                {detailBill.items.length === 0 ? (
-                  <>
-                    {FEE_ITEM_NAMES.map((name) => (
-                      <div key={name} className="a-kv-row">
-                        <div className="a-kv-k">{name}</div>
-                        <div className="a-kv-v">¥0</div>
-                      </div>
-                    ))}
-                  </>
-                ) : null}
                 <div className="a-kv-row" style={{ borderTop: '2px solid #e2e8f0', fontWeight: 800 }}>
                   <div className="a-kv-k">总费用</div>
                   <div className="a-kv-v">¥{detailBill.totalAmount}</div>
@@ -1145,6 +1533,19 @@ export function BillsPage() {
                     <input className="a-filter-input" type="date" value={importDueDate} onChange={(e) => setImportDueDate(e.target.value)} />
                   </div>
                 </div>
+                <div className="a-kv-row">
+                  <div className="a-kv-k">店长备注</div>
+                  <div className="a-kv-v">
+                    <textarea
+                      className="a-filter-input"
+                      value={importBillingRemark}
+                      onChange={(e) => setImportBillingRemark(e.target.value)}
+                      placeholder="可选：费用说明、对账说明等（与线下核销备注不同）"
+                      style={{ width: '100%', minHeight: 64, resize: 'vertical' }}
+                      maxLength={500}
+                    />
+                  </div>
+                </div>
               </div>
               <div style={{ marginTop: 12, fontWeight: 700, color: '#475569' }}>收费项目（金额为 0 的项不会导入）</div>
               <div className="a-kv" style={{ marginTop: 6 }}>
@@ -1193,10 +1594,35 @@ export function BillsPage() {
             </div>
             <div className="a-modal-body" style={{ display: 'block' }}>
               <div className="a-muted" style={{ marginBottom: 10 }}>
-                用于租客线下转账/现金收款的场景。提交后该账单将被标记为「已支付」。
+                可填写「本次实收金额」：小于剩余应付时账单仍待支付；等于或大于时结清本期，超出部分记入「合同预收款」余额（侧栏可查看流水）。
               </div>
               <div className="a-kv">
-                <div className="a-kv-row"><div className="a-kv-k">金额</div><div className="a-kv-v">¥{offlineVerifyBill.totalAmount}</div></div>
+                <div className="a-kv-row">
+                  <div className="a-kv-k">应收</div>
+                  <div className="a-kv-v">¥{offlineVerifyBill.totalAmount}</div>
+                </div>
+                <div className="a-kv-row">
+                  <div className="a-kv-k">已入账</div>
+                  <div className="a-kv-v">¥{offlineVerifyBill.amountReceived ?? 0}</div>
+                </div>
+                <div className="a-kv-row">
+                  <div className="a-kv-k">尚欠</div>
+                  <div className="a-kv-v" style={{ fontWeight: 800 }}>¥{offlineVerifyBill.amountRemaining ?? Math.max(0, offlineVerifyBill.totalAmount - (offlineVerifyBill.amountReceived ?? 0))}</div>
+                </div>
+                <div className="a-kv-row">
+                  <div className="a-kv-k">本次核销金额</div>
+                  <div className="a-kv-v">
+                    <input
+                      type="number"
+                      min={1}
+                      className="a-filter-input"
+                      style={{ width: 160 }}
+                      value={offlineVerifyAmount}
+                      onChange={(e) => setOfflineVerifyAmount(e.target.value)}
+                    />
+                    <span className="a-muted" style={{ marginLeft: 8 }}>元（整数）</span>
+                  </div>
+                </div>
                 <div className="a-kv-row">
                   <div className="a-kv-k">备注</div>
                   <div className="a-kv-v">
@@ -1312,6 +1738,19 @@ export function BillsPage() {
               </div>
               <div className="a-kv" style={{ marginTop: 10 }}>
                 <div className="a-kv-row">
+                  <div className="a-kv-k">店长备注</div>
+                  <div className="a-kv-v">
+                    <textarea
+                      className="a-filter-input"
+                      value={editBillingRemark}
+                      onChange={(e) => setEditBillingRemark(e.target.value)}
+                      placeholder="可选：费用说明、对账说明等（最多 500 字）"
+                      style={{ width: '100%', minHeight: 64, resize: 'vertical' }}
+                      maxLength={500}
+                    />
+                  </div>
+                </div>
+                <div className="a-kv-row">
                   <div className="a-kv-k">变更备注</div>
                   <div className="a-kv-v">
                     <textarea
@@ -1333,10 +1772,11 @@ export function BillsPage() {
                     setEditSubmitting(true)
                     setError('')
                     setMsg('')
-                    const body = {
+                    const body: Record<string, unknown> = {
                       dueDate: editDueDate,
                       items: editItems,
                       remark: editRemark.trim(),
+                      billingRemark: editBillingRemark.trim(),
                     }
                     const r = await apiPost<{ ok: true; id: string; totalAmount: number; dueDate: string }>(
                       `/api/admin/bills/${editBill.id}`,
@@ -1351,10 +1791,7 @@ export function BillsPage() {
                     setMsg('账单已修改并记录变更日志')
                     setEditBill(null)
                     if (current) {
-                      const rr = await apiGet<{ items: BillListItem[]; locked: boolean }>(
-                        `/api/admin/bill-periods/${current.storeId}/${current.period}`,
-                      )
-                      if (rr.ok) setDetailItems(rr.data.items ?? [])
+                      await loadPeriodBills(current.storeId, current.period, periodDetailFiltersFromInputs())
                     }
                     if (detailBill?.id === editBill.id) {
                       loadDetail(editBill.id)
@@ -1365,6 +1802,59 @@ export function BillsPage() {
                 </button>
                 <button className="a-btn ghost" onClick={() => setEditBill(null)} disabled={editSubmitting}>
                   取消
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {payQrData && (
+        <div
+          className="a-modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => e.target === e.currentTarget && setPayQrData(null)}
+        >
+          <div className="a-modal" style={{ maxWidth: 420 }} onClick={(e) => e.stopPropagation()}>
+            <div className="a-modal-header">
+              <div className="a-modal-title">付款二维码 · {payQrData.period}</div>
+              <button type="button" className="a-modal-close" onClick={() => setPayQrData(null)}>
+                关闭
+              </button>
+            </div>
+            <div className="a-modal-body" style={{ display: 'block' }}>
+              <div className="a-kv">
+                <div className="a-kv-row">
+                  <div className="a-kv-k">租客</div>
+                  <div className="a-kv-v">
+                    {payQrData.tenantName} {payQrData.tenantPhone}
+                  </div>
+                </div>
+                <div className="a-kv-row">
+                  <div className="a-kv-k">待付</div>
+                  <div className="a-kv-v" style={{ fontWeight: 800, color: '#b45309' }}>
+                    ¥{payQrData.amountRemaining}
+                  </div>
+                </div>
+              </div>
+              <div className="a-bill-pay-qr-wrap">
+                <img src={payQrData.qrImageUrl} alt="付款二维码" />
+              </div>
+              <p className="a-muted" style={{ fontSize: 13, lineHeight: 1.5, textAlign: 'center' }}>
+                请租客使用微信扫一扫，打开账单页后可「立即支付」。演示环境请确保手机能访问同一局域网下的 H5 地址。
+              </p>
+              <div className="a-bill-pay-qr-url">{payQrData.payUrl}</div>
+              <div className="a-row" style={{ marginTop: 12, gap: 8 }}>
+                <button
+                  type="button"
+                  className="a-btn ghost"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(payQrData.payUrl)
+                    setMsg('已复制付款链接')
+                  }}
+                >
+                  复制链接
                 </button>
               </div>
             </div>

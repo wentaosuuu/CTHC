@@ -5,6 +5,8 @@ import { HouseListPage } from './pages/HouseListPage'
 import { HouseDetailPage } from './pages/HouseDetailPage'
 import { MapPage } from './pages/MapPage'
 import { OrderCreatePage } from './pages/OrderCreatePage'
+import { CartPage } from './pages/CartPage'
+import { RentCheckoutPage } from './pages/RentCheckoutPage'
 import { ContractPage } from './pages/ContractPage'
 import { PaymentPage } from './pages/PaymentPage'
 import { PayReminderPage } from './pages/PayReminderPage'
@@ -31,6 +33,8 @@ function App() {
         <Route path="/houses/:id" element={<HouseDetailPage />} />
         <Route path="/map" element={<MapPage />} />
         <Route path="/order/:houseId" element={<OrderCreatePage />} />
+        <Route path="/cart" element={<CartPage />} />
+        <Route path="/checkout" element={<RentCheckoutPage />} />
         <Route path="/contracts/:id" element={<ContractPage />} />
         <Route path="/pay/:contractId" element={<PaymentPage />} />
         <Route path="/remind-pay/:contractId" element={<PayReminderPage />} />

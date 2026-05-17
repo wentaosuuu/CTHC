@@ -27,6 +27,8 @@ enum ContractStatus {
   WAIT_STAMP
   PENDING_PAYMENT
   ACTIVE
+  /// 管理员已发起退租，待租客在时限内电子确认（确认后执行实际退租结案）
+  WAIT_TENANT_MOVEOUT_SIGN
   VOID
   TERMINATED
 }
@@ -61,6 +63,14 @@ enum BillKind {
 enum AdminRoleCode {
   SYSTEM_ADMIN
   STORE_MANAGER
+}
+
+/// 租客信誉度：A/B/C/D 为人工维护的档案标记；各等级对应不同风控关注口径，系统不做自动拦截
+enum TenantCreditTier {
+  A
+  B
+  C
+  D
 }
 
 /// 组织架构（总部 / 区域 / 门店等）：预约看房电话与二维码在门店级部门上配置，并与 Store 可选关联
@@ -106,6 +116,8 @@ model Apartment {
   id        String   @id @default(cuid())
   externalId String? @unique
   name      String
+  /// 资产类型：泊湾公寓 / 商铺 / 厂房 / 住宅
+  assetType String   @default("泊湾公寓")
   storeId   String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -141,14 +153,49 @@ model House {
   nearbyBusStopsJson String @default("[]")
   /// 是否“已发布/上架”（H5 仅展示已发布房源）
   isPublished      Boolean @default(false)
+  /// H5「仅浏览」跳转的外部链接（非泊湾公寓等资产类型：合作方展示页）
+  externalBrowseUrl String?
+  /// 房屋配置项 JSON：[{ "label": "家电", "on": true }, ...]
+  houseConfigJson   String @default("[]")
+  /// 项目名称（运营口径；为空则列表/首页沿用门店名称）
+  projectName           String?
+  /// 收租单位
+  rentCollectionUnit    String?
+  /// 管理人
+  managerName           String?
+  /// 水表号列表 JSON：["WS-001","WS-002"]，与账单导入联动
+  waterMeterNosJson     String @default("[]")
+  /// 电表号列表 JSON：["EL-001"]
+  electricMeterNosJson  String @default("[]")
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
 
   apartment Apartment @relation(fields: [apartmentId], references: [id])
   orders    Order[]
+  orderLines OrderLine[]
   contracts Contract[]
+  changeLogs HouseChangeLog[]
 
   @@unique([apartmentId, houseNo])
+}
+
+/// 资产（房源）字段变更审计：一条记录对应一个字段的一次变更
+model HouseChangeLog {
+  id          String   @id @default(cuid())
+  houseId     String
+  fieldLabel  String
+  beforeValue String   @default("")
+  afterValue  String   @default("")
+  changedAt   DateTime @default(now())
+  adminId     String?
+  adminName   String?
+  adminEmail  String?
+
+  house House @relation(fields: [houseId], references: [id], onDelete: Cascade)
+  admin Admin? @relation(fields: [adminId], references: [id])
+
+  @@index([houseId])
+  @@index([changedAt])
 }
 
 model Tenant {
@@ -157,6 +204,14 @@ model Tenant {
   idNumber     String
   phone        String
   wechat       String?
+  /// 证件类型：IDCARD | PASSPORT | HKM_TW_PERMIT | USCC（与 H5 下单一致）
+  idDocType   String   @default("IDCARD")
+  /// 身份证是否长期有效（国徽面「有效期限」至长期）
+  idCardLongTerm   Boolean   @default(false)
+  /// 身份证有效截止日期（非长期时必填；长期时可为空）
+  idCardValidUntil DateTime?
+  /// 信誉度等级（档案标记，非自动风控）
+  creditTier   TenantCreditTier @default(A)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -172,6 +227,8 @@ model Order {
   tenantId      String
   leaseMonths   Int
   moveInDate    DateTime
+  /// 多房源合并为一份合同时为 true；子资产在 OrderLine 中
+  isMergedBundle Boolean    @default(false)
   status        OrderStatus @default(PENDING_REVIEW)
   reviewReason  String?
   createdAt     DateTime    @default(now())
@@ -179,7 +236,26 @@ model Order {
 
   house   House   @relation(fields: [houseId], references: [id])
   tenant  Tenant  @relation(fields: [tenantId], references: [id])
+  lines   OrderLine[]
   contract Contract?
+}
+
+/// 合并下单时：一单多房源（与 Order.houseId 主房源一致，行内存全部子资产快照）
+model OrderLine {
+  id                   String   @id @default(cuid())
+  orderId              String
+  houseId              String
+  rentMonthlySnapshot  Int
+  depositSnapshot      Int
+  sortOrder            Int      @default(0)
+  /// 子资产退租/换房迁出时间；有值则不再计入该合同后续 BASE 账单
+  releasedAt           DateTime?
+  createdAt            DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  house House @relation(fields: [houseId], references: [id])
+
+  @@index([orderId])
 }
 
 model Contract {
@@ -195,7 +271,7 @@ model Contract {
   rentMonthly     Int
   deposit         Int
   depositMultiple Float          @default(1)
-  rentCycle       String         @default("MONTHLY") // MONTHLY/QUARTERLY/YEARLY
+  rentCycle       String         @default("MONTHLY") // MONTHLY | BIMONTHLY | QUARTERLY | YEARLY
   penaltyFormula  String         @default("amount*0.1%*days")
   /// 已废弃：原「最晚交租固定日期」，请使用 latestRentGraceDays
   latestRentDueDate DateTime?
@@ -203,12 +279,22 @@ model Contract {
   latestRentGraceDays Int?
   /// 合同配置备注（富文本 HTML）
   configRemarkHtml String?
+  /// 书面合同「签订日期」（可与电子签字时间 signedAt 或落款日不同）
+  agreementSignDate DateTime?
   /// JSON: [{ "id": "...", "name": "文件名", "file": "磁盘文件名" }]
   attachmentsJson  String?      @default("[]")
+  /// 合同模板：TRIPARTITE=三方合同，APARTMENT=公寓合同（后台配置存档）
+  contractTemplate String       @default("APARTMENT")
+  /// 三方合同：逾期金额超过「月租×该倍数」时触发解除类短信（配置存档）
+  terminationRentMultiple Float?
+  /// 公寓合同：超过「最晚缴费日（应付日+宽限期口径）」后满该天数触发解除类短信（配置存档）
+  terminationDaysPastDue Int?
   /// 续签时指向上一份合同
   renewedFromId    String?
   /// 换房时指向上一份（旧房）合同
   changeHouseFromId String?
+  /// 换房新合同资金说明 JSON：预付租金结转、押金补差、规则文案等（仅换房生成的新合同可能有值）
+  changeHouseMoneyJson String?
   confirmedAt     DateTime?
   signedAt        DateTime?
   stampedAt       DateTime?
@@ -216,6 +302,14 @@ model Contract {
   terminatedAt    DateTime?
   modificationRequestedAt DateTime?  // 租客申请修改合同时写入，管理员处理/驳回后可清空
   modificationRejectedAt  DateTime?  // 管理员驳回修改申请时写入，管理员重新配置并保存后清空；有值时也显示「修改配置合同信息」按钮
+  /// 推送租客后「确认+签字」截止时间（满 3 天未确认则订单失效、房源释放）
+  tenantSignDeadlineAt DateTime?
+  /// 暂停计费开始时间（非空且未到恢复日 = 暂停中）
+  billingPausedAt DateTime?
+  /// 恢复计费日（按 UTC 日历日）；可设为未来以实现「择日恢复」
+  billingResumeFrom DateTime?
+  /// 退租待租客确认：JSON（terminateDate、reason、releaseHouseIds、attachments、deadlineAt 等）
+  moveOutPendingJson String?
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
 
@@ -231,6 +325,8 @@ model Contract {
   refunds  Refund[]
   housingReport HousingReport?
   rentReminders RentReminder[]
+  /// 合同维度的线下超额收款等形成的「预收余额」（元，整数），用于抵扣后续账单或人工处理
+  contractCredit ContractCredit?
 }
 
 model Payment {
@@ -249,6 +345,8 @@ model HousingReport {
   id            String   @id @default(cuid())
   contractId    String   @unique
   status        String   @default("PENDING") // PENDING/SUCCESS/FAILED
+  /// 住建局系统回传的备案编号（本演示由模拟报备接口写入）
+  bureauRecordNo String?
   receiptPdfPath String?
   lastError     String?
   reportedAt    DateTime?
@@ -264,6 +362,8 @@ model Bill {
   period      String     // e.g. 2026-03
   dueDate     DateTime
   totalAmount Int
+  /// 已计入本账单的实收（元）：线下分次核销累加；线上整笔支付一次记满；不超过 totalAmount
+  amountReceived Int @default(0)
   status      BillStatus @default(UNPAID)
   kind        BillKind   @default(BASE)
   paidAt      DateTime?
@@ -275,6 +375,8 @@ model Bill {
   offlineVerifiedRemark String?
   /// 线下核销：凭证附件 JSON [{ "id": "...", "name": "文件名", "file": "磁盘文件名" }]
   offlineVerifyAttachmentsJson String? @default("[]")
+  /// 店长账单备注（与线下核销备注不同：用于费用说明、对账说明等）
+  billingRemark String?
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 
@@ -283,8 +385,54 @@ model Bill {
   arrears  Arrears?
   rentReminders RentReminder[]
   changeLogs BillChangeLog[]
+  offlineVerifyLogs BillOfflineVerifyLog[]
 
   @@unique([contractId, period, kind])
+}
+
+/// 单次线下核销提交（支持部分金额、超额转预收），用于审计与交易流水
+model BillOfflineVerifyLog {
+  id                String   @id @default(cuid())
+  billId            String
+  /// 本次操作实收总额（元）：可能大于本账单剩余应付（超额部分记入合同预收）
+  amount            Int
+  remark            String?
+  attachmentsJson   String   @default("[]")
+  adminId           String?
+  createdAt         DateTime @default(now())
+
+  bill Bill @relation(fields: [billId], references: [id], onDelete: Cascade)
+
+  @@index([billId, createdAt])
+}
+
+/// 合同预收余额（同一合同一条）
+model ContractCredit {
+  id             String   @id @default(cuid())
+  contractId     String   @unique
+  balanceAmount  Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  contract Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+  ledgerEntries ContractCreditLedger[]
+}
+
+/// 预收余额变动流水
+model ContractCreditLedger {
+  id                  String   @id @default(cuid())
+  contractCreditId    String
+  deltaAmount         Int
+  balanceAfterAmount  Int
+  kind                String
+  billId              String?
+  remark              String?
+  adminId             String?
+  createdAt           DateTime @default(now())
+
+  contractCredit ContractCredit @relation(fields: [contractCreditId], references: [id], onDelete: Cascade)
+
+  @@index([contractCreditId, createdAt])
 }
 
 /// 账期汇总锁定（按门店+账期）：锁定后该账期数据不可再变更，且汇总以快照为准
@@ -317,6 +465,8 @@ model BillItem {
   billId   String
   name     String
   amount   Int
+  /// JSON：[{ "label": "公寓·房号", "amount": 3000 }] 多资产合并合同时租金分项
+  breakdownJson String?
   createdAt DateTime @default(now())
 
   bill Bill @relation(fields: [billId], references: [id])
@@ -399,6 +549,7 @@ model Admin {
 
   adminStores AdminStore[]
   billChangeLogs BillChangeLog[]
+  houseChangeLogs HouseChangeLog[]
 }
 
 model AdminStore {

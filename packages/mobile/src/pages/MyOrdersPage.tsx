@@ -1,13 +1,30 @@
 import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { getMyOrders, type MyOrderSummary } from '../api'
+import { Link, useLocation } from 'react-router-dom'
+import {
+  getDemoSyntheticContract,
+  getMyOrders,
+  getTenantPhone,
+  matchContractForOrder,
+  resolveContractForOrderDisplay,
+  type MyOrderSummary,
+  type TenantContractItem,
+} from '../api'
+import { formatCountdownHms, formatSignCountdownShort, pendingFirstPayDeadlineMs } from '../countdownFormat'
+import { useTenantContractItems } from '../hooks/useTenantContractItems'
 
 type OrderQuickFilter = 'ALL' | 'PENDING_REVIEW' | 'WAIT_CONFIRM' | 'SIGNED'
 
 function classifyOrderStatus(order: MyOrderSummary): OrderQuickFilter {
   const text = order.statusText ?? ''
   if (text.includes('已签约')) return 'SIGNED'
-  if (text.includes('确认订单')) return 'WAIT_CONFIRM'
+  if (
+    text.includes('确认订单') ||
+    (text.includes('审核通过') && text.includes('请确认')) ||
+    text.includes('首期款') ||
+    text.includes('待支付首期')
+  ) {
+    return 'WAIT_CONFIRM'
+  }
   return 'PENDING_REVIEW'
 }
 
@@ -18,12 +35,97 @@ function filterText(filter: OrderQuickFilter) {
   return '已签约'
 }
 
+function OrderCountdownBlock(props: {
+  contract: TenantContractItem | undefined
+  now: number
+  showDemoBadge: boolean
+}) {
+  const { contract, now, showDemoBadge } = props
+
+  if (!contract) return null
+
+  const demoTag = showDemoBadge ? (
+    <div className="m-order-deadline__demo">演示数据 · 非真实后台</div>
+  ) : null
+
+  if (contract.status === 'VOID' || contract.status === 'TERMINATED') return null
+
+  if (contract.status === 'WAIT_TENANT_SIGN' && contract.tenantSignDeadlineAt) {
+    const end = new Date(contract.tenantSignDeadlineAt).getTime()
+    const left = end - now
+    if (left <= 0) {
+      return (
+        <div className="m-order-deadline m-order-deadline--expired">
+          {demoTag}
+          确认与签字已超时，订单将失效（下拉刷新可同步状态）。
+        </div>
+      )
+    }
+    return (
+      <div className="m-order-deadline m-order-deadline--sign">
+        {demoTag}
+        <div className="m-order-deadline__label">合同确认与签字 · 剩余</div>
+        <div className="m-order-deadline__time">{formatSignCountdownShort(left)}</div>
+        <div className="m-order-deadline__sub">
+          截止 {new Date(contract.tenantSignDeadlineAt).toLocaleString('zh-CN')} · 含确认与电子签字，逾期订单取消
+        </div>
+        <div className="m-order-deadline__actions">
+          <Link className="m-btn ghost m-order-deadline__btn" to={`/contracts/${contract.id}`}>
+            去合同页
+          </Link>
+        </div>
+      </div>
+    )
+  }
+
+  if (contract.status === 'WAIT_STAMP') {
+    return null
+  }
+
+  if (contract.status === 'PENDING_PAYMENT' && contract.stampedAt) {
+    const endMs = pendingFirstPayDeadlineMs(contract)
+    if (endMs == null) return null
+    const left = endMs - now
+    if (left <= 0) {
+      return (
+        <div className="m-order-deadline m-order-deadline--expired">
+          {demoTag}
+          首期款支付时限已过，合同将自动作废（下拉刷新可同步状态）。
+        </div>
+      )
+    }
+    return (
+      <div className="m-order-deadline m-order-deadline--pay">
+        {demoTag}
+        <div className="m-order-deadline__label">首期款支付 · 剩余</div>
+        <div className="m-order-deadline__time">{formatCountdownHms(left)}</div>
+        <div className="m-order-deadline__sub">
+          截止 {new Date(endMs).toLocaleString('zh-CN')}
+          {contract.renewedFromId ? ' · 续签须在起租首日起 24h 内付清首期（与盖章后 24h 取较早截止）' : ' · 进入待付款后 24 小时内需完成首期款'}
+        </div>
+        <div className="m-order-deadline__actions">
+          <Link className="m-btn m-order-deadline__btn" to={`/pay/${contract.id}`}>
+            去支付
+          </Link>
+        </div>
+      </div>
+    )
+  }
+
+  return null
+}
+
 export function MyOrdersPage() {
-  const orders = useMemo<MyOrderSummary[]>(() => getMyOrders(), [])
+  const location = useLocation()
+  const orders = useMemo(() => getMyOrders(), [location.key])
+  const { items: contracts, now, loadError } = useTenantContractItems(location.key)
   const [quickFilter, setQuickFilter] = useState<OrderQuickFilter>('ALL')
   const [filterOpen, setFilterOpen] = useState(false)
   const [filterStartDate, setFilterStartDate] = useState<string>('')
   const [filterEndDate, setFilterEndDate] = useState<string>('')
+
+  const phone = getTenantPhone()
+  const hasPhone = Boolean(phone.trim())
 
   const filteredOrders = useMemo(() => {
     const byStatus = quickFilter === 'ALL' ? orders : orders.filter((o) => classifyOrderStatus(o) === quickFilter)
@@ -58,6 +160,26 @@ export function MyOrdersPage() {
 
   return (
     <div className="m-col">
+      {!hasPhone ? (
+        <div className="m-card m-order-deadline m-order-deadline--muted">
+          <div style={{ fontWeight: 800 }}>提示：绑定手机号</div>
+          <div style={{ marginTop: 6 }}>
+            列表中<strong>橙色 / 紫色 / 蓝色</strong>区块为<strong>演示用倒计时</strong>，便于向客户讲解流程。填写与下单一致的手机号后，可与后台<strong>真实合同</strong>进度同步展示。
+          </div>
+          <div style={{ marginTop: 10 }}>
+            <Link className="m-btn" to="/me/profile">
+              去填写手机号
+            </Link>
+          </div>
+        </div>
+      ) : null}
+
+      {hasPhone && loadError ? (
+        <div className="m-card m-error" style={{ fontSize: 13 }}>
+          合同列表加载失败：{loadError}
+        </div>
+      ) : null}
+
       <div className="m-card m-filter">
         <button
           type="button"
@@ -125,30 +247,34 @@ export function MyOrdersPage() {
         </div>
       ) : (
         <div className="m-col">
-          {filteredOrders.map((o) => (
-            <Link
-              key={o.id}
-              to={`/me/orders/${encodeURIComponent(o.id)}`}
-              className="m-card"
-              style={{ textDecoration: 'none' }}
-            >
-              <div className="m-row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                <div className="m-col">
-                  <span style={{ fontWeight: 700, fontSize: 15 }}>
-                    {o.houseTitle ?? `订单号：${o.id}`}
-                  </span>
-                  <span className="m-muted">{o.houseSubtitle ?? `订单号：${o.id}`}</span>
-                  <span className="m-muted">提交时间：{new Date(o.createdAt).toLocaleString()}</span>
-                </div>
-                <div style={{ textAlign: 'right' }}>
-                  {o.rentMonthly ? <div className="m-house-card-rent">¥{o.rentMonthly}/月</div> : null}
-                  <div className="m-muted" style={{ marginTop: 2 }}>
-                    {o.statusText ?? '已提交，等待管理员审核'}
+          {filteredOrders.map((o) => {
+            const real = matchContractForOrder(o, contracts)
+            const display = resolveContractForOrderDisplay(o, contracts)
+            const showDemoBadge = !real && Boolean(getDemoSyntheticContract(o))
+            return (
+              <div key={o.id} className="m-card" style={{ paddingBottom: 14 }}>
+                <Link
+                  to={`/me/orders/${encodeURIComponent(o.id)}`}
+                  style={{ textDecoration: 'none', color: 'inherit', display: 'block' }}
+                >
+                  <div className="m-row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                    <div className="m-col">
+                      <span style={{ fontWeight: 700, fontSize: 15 }}>{o.houseTitle ?? `订单号：${o.id}`}</span>
+                      <span className="m-muted">{o.houseSubtitle ?? `订单号：${o.id}`}</span>
+                      <span className="m-muted">提交时间：{new Date(o.createdAt).toLocaleString()}</span>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      {o.rentMonthly ? <div className="m-house-card-rent">¥{o.rentMonthly}/月</div> : null}
+                      <div className="m-muted" style={{ marginTop: 2 }}>
+                        {o.statusText ?? '已提交，等待管理员审核'}
+                      </div>
+                    </div>
                   </div>
-                </div>
+                </Link>
+                <OrderCountdownBlock contract={display} now={now} showDemoBadge={showDemoBadge} />
               </div>
-            </Link>
-          ))}
+            )
+          })}
           {filteredOrders.length === 0 ? (
             <div className="m-card">
               <div style={{ fontWeight: 800 }}>暂无符合条件的订单</div>

@@ -18,17 +18,117 @@ type OverdueItem = {
   penalty: number
 }
 
+type BillDetail = {
+  id: string
+  contractNo: string
+  apartmentName: string
+  houseNo: string
+  storeName: string
+  tenantName: string
+  tenantPhone: string
+  period: string
+  dueDate: string
+  totalAmount: number
+  amountReceived: number
+  amountRemaining: number
+  status: string
+  items: { name: string; amount: number }[]
+}
+
+type PeriodDetail = BillDetail & {
+  daysOverdue: number
+  penalty: number
+}
+
+type DetailModal = {
+  contractNo: string
+  apartmentName: string
+  houseNo: string
+  storeName: string
+  tenantName: string
+  tenantPhone: string
+  periods: PeriodDetail[]
+  focusBillId: string
+}
+
 function formatContractNo(contractNo: string) {
   const digits = (contractNo || '').replace(/\D/g, '')
   return digits ? `HT${digits}` : contractNo
 }
 
-// 账单编号展示：ZD + 固定长度数字（演示用，可替换为后端真实编号规则）
-function formatBillNo(billId: string, digits = 10) {
-  let h = 0
-  for (let i = 0; i < billId.length; i += 1) h = (h * 31 + billId.charCodeAt(i)) >>> 0
-  const s = String(h).padStart(digits, '0')
-  return `ZD${s.slice(-digits)}`
+function sortOverdueRows(a: OverdueItem, b: OverdueItem) {
+  return a.period.localeCompare(b.period) || a.dueDate.localeCompare(b.dueDate)
+}
+
+function OverduePeriodAccordion({
+  period,
+  expanded,
+  onToggle,
+  highlighted,
+}: {
+  period: PeriodDetail
+  expanded: boolean
+  onToggle: () => void
+  highlighted: boolean
+}) {
+  const remaining =
+    period.amountRemaining ?? Math.max(0, period.totalAmount - (period.amountReceived ?? 0))
+  const totalDue = remaining + period.penalty
+
+  return (
+    <div className={`a-overdue-period-card${highlighted ? ' is-focus' : ''}`}>
+      <button
+        type="button"
+        className="a-overdue-period-card-head"
+        onClick={onToggle}
+        aria-expanded={expanded}
+      >
+        <span className="a-overdue-period-chevron" aria-hidden>
+          {expanded ? '▾' : '▸'}
+        </span>
+        <span className="a-overdue-period-badge">账期 {period.period}</span>
+        <span className="a-overdue-period-head-meta">到期 {period.dueDate}</span>
+        <span className="a-overdue-period-head-meta">逾期 {period.daysOverdue} 天</span>
+        {period.penalty > 0 ? (
+          <span className="a-overdue-period-head-meta">滞纳金 ¥{period.penalty}</span>
+        ) : null}
+        <span className="a-overdue-period-head-due">待缴 ¥{totalDue}</span>
+      </button>
+      {expanded ? (
+        <div className="a-overdue-period-card-body">
+          <div className="a-overdue-period-summary">
+            <span>账单 ¥{period.totalAmount}</span>
+            {(period.amountReceived ?? 0) > 0 ? (
+              <span>已收 ¥{period.amountReceived} · 尚欠 ¥{remaining}</span>
+            ) : null}
+            {period.penalty > 0 ? <span>含滞纳金 ¥{period.penalty}</span> : null}
+          </div>
+          {(period.items ?? []).length > 0 ? (
+            <table className="a-overdue-fee-table">
+              <thead>
+                <tr>
+                  <th>收费项目</th>
+                  <th style={{ textAlign: 'right', width: 120 }}>金额</th>
+                </tr>
+              </thead>
+              <tbody>
+                {period.items.map((it) => (
+                  <tr key={it.name}>
+                    <td>{it.name}</td>
+                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>¥{it.amount}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div className="a-muted" style={{ fontSize: 13, padding: '4px 0' }}>
+              暂无分项明细
+            </div>
+          )}
+        </div>
+      ) : null}
+    </div>
+  )
 }
 
 export function OverduePage() {
@@ -41,7 +141,12 @@ export function OverduePage() {
   const [q, setQ] = useState('')
   const [storeFilter, setStoreFilter] = useState('')
   const [apartmentFilter, setApartmentFilter] = useState('')
-  const [overdueRange, setOverdueRange] = useState('') // '' | '7' | '30' | '90': 7天内 / 7-30天 / 30-90天 / 90天以上
+  const [overdueRange, setOverdueRange] = useState('')
+
+  const [detailModal, setDetailModal] = useState<DetailModal | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [detailError, setDetailError] = useState('')
+  const [expandedPeriodIds, setExpandedPeriodIds] = useState<Set<string>>(() => new Set())
 
   function resetOverdueFilters() {
     setQ('')
@@ -49,6 +154,12 @@ export function OverduePage() {
     setApartmentFilter('')
     setOverdueRange('')
     setPage(1)
+  }
+
+  function closeDetailModal() {
+    setDetailModal(null)
+    setDetailError('')
+    setExpandedPeriodIds(new Set())
   }
 
   const [smsModal, setSmsModal] = useState<{
@@ -64,6 +175,68 @@ export function OverduePage() {
     if (!r.ok) return setError(r.error)
     setItems(r.data.items)
     setRule(r.data.rule)
+  }
+
+  async function openDetail(row: OverdueItem) {
+    setDetailError('')
+    setDetailLoading(true)
+    setDetailModal(null)
+    setExpandedPeriodIds(new Set([row.billId]))
+
+    const contractRows = items.filter((x) => x.contractNo === row.contractNo).sort(sortOverdueRows)
+    const rowsToLoad = contractRows.length > 0 ? contractRows : [row]
+
+    const results = await Promise.all(
+      rowsToLoad.map(async (r) => {
+        const res = await apiGet<BillDetail>(`/api/admin/bills/${r.billId}`)
+        if (!res.ok) return { ok: false as const, error: res.error, billId: r.billId }
+        return {
+          ok: true as const,
+          period: {
+            ...res.data,
+            amountRemaining:
+              res.data.amountRemaining ?? Math.max(0, res.data.totalAmount - (res.data.amountReceived ?? 0)),
+            daysOverdue: r.daysOverdue,
+            penalty: r.penalty,
+          },
+        }
+      }),
+    )
+
+    setDetailLoading(false)
+
+    const failed = results.find((x) => !x.ok)
+    if (failed && !failed.ok) {
+      setDetailError(failed.error)
+      return
+    }
+
+    const periods = results
+      .filter((x): x is { ok: true; period: PeriodDetail } => x.ok)
+      .map((x) => x.period)
+      .sort((a, b) => a.period.localeCompare(b.period) || a.dueDate.localeCompare(b.dueDate))
+
+    const sample = periods[0] ?? null
+    setDetailModal({
+      contractNo: row.contractNo,
+      apartmentName: sample?.apartmentName ?? row.apartmentName,
+      houseNo: sample?.houseNo ?? row.houseNo,
+      storeName: sample?.storeName ?? row.storeName,
+      tenantName: sample?.tenantName ?? row.tenantName,
+      tenantPhone: sample?.tenantPhone ?? row.tenantPhone,
+      periods,
+      focusBillId: row.billId,
+    })
+    setExpandedPeriodIds(new Set([row.billId]))
+  }
+
+  function togglePeriodExpand(billId: string) {
+    setExpandedPeriodIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(billId)) next.delete(billId)
+      else next.add(billId)
+      return next
+    })
   }
 
   useEffect(() => {
@@ -95,6 +268,18 @@ export function OverduePage() {
   }, [items, q, storeFilter, apartmentFilter, overdueRange])
 
   const pageData = useMemo(() => paginate(filtered, page, pageSize), [filtered, page, pageSize])
+
+  const detailTotals = useMemo(() => {
+    if (!detailModal) return null
+    let billRemaining = 0
+    let penalty = 0
+    detailModal.periods.forEach((p) => {
+      const rem = p.amountRemaining ?? Math.max(0, p.totalAmount - (p.amountReceived ?? 0))
+      billRemaining += rem
+      penalty += p.penalty
+    })
+    return { billRemaining, penalty, total: billRemaining + penalty, count: detailModal.periods.length }
+  }, [detailModal])
 
   return (
     <div className="a-col">
@@ -164,7 +349,6 @@ export function OverduePage() {
         <table className="a-table a-table-sticky-op">
           <thead>
             <tr>
-              <th>账单编号</th>
               <th>合同</th>
               <th>房源ID</th>
               <th>公寓</th>
@@ -184,11 +368,6 @@ export function OverduePage() {
             {pageData.items.map((x) => (
               <tr key={x.billId}>
                 <td>
-                  <span style={{ fontWeight: 900, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
-                    {formatBillNo(x.billId)}
-                  </span>
-                </td>
-                <td>
                   <span style={{ fontWeight: 600 }}>{formatContractNo(x.contractNo)}</span>
                 </td>
                 <td style={{ fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>{x.houseBizId}</td>
@@ -204,6 +383,13 @@ export function OverduePage() {
                 <td>¥{x.penalty}</td>
                 <td className="a-op-cell">
                   <div className="a-op-actions">
+                    <button
+                      type="button"
+                      className="a-btn ghost"
+                      onClick={() => void openDetail(x)}
+                    >
+                      查看明细
+                    </button>
                     <button
                       type="button"
                       className="a-btn ghost"
@@ -223,7 +409,7 @@ export function OverduePage() {
             ))}
             {items.length === 0 ? (
               <tr>
-                <td colSpan={14} className="a-muted">
+                <td colSpan={13} className="a-muted">
                   暂无逾期账单（你也可以把本机日期往后调来模拟）。
                 </td>
               </tr>
@@ -243,7 +429,77 @@ export function OverduePage() {
         />
       </div>
 
-      {/* 发催租短信弹窗 */}
+      {(detailModal || detailLoading || detailError) && (
+        <div
+          className="a-modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeDetailModal()
+          }}
+        >
+          <div className="a-modal a-overdue-detail-modal" style={{ maxWidth: 600 }} onClick={(e) => e.stopPropagation()}>
+            <div className="a-modal-header">
+              <div className="a-modal-title">
+                {detailModal
+                  ? `欠费明细 · ${formatContractNo(detailModal.contractNo)}`
+                  : '欠费明细'}
+              </div>
+              <button type="button" className="a-modal-close" onClick={closeDetailModal}>
+                关闭
+              </button>
+            </div>
+            <div className="a-modal-body a-overdue-detail-body">
+              {detailLoading ? <div className="a-muted">加载中…</div> : null}
+              {detailError ? <div className="a-error">加载失败：{detailError}</div> : null}
+              {detailModal ? (
+                <>
+                  <div className="a-overdue-detail-summary">
+                    <div className="a-overdue-detail-summary-row">
+                      <span className="label">房源</span>
+                      <span className="value">
+                        {detailModal.apartmentName} {detailModal.houseNo}（{detailModal.storeName}）
+                      </span>
+                    </div>
+                    <div className="a-overdue-detail-summary-row">
+                      <span className="label">租客</span>
+                      <span className="value">
+                        {detailModal.tenantName} {detailModal.tenantPhone}
+                      </span>
+                    </div>
+                    {detailTotals ? (
+                      <div className="a-overdue-detail-summary-row total">
+                        <span className="label">欠费合计</span>
+                        <span className="value">
+                          ¥{detailTotals.total}
+                          <em>
+                            {detailTotals.count} 期 · 账单 ¥{detailTotals.billRemaining}
+                            {detailTotals.penalty > 0 ? ` + 滞纳金 ¥${detailTotals.penalty}` : ''}
+                          </em>
+                        </span>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div className="a-overdue-detail-section-title">逾期账期（点击行展开收费明细）</div>
+                  <div className="a-overdue-period-list">
+                    {detailModal.periods.map((p) => (
+                      <OverduePeriodAccordion
+                        key={p.id}
+                        period={p}
+                        expanded={expandedPeriodIds.has(p.id)}
+                        onToggle={() => togglePeriodExpand(p.id)}
+                        highlighted={p.id === detailModal.focusBillId}
+                      />
+                    ))}
+                  </div>
+                </>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      )}
+
       {smsModal && (
         <div
           className="a-modal-backdrop"
@@ -323,4 +579,3 @@ export function OverduePage() {
     </div>
   )
 }
-
