@@ -263,7 +263,6 @@ export function HouseDetailPage() {
             <div className="m-section-title m-section-title--sm">房屋配置</div>
             <div className="m-section-sub">已配备 {configOnCount} 项</div>
           </div>
-          {usingDemoConfig ? <span className="m-section-badge m-section-badge--sm">演示</span> : null}
         </div>
         <div className="m-config-chips">
           {configDisplayItems.map((x) => {

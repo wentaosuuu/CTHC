@@ -220,7 +220,7 @@ export function ContractPage() {
                   : data.status === 'WAIT_TENANT_SIGN'
                     ? data.renewedFromId
                       ? '续签：请在起租首日起 24 小时内完成「确认合同信息」与电子签字；须在同一截止时点前完成首期款支付，超时订单失效、房源将重新开放。'
-                      : '请在推送后 3 天内完成「确认合同信息」（含演示流程中的电子签字），超时订单失效、房源将重新开放。'
+                      : '请在推送后 3 天内完成「确认合同信息」（含电子签字），超时订单失效、房源将重新开放。'
                     : data.status === 'ACTIVE'
                       ? '合同已生效，无需付款。'
                       : data.status === 'WAIT_TENANT_MOVEOUT_SIGN'
@@ -253,7 +253,7 @@ export function ContractPage() {
             <div className="m-card">
               <div style={{ fontWeight: 900 }}>退租确认与签字</div>
               <div className="m-muted" style={{ marginTop: 8 }}>
-                请核对门店上传的退租说明与附件，确认无误后完成电子签字（演示流程）。
+                请核对门店上传的退租说明与附件，确认无误后完成电子签字。
               </div>
               {moveOutRemainingMs != null ? (
                 <>
@@ -374,7 +374,7 @@ export function ContractPage() {
 
           <div className="m-card">
             <div style={{ fontWeight: 900 }}>住建局报备</div>
-            <div className="m-muted">备案编号由住建局系统下发；本演示在报备成功时由系统模拟生成。</div>
+            <div className="m-muted">备案编号由住建局系统下发；报备成功时由系统生成。</div>
             <div style={{ height: 10 }} />
             <div className="m-kv">
               <div className="m-k">状态</div>

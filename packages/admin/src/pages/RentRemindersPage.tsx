@@ -166,7 +166,7 @@ export function RentRemindersPage() {
       <div className="a-card">
         <div className="a-h1">催租记录</div>
         <div className="a-muted">
-          系统对欠费租客发送的催缴短信台账（演示版：仅记录发送内容与时间）。可按门店/公寓/账期筛选，点击查看可看到完整短信内容。
+          系统对欠费租客发送的催缴短信台账（仅记录发送内容与时间）。可按门店/公寓/账期筛选，点击查看可看到完整短信内容。
         </div>
       </div>
 

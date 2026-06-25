@@ -134,3 +134,15 @@ export function clearCart() {
 export function cartCount(): number {
   return getCart().length
 }
+
+/** 批量更新购物车中若干套的租期/起租日（结算页同步用） */
+export function patchCartLines(
+  houseIds: string[],
+  patch: Partial<Pick<CartLine, 'leaseMonths' | 'moveInDate'>>,
+) {
+  if (!houseIds.length) return
+  const ids = new Set(houseIds)
+  setCart(
+    getCart().map((l) => (ids.has(l.houseId) ? { ...l, ...patch } : l)),
+  )
+}

@@ -1,7 +1,29 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { apiGet } from '../api'
+import { apiGet, apiPost } from '../api'
 import { Pagination, paginate } from '../components/Pagination'
+
+type ReceiptKind = 'RENT' | 'DEPOSIT'
+
+type ReceiptInfo = {
+  transactionId: string
+  printCount: number
+  status: 'ACTIVE' | 'VOID'
+  reprintApproved: boolean
+  reprintRequestStatus: 'PENDING' | 'APPROVED' | 'REJECTED' | null
+  reprintRequestReason: string | null
+  reprintRequestedAt: string | null
+  reprintReviewRemark: string | null
+  voidReason: string | null
+  voidedAt: string | null
+  lastPrintedAt: string | null
+  lastReceiptKind: ReceiptKind | null
+  canPrint: boolean
+  canRequestReprint: boolean
+  canApproveReprint: boolean
+  canVoid: boolean
+  printBlockedReason: string | null
+}
 
 type TxItem = {
   id: string
@@ -32,6 +54,7 @@ type TxItem = {
       downloadUrl: string
     }[]
   } | null
+  receipt: ReceiptInfo
 }
 
 const TYPE_ZH: Record<TxItem['type'], string> = {
@@ -56,8 +79,6 @@ const CHANNEL_ZH: Record<TxItem['channel'], string> = {
   ONLINE: '线上支付',
   OFFLINE: '线下支付',
 }
-
-type ReceiptKind = 'RENT' | 'DEPOSIT'
 
 const RECEIPT_KIND_ZH: Record<ReceiptKind, string> = {
   RENT: '租金收据',
@@ -100,10 +121,40 @@ function fmtVerifyModalDt(iso: string) {
   }
 }
 
+function receiptStatusLabel(r: ReceiptInfo) {
+  if (r.status === 'VOID') return '已作废·可重开'
+  if (r.reprintRequestStatus === 'PENDING') return '再次导出待审'
+  if (r.reprintRequestStatus === 'REJECTED') return '申请已驳回'
+  if (r.reprintApproved) return '可再次导出'
+  if (r.printCount > 0) return '已导出'
+  return '未导出'
+}
+
+function receiptStatusColor(r: ReceiptInfo) {
+  if (r.status === 'VOID') return '#b45309'
+  if (r.reprintRequestStatus === 'PENDING') return '#b45309'
+  if (r.reprintRequestStatus === 'REJECTED') return '#b91c1c'
+  if (r.reprintApproved) return '#047857'
+  if (r.printCount > 0) return '#334155'
+  return '#94a3b8'
+}
+
+/** 是否可发起再次导出申请（以接口返回为准） */
+function canShowReexportApply(receipt: ReceiptInfo) {
+  return receipt.canRequestReprint
+}
+
+function openReexportApplyModal(x: TxItem, setReprintReason: (v: string) => void, setReprintModal: (v: TxItem) => void) {
+  setReprintReason(x.receipt.reprintRequestReason ?? '')
+  setReprintModal(x)
+}
+
 export function TransactionsPage() {
   const [items, setItems] = useState<TxItem[]>([])
   const [error, setError] = useState('')
   const [msg, setMsg] = useState('')
+  const [meRoleCode, setMeRoleCode] = useState('')
+  const isFinance = meRoleCode === 'FINANCE'
 
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
@@ -113,13 +164,32 @@ export function TransactionsPage() {
   const [storeFilter, setStoreFilter] = useState('')
   const [apartmentFilter, setApartmentFilter] = useState('')
   const [periodFilter, setPeriodFilter] = useState('')
+  const [receiptFilter, setReceiptFilter] = useState('')
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
   const [receiptOpen, setReceiptOpen] = useState(false)
   const [receiptKind, setReceiptKind] = useState<ReceiptKind | ''>('')
+  const [receiptTargetIds, setReceiptTargetIds] = useState<string[]>([])
 
   const [verifyDetail, setVerifyDetail] = useState<TxItem | null>(null)
+  const [reprintModal, setReprintModal] = useState<TxItem | null>(null)
+  const [reprintReason, setReprintReason] = useState('')
+  const [voidModal, setVoidModal] = useState<TxItem | null>(null)
+  const [voidReason, setVoidReason] = useState('')
+  const [reviewModal, setReviewModal] = useState<TxItem | null>(null)
+  const [reviewRemark, setReviewRemark] = useState('')
+  const [receiptDetailModal, setReceiptDetailModal] = useState<TxItem | null>(null)
+  const [printLogs, setPrintLogs] = useState<
+    {
+      id: string
+      receiptKind: ReceiptKind
+      printSeq: number
+      printedAt: string
+      printedByAdminName: string | null
+      printedByAdminEmail: string | null
+    }[]
+  >([])
 
   function resetTransactionFilters() {
     setQ('')
@@ -128,6 +198,7 @@ export function TransactionsPage() {
     setStoreFilter('')
     setApartmentFilter('')
     setPeriodFilter('')
+    setReceiptFilter('')
     setPage(1)
   }
 
@@ -142,7 +213,48 @@ export function TransactionsPage() {
 
   useEffect(() => {
     load()
+    apiGet<{ roleCode: string }>('/api/admin/me').then((r) => {
+      if (r.ok) setMeRoleCode(r.data.roleCode)
+    })
   }, [])
+
+  function patchReceipt(transactionId: string, receipt: ReceiptInfo) {
+    setItems((prev) => prev.map((x) => (x.id === transactionId ? { ...x, receipt } : x)))
+  }
+
+  async function openReceiptDetail(x: TxItem) {
+    setReceiptDetailModal(x)
+    setPrintLogs([])
+    const r = await apiGet<{
+      items: {
+        id: string
+        receiptKind: ReceiptKind
+        printSeq: number
+        printedAt: string
+        printedByAdminName: string | null
+        printedByAdminEmail: string | null
+      }[]
+    }>(`/api/admin/transactions/receipts/${encodeURIComponent(x.id)}/print-logs`)
+    setPrintLogs(r.ok ? r.data.items : [])
+  }
+
+  function openReceiptModal(ids: string[]) {
+    setError('')
+    setMsg('')
+    if (ids.length === 0) return setError('请先选择交易记录')
+    const blocked = items.filter((x) => ids.includes(x.id) && !x.receipt.canPrint)
+    if (blocked.length > 0) {
+      const first = blocked[0]
+      return setError(first.receipt.printBlockedReason ?? `流水 ${first.txNo} 当前不可导出`)
+    }
+    setReceiptTargetIds(ids)
+    setReceiptKind('')
+    setReceiptOpen(true)
+  }
+
+  function openReceiptExportModal() {
+    openReceiptModal(Array.from(selectedIds))
+  }
 
   const filterOptions = useMemo(() => {
     const stores = Array.from(new Set(items.map((x) => x.house.storeName).filter(Boolean))).sort()
@@ -159,12 +271,26 @@ export function TransactionsPage() {
       if (storeFilter && x.house.storeName !== storeFilter) return false
       if (apartmentFilter && x.house.apartmentName !== apartmentFilter) return false
       if (periodFilter && x.period !== periodFilter) return false
+      if (receiptFilter === 'pending_reprint' && x.receipt.reprintRequestStatus !== 'PENDING') return false
+      if (receiptFilter === 'need_apply' && !canShowReexportApply(x.receipt)) return false
+      if (receiptFilter === 'voided' && x.receipt.status !== 'VOID') return false
+      if (receiptFilter === 'printed' && x.receipt.printCount === 0) return false
       if (!kw) return true
       const hay =
         `${x.txNo} ${x.orderId} ${x.contractNo} ${formatContractNo(x.contractNo)} ${x.tenant.name} ${x.tenant.phone} ${x.house.storeName} ${x.house.apartmentName} ${x.house.houseNo} ${x.houseBizId} ${x.period ?? ''} ${x.note} ${TYPE_ZH[x.type]} ${CHANNEL_ZH[x.channel]}`.toLowerCase()
       return hay.includes(kw)
     })
-  }, [items, q, typeFilter, channelFilter, storeFilter, apartmentFilter, periodFilter])
+  }, [items, q, typeFilter, channelFilter, storeFilter, apartmentFilter, periodFilter, receiptFilter])
+
+  const pendingReprintCount = useMemo(
+    () => items.filter((x) => x.receipt.reprintRequestStatus === 'PENDING').length,
+    [items],
+  )
+
+  const needReexportApplyCount = useMemo(
+    () => items.filter((x) => canShowReexportApply(x.receipt)).length,
+    [items],
+  )
 
   const pageData = useMemo(() => paginate(filtered, page, pageSize), [filtered, page, pageSize])
 
@@ -172,41 +298,127 @@ export function TransactionsPage() {
   const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id))
   const someVisibleSelected = visibleIds.some((id) => selectedIds.has(id))
 
-  function openReceiptExportModal() {
-    setError('')
-    setMsg('')
-    if (selectedIds.size === 0) return setError('请先勾选要导出的交易记录')
-    setReceiptKind('')
-    setReceiptOpen(true)
-  }
-
   function closeReceiptModal() {
     setReceiptOpen(false)
     setReceiptKind('')
+    setReceiptTargetIds([])
   }
 
-  function confirmReceiptExport() {
-    const ids = Array.from(selectedIds)
+  async function confirmReceiptExport() {
+    const ids = receiptTargetIds
     const kind = receiptKind
     if (!kind || ids.length === 0) return
-    setMsg(
-      `已导出请求：${ids.length} 条，收据类型「${RECEIPT_KIND_ZH[kind]}」。正式文件生成待收据模板接入后启用。`,
+    setError('')
+    const r = await apiPost<{ message: string; results: { transactionId: string; receipt: ReceiptInfo }[] }>(
+      '/api/admin/transactions/receipts/print',
+      { transactionIds: ids, receiptKind: kind },
     )
+    if (!r.ok) return setError(r.error)
+    for (const row of r.data.results) patchReceipt(row.transactionId, row.receipt)
+    setMsg(r.data.message)
     closeReceiptModal()
   }
 
-  const emptyColSpan = 18
+  async function submitReprintRequest() {
+    if (!reprintModal) return
+    const reason = reprintReason.trim()
+    if (reason.length < 2) return setError('请填写再次导出原因（至少 2 字）')
+    const r = await apiPost<{ receipt: ReceiptInfo }>('/api/admin/transactions/receipts/reprint-request', {
+      transactionId: reprintModal.id,
+      reason,
+    })
+    if (!r.ok) return setError(r.error)
+    patchReceipt(reprintModal.id, r.data.receipt)
+    setMsg(`已提交再次导出申请：${reprintModal.txNo}`)
+    setReprintModal(null)
+    setReprintReason('')
+  }
+
+  async function submitReprintReview(action: 'APPROVE' | 'REJECT') {
+    if (!reviewModal) return
+    const r = await apiPost<{ receipt: ReceiptInfo }>('/api/admin/transactions/receipts/reprint-review', {
+      transactionId: reviewModal.id,
+      action,
+      remark: reviewRemark.trim() || undefined,
+    })
+    if (!r.ok) return setError(r.error)
+    patchReceipt(reviewModal.id, r.data.receipt)
+    setMsg(action === 'APPROVE' ? `已批准再次导出：${reviewModal.txNo}` : `已驳回再次导出申请：${reviewModal.txNo}`)
+    setReviewModal(null)
+    setReviewRemark('')
+  }
+
+  async function submitVoidReceipt() {
+    if (!voidModal) return
+    const reason = voidReason.trim()
+    if (reason.length < 2) return setError('请填写作废原因（至少 2 字）')
+    const r = await apiPost<{ receipt: ReceiptInfo }>('/api/admin/transactions/receipts/void', {
+      transactionId: voidModal.id,
+      reason,
+    })
+    if (!r.ok) return setError(r.error)
+    patchReceipt(voidModal.id, r.data.receipt)
+    setMsg(`收据已作废：${voidModal.txNo}`)
+    setVoidModal(null)
+    setVoidReason('')
+  }
+
+  const emptyColSpan = 20
 
   return (
     <div className="a-col">
       <div className="a-card">
         <div className="a-h1">交易记录</div>
         <div className="a-muted">
-          汇总系统内收款、退款与线下核销流水。线下核销可查看附件；原「核销记录」菜单已合并至本页，请用「类型」筛选。
+          汇总系统内收款、退款与线下核销流水。<strong>所有角色</strong>每条交易流水收据仅可<strong>导出 1 次</strong>；再次导出须向<strong>财务</strong>申请并说明原因。<strong>财务作废</strong>后，可重新开具收据（作废记录保留在收据详情中）。
         </div>
+        {meRoleCode ? (
+          <div className="a-muted" style={{ marginTop: 6, fontSize: 13 }}>
+            当前登录角色：
+            <strong>
+              {meRoleCode === 'STORE_MANAGER'
+                ? '店长'
+                : meRoleCode === 'FINANCE'
+                  ? '财务'
+                  : meRoleCode === 'SYSTEM_ADMIN'
+                    ? '系统管理员'
+                    : meRoleCode}
+            </strong>
+          </div>
+        ) : null}
+        {isFinance && pendingReprintCount > 0 ? (
+          <div className="a-muted" style={{ marginTop: 8, color: '#b45309' }}>
+            待审批再次导出申请 {pendingReprintCount} 条，可在下方筛选「再次导出待审」或于操作列审批。
+          </div>
+        ) : null}
+        {needReexportApplyCount > 0 && !isFinance ? (
+          <div className="a-muted" style={{ marginTop: 8 }}>
+            当前有 <strong>{needReexportApplyCount}</strong> 条流水已导出、可申请再次导出。请点击操作列
+            <strong>「申请再次导出」</strong>并填写原因，待财务审批通过后方可再次导出。
+          </div>
+        ) : null}
       </div>
 
-      {error ? <div className="a-card a-error">加载失败：{error}</div> : null}
+      {error ? <div className="a-card a-error">{error}</div> : null}
+      {needReexportApplyCount > 0 ? (
+        <div className="a-card" style={{ borderColor: '#fdba74', background: '#fff7ed', padding: '10px 14px' }}>
+          <strong style={{ color: '#c2410c' }}>有 {needReexportApplyCount} 条流水已导出、可申请再次导出。</strong>
+          <span className="a-muted" style={{ marginLeft: 8 }}>
+            请在操作列点击橙色「申请再次导出」，或筛选「可申请再次导出」快速定位。
+          </span>
+          <button
+            type="button"
+            className="a-btn a-reexport-apply-btn"
+            style={{ marginLeft: 12 }}
+            onClick={() => {
+              setReceiptFilter('need_apply')
+              setPage(1)
+            }}
+          >
+            查看待申请流水
+          </button>
+        </div>
+      ) : null}
       {msg ? <div className="a-card a-success">{msg}</div> : null}
 
       <div className="a-card">
@@ -299,6 +511,21 @@ export function TransactionsPage() {
               <option value="ONLINE">线上支付</option>
               <option value="OFFLINE">线下支付</option>
             </select>
+            <select
+              className="a-filter-select"
+              value={receiptFilter}
+              onChange={(e) => {
+                setReceiptFilter(e.target.value)
+                setPage(1)
+              }}
+              title="收据状态"
+            >
+              <option value="">全部收据</option>
+              <option value="need_apply">可申请再次导出</option>
+              <option value="pending_reprint">再次导出待审</option>
+              <option value="printed">已导出</option>
+              <option value="voided">已作废</option>
+            </select>
             <button className="a-btn ghost" onClick={() => setPage(1)} title="使用当前筛选条件进行查询">
               查询
             </button>
@@ -378,6 +605,8 @@ export function TransactionsPage() {
                 <th>公寓</th>
                 <th>房号</th>
                 <th>账期 / 到期</th>
+                <th>导出次数</th>
+                <th>收据状态</th>
                 <th>备注</th>
                 <th>附件</th>
                 <th className="a-op-col">操作</th>
@@ -424,21 +653,93 @@ export function TransactionsPage() {
                   <td className="a-muted" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
                     {x.period || '—'} <span style={{ color: '#94a3b8' }}>/</span> {x.dueDate || '—'}
                   </td>
+                  <td style={{ whiteSpace: 'nowrap', fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>
+                    {x.receipt.printCount}
+                  </td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    <span style={{ fontWeight: 700, color: receiptStatusColor(x.receipt) }}>
+                      {receiptStatusLabel(x.receipt)}
+                    </span>
+                    {canShowReexportApply(x.receipt) ? (
+                      <button
+                        type="button"
+                        className="a-btn ghost"
+                        style={{ marginLeft: 6, padding: '2px 8px', fontSize: 12, color: '#b45309', borderColor: '#fdba74' }}
+                        onClick={() => openReexportApplyModal(x, setReprintReason, setReprintModal)}
+                      >
+                        去申请
+                      </button>
+                    ) : null}
+                  </td>
                   <td className="a-muted" style={{ maxWidth: 220, fontSize: 12 }}>
                     {x.note}
                   </td>
                   <td className="a-muted" style={{ whiteSpace: 'nowrap' }}>
                     {x.attachmentCount > 0 ? `${x.attachmentCount} 个` : '—'}
                   </td>
-                  <td className="a-op-cell">
-                    <div className="a-op-actions">
+                  <td className="a-op-cell a-op-cell--transactions">
+                    <div className="a-op-actions a-op-actions--transactions">
+                      <button type="button" className="a-btn ghost" onClick={() => openReceiptDetail(x)}>
+                        收据详情
+                      </button>
+                      {x.receipt.canPrint ? (
+                        <button type="button" className="a-btn" onClick={() => openReceiptModal([x.id])}>
+                          导出收据
+                        </button>
+                      ) : null}
+                      {canShowReexportApply(x.receipt) ? (
+                        <button
+                          type="button"
+                          className="a-btn a-reexport-apply-btn"
+                          onClick={() => openReexportApplyModal(x, setReprintReason, setReprintModal)}
+                        >
+                          申请再次导出
+                        </button>
+                      ) : null}
+                      {x.receipt.reprintRequestStatus === 'PENDING' && x.receipt.status !== 'VOID' ? (
+                        <button type="button" className="a-btn ghost" disabled title="已提交申请，请等待财务审批">
+                          财务审核中
+                        </button>
+                      ) : null}
+                      {x.receipt.reprintRequestStatus === 'REJECTED' && x.receipt.reprintReviewRemark ? (
+                        <span
+                          className="a-muted"
+                          style={{ fontSize: 12, maxWidth: 120 }}
+                          title={`驳回原因：${x.receipt.reprintReviewRemark}`}
+                        >
+                          驳回：{x.receipt.reprintReviewRemark.slice(0, 12)}
+                          {x.receipt.reprintReviewRemark.length > 12 ? '…' : ''}
+                        </span>
+                      ) : null}
+                      {x.receipt.canApproveReprint ? (
+                        <button
+                          type="button"
+                          className="a-btn ghost"
+                          onClick={() => {
+                            setReviewRemark('')
+                            setReviewModal(x)
+                          }}
+                        >
+                          审批导出
+                        </button>
+                      ) : null}
+                      {x.receipt.canVoid ? (
+                        <button
+                          type="button"
+                          className="a-btn ghost"
+                          onClick={() => {
+                            setVoidReason('')
+                            setVoidModal(x)
+                          }}
+                        >
+                          作废收据
+                        </button>
+                      ) : null}
                       {x.type === 'OFFLINE_VERIFY' && x.verify ? (
                         <button type="button" className="a-btn ghost" onClick={() => setVerifyDetail(x)}>
                           核销详情
                         </button>
-                      ) : (
-                        <span className="a-muted">—</span>
-                      )}
+                      ) : null}
                     </div>
                   </td>
                 </tr>
@@ -481,7 +782,8 @@ export function TransactionsPage() {
             </div>
             <div className="a-modal-body" style={{ display: 'block' }}>
               <p className="a-muted" style={{ margin: '0 0 14px', lineHeight: 1.55, fontSize: 14 }}>
-                已选择 <strong>{selectedIds.size}</strong> 条记录。请选择收据模板类型（业主提供 Word/PDF 模板后将自动套打）。
+                已选择 <strong>{receiptTargetIds.length}</strong> 条记录。请选择收据类型（业主提供 Word/PDF 模板后将自动套打）。
+                <strong>所有账号</strong>每条流水仅可导出 1 次；再次导出须先向财务申请并获批准。
               </p>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <label className="a-row" style={{ alignItems: 'center', gap: 8, cursor: 'pointer' }}>
@@ -590,6 +892,269 @@ export function TransactionsPage() {
                   去账单管理
                 </Link>
                 <button type="button" className="a-btn ghost" onClick={() => setVerifyDetail(null)}>
+                  关闭
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {reprintModal ? (
+        <div
+          className="a-modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => e.target === e.currentTarget && setReprintModal(null)}
+        >
+          <div className="a-modal" style={{ maxWidth: 480 }} onClick={(e) => e.stopPropagation()}>
+            <div className="a-modal-header">
+              <div className="a-modal-title">申请再次导出 · {reprintModal.txNo}</div>
+              <button type="button" className="a-modal-close" onClick={() => setReprintModal(null)}>
+                关闭
+              </button>
+            </div>
+            <div className="a-modal-body" style={{ display: 'block' }}>
+              <p className="a-muted" style={{ margin: '0 0 12px', lineHeight: 1.55 }}>
+                该流水已导出 {reprintModal.receipt.printCount} 次。请说明再次导出原因，提交后由<strong>财务</strong>审批；审批通过后方可再次导出。
+              </p>
+              <textarea
+                className="a-filter-input"
+                style={{ width: '100%', minHeight: 96, resize: 'vertical' }}
+                value={reprintReason}
+                onChange={(e) => setReprintReason(e.target.value)}
+                placeholder="请填写再次导出原因，如：租客遗失收据、打印不清晰等"
+              />
+              <div className="a-row" style={{ marginTop: 14, gap: 10 }}>
+                <button type="button" className="a-btn ghost" onClick={() => setReprintModal(null)}>
+                  取消
+                </button>
+                <button type="button" className="a-btn" onClick={submitReprintRequest}>
+                  提交申请
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {reviewModal ? (
+        <div
+          className="a-modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => e.target === e.currentTarget && setReviewModal(null)}
+        >
+          <div className="a-modal" style={{ maxWidth: 520 }} onClick={(e) => e.stopPropagation()}>
+            <div className="a-modal-header">
+              <div className="a-modal-title">审批再次导出 · {reviewModal.txNo}</div>
+              <button type="button" className="a-modal-close" onClick={() => setReviewModal(null)}>
+                关闭
+              </button>
+            </div>
+            <div className="a-modal-body" style={{ display: 'block' }}>
+              <div className="a-kv">
+                <div className="a-kv-row">
+                  <div className="a-kv-k">已导出次数</div>
+                  <div className="a-kv-v">{reviewModal.receipt.printCount}</div>
+                </div>
+                <div className="a-kv-row">
+                  <div className="a-kv-k">申请原因</div>
+                  <div className="a-kv-v">{reviewModal.receipt.reprintRequestReason || '—'}</div>
+                </div>
+              </div>
+              <div style={{ marginTop: 12 }}>
+                <div className="a-muted" style={{ marginBottom: 6 }}>审批备注（选填）</div>
+                <input
+                  className="a-filter-input"
+                  style={{ width: '100%' }}
+                  value={reviewRemark}
+                  onChange={(e) => setReviewRemark(e.target.value)}
+                  placeholder="驳回时请说明原因"
+                />
+              </div>
+              <div className="a-row" style={{ marginTop: 14, gap: 10 }}>
+                <button type="button" className="a-btn ghost" onClick={() => submitReprintReview('REJECT')}>
+                  驳回
+                </button>
+                <button type="button" className="a-btn" onClick={() => submitReprintReview('APPROVE')}>
+                  批准再次导出
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {voidModal ? (
+        <div
+          className="a-modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => e.target === e.currentTarget && setVoidModal(null)}
+        >
+          <div className="a-modal" style={{ maxWidth: 480 }} onClick={(e) => e.stopPropagation()}>
+            <div className="a-modal-header">
+              <div className="a-modal-title">作废收据 · {voidModal.txNo}</div>
+              <button type="button" className="a-modal-close" onClick={() => setVoidModal(null)}>
+                关闭
+              </button>
+            </div>
+            <div className="a-modal-body" style={{ display: 'block' }}>
+              <p className="a-muted" style={{ margin: '0 0 12px', lineHeight: 1.55 }}>
+                作废后该流水收据将不可再打印，请谨慎操作。
+              </p>
+              <textarea
+                className="a-filter-input"
+                style={{ width: '100%', minHeight: 96, resize: 'vertical' }}
+                value={voidReason}
+                onChange={(e) => setVoidReason(e.target.value)}
+                placeholder="请填写作废原因"
+              />
+              <div className="a-row" style={{ marginTop: 14, gap: 10 }}>
+                <button type="button" className="a-btn ghost" onClick={() => setVoidModal(null)}>
+                  取消
+                </button>
+                <button type="button" className="a-btn" onClick={submitVoidReceipt}>
+                  确认作废
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {receiptDetailModal ? (
+        <div
+          className="a-modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => e.target === e.currentTarget && setReceiptDetailModal(null)}
+        >
+          <div className="a-modal a-modal--receipt-detail" onClick={(e) => e.stopPropagation()}>
+            <div className="a-modal-header">
+              <div className="a-modal-title">收据详情 · {receiptDetailModal.txNo}</div>
+              <button type="button" className="a-modal-close" onClick={() => setReceiptDetailModal(null)}>
+                关闭
+              </button>
+            </div>
+            <div className="a-modal-body" style={{ display: 'block' }}>
+              <div className="a-kv" style={{ marginBottom: 14 }}>
+                <div className="a-kv-row">
+                  <div className="a-kv-k">收据状态</div>
+                  <div className="a-kv-v" style={{ color: receiptStatusColor(receiptDetailModal.receipt), fontWeight: 700 }}>
+                    {receiptStatusLabel(receiptDetailModal.receipt)}
+                  </div>
+                </div>
+                <div className="a-kv-row">
+                  <div className="a-kv-k">累计导出</div>
+                  <div className="a-kv-v">{receiptDetailModal.receipt.printCount} 次</div>
+                </div>
+                {receiptDetailModal.receipt.lastPrintedAt ? (
+                  <div className="a-kv-row">
+                    <div className="a-kv-k">最近导出</div>
+                    <div className="a-kv-v">
+                      {fmtDt(receiptDetailModal.receipt.lastPrintedAt)}
+                      {receiptDetailModal.receipt.lastReceiptKind
+                        ? ` · ${RECEIPT_KIND_ZH[receiptDetailModal.receipt.lastReceiptKind]}`
+                        : ''}
+                      {printLogs[0]?.printedByAdminEmail
+                        ? ` · ${printLogs[0].printedByAdminName || '—'}（${printLogs[0].printedByAdminEmail}）`
+                        : printLogs[0]?.printedByAdminName
+                          ? ` · ${printLogs[0].printedByAdminName}`
+                          : ''}
+                    </div>
+                  </div>
+                ) : null}
+                {receiptDetailModal.receipt.reprintRequestReason ? (
+                  <div className="a-kv-row">
+                    <div className="a-kv-k">再次导出申请</div>
+                    <div className="a-kv-v">
+                      {receiptDetailModal.receipt.reprintRequestReason}
+                      {receiptDetailModal.receipt.reprintRequestedAt
+                        ? `（${fmtDt(receiptDetailModal.receipt.reprintRequestedAt)}）`
+                        : ''}
+                    </div>
+                  </div>
+                ) : null}
+                {receiptDetailModal.receipt.reprintReviewRemark ? (
+                  <div className="a-kv-row">
+                    <div className="a-kv-k">审批备注</div>
+                    <div className="a-kv-v">{receiptDetailModal.receipt.reprintReviewRemark}</div>
+                  </div>
+                ) : null}
+                {receiptDetailModal.receipt.voidedAt ? (
+                  <div className="a-kv-row">
+                    <div className="a-kv-k">{receiptDetailModal.receipt.status === 'VOID' ? '作废信息' : '上次作废'}</div>
+                    <div className="a-kv-v" style={{ color: '#b91c1c' }}>
+                      {receiptDetailModal.receipt.voidReason || '—'}
+                      {receiptDetailModal.receipt.voidedAt ? `（${fmtDt(receiptDetailModal.receipt.voidedAt)}）` : ''}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+
+              <div style={{ fontWeight: 800, marginBottom: 8 }}>导出历史</div>
+              {printLogs.length === 0 ? (
+                <div className="a-muted">暂无导出记录。</div>
+              ) : (
+                <div className="a-table-wrap a-receipt-detail-table">
+                  <table className="a-table">
+                    <thead>
+                      <tr>
+                        <th>次序</th>
+                        <th>收据类型</th>
+                        <th>导出时间</th>
+                        <th>操作人</th>
+                        <th>操作账号</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {printLogs.map((l) => (
+                        <tr key={l.id}>
+                          <td>第 {l.printSeq} 次</td>
+                          <td>{RECEIPT_KIND_ZH[l.receiptKind]}</td>
+                          <td className="a-muted">{fmtDt(l.printedAt)}</td>
+                          <td>{l.printedByAdminName || '—'}</td>
+                          <td className="a-muted">{l.printedByAdminEmail || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <div className="a-row" style={{ marginTop: 16, gap: 10, flexWrap: 'wrap' }}>
+                {receiptDetailModal.receipt.canPrint ? (
+                  <button
+                    type="button"
+                    className="a-btn"
+                    onClick={() => {
+                      setReceiptDetailModal(null)
+                      openReceiptModal([receiptDetailModal.id])
+                    }}
+                  >
+                    导出收据
+                  </button>
+                ) : null}
+                {canShowReexportApply(receiptDetailModal.receipt) ? (
+                  <button
+                    type="button"
+                    className="a-btn a-reexport-apply-btn"
+                    onClick={() => {
+                      setReceiptDetailModal(null)
+                      openReexportApplyModal(receiptDetailModal, setReprintReason, setReprintModal)
+                    }}
+                  >
+                    申请再次导出
+                  </button>
+                ) : null}
+                {receiptDetailModal.receipt.reprintRequestStatus === 'PENDING' ? (
+                  <span className="a-muted" style={{ alignSelf: 'center' }}>
+                    已提交再次导出申请，请等待财务审批
+                  </span>
+                ) : null}
+                <button type="button" className="a-btn ghost" onClick={() => setReceiptDetailModal(null)}>
                   关闭
                 </button>
               </div>

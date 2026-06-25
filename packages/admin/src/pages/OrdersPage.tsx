@@ -4,6 +4,8 @@ import { ContractRemarkEditor } from '../components/ContractRemarkEditor'
 import { contractAttachmentsLockedUntilPaid } from '../contractAttachmentPolicy'
 import { downloadFileWithAuth, previewFileWithAuth } from '../fileAuth'
 import { Pagination, paginate } from '../components/Pagination'
+import { rentCycleLabel, normalizeRentCycle, type RentCycle } from '../rentCycle'
+import { parseRentDueDayInput, rentCycleDueDayHint, rentDueDayFromYmd } from '../rentDueDay'
 
 type OrderBundleLine = {
   houseId: string
@@ -53,26 +55,6 @@ type OrderItem = {
   contractModificationRejectedAt: string | null
   /** 租客在 H5 确认合同后非空，此时禁止改订单 */
   contractConfirmedAt: string | null
-}
-
-type RentCycle = 'MONTHLY' | 'BIMONTHLY' | 'QUARTERLY' | 'YEARLY'
-
-function normalizeRentCycle(v: string | undefined | null): RentCycle {
-  if (v === 'BIMONTHLY' || v === 'QUARTERLY' || v === 'YEARLY') return v
-  return 'MONTHLY'
-}
-
-function rentCycleLabel(c: RentCycle) {
-  switch (c) {
-    case 'MONTHLY':
-      return '月付'
-    case 'BIMONTHLY':
-      return '双月'
-    case 'QUARTERLY':
-      return '季付'
-    default:
-      return '年付'
-  }
 }
 
 type ContractTemplateKind = 'TRIPARTITE' | 'APARTMENT'
@@ -242,15 +224,6 @@ export function OrdersPage() {
     setOrderDetail(r.data)
   }
 
-  async function cancelOrder(orderId: string) {
-    setMsg('')
-    if (!confirm('确认取消该订单？房源将解锁为「空置」，其他租客可再次下单。')) return
-    const r = await apiPost<{ ok: true }>('/api/admin/orders/' + orderId + '/cancel', {})
-    if (!r.ok) return setError(r.error)
-    setMsg('已取消订单并解锁房源')
-    await load()
-  }
-
   function openEditOrder(o: OrderItem) {
     setEditOrder(o)
     setEditLeaseMonths(o.leaseMonths || 12)
@@ -310,10 +283,10 @@ export function OrdersPage() {
     }
     const reason = approved ? '' : prompt('请输入拒绝原因（必填）') || ''
     if (!approved && !reason.trim()) return
-    if (!approved && !confirm('确认拒绝该订单？')) return
+    if (!approved && !confirm('确认拒绝该订单？房源将解锁为「空置」，其他租客可再次下单。')) return
     const r = await apiPost<{ ok: true }>('/api/admin/orders/' + orderId + '/review', { approved, reason })
     if (!r.ok) return setError(r.error)
-    setMsg('审核已提交')
+    setMsg(approved ? '审核已通过' : '已拒绝订单，房源已解锁')
     await load()
   }
 
@@ -350,6 +323,7 @@ export function OrdersPage() {
   const [cfgDepositMultiple, setCfgDepositMultiple] = useState(1)
   const [cfgRentCycle, setCfgRentCycle] = useState<RentCycle>('MONTHLY')
   const [cfgPenaltyFormula, setCfgPenaltyFormula] = useState('amount*0.1%*days')
+  const [cfgRentDueDay, setCfgRentDueDay] = useState('1')
   const [cfgLatestRentGraceDays, setCfgLatestRentGraceDays] = useState('')
   const [cfgRemarkHtml, setCfgRemarkHtml] = useState('')
   const [cfgAgreementSignDate, setCfgAgreementSignDate] = useState('')
@@ -364,6 +338,7 @@ export function OrdersPage() {
   type ContractCfgResp = {
     status?: string
     rentCycle?: string
+    rentDueDay?: number | null
     contractTemplate?: string
     terminationRentMultiple?: number | null
     terminationDaysPastDue?: number | null
@@ -381,6 +356,7 @@ export function OrdersPage() {
     setCfgDepositMultiple(o.house.deposit && o.house.rentMonthly ? o.house.deposit / o.house.rentMonthly : 1)
     setCfgRentCycle('MONTHLY')
     setCfgPenaltyFormula('amount*0.1%*days')
+    setCfgRentDueDay(String(rentDueDayFromYmd(o.moveInDate || new Date().toISOString().slice(0, 10))))
     setCfgLatestRentGraceDays('')
     setCfgRemarkHtml('')
     setCfgAgreementSignDate('')
@@ -403,6 +379,9 @@ export function OrdersPage() {
       if (!alive || !r.ok) return
       if (r.data.status) setCfgContractStatus(r.data.status)
       setCfgRentCycle(normalizeRentCycle(r.data.rentCycle))
+      setCfgRentDueDay(
+        r.data.rentDueDay != null ? String(r.data.rentDueDay) : String(rentDueDayFromYmd(cfgMoveInDate)),
+      )
       setCfgContractTemplate(normalizeContractTemplate(r.data.contractTemplate))
       setCfgTerminationRentMulti(
         r.data.terminationRentMultiple != null && !Number.isNaN(r.data.terminationRentMultiple)
@@ -430,6 +409,9 @@ export function OrdersPage() {
 
     setError('')
     setMsg('')
+    const rentDueParsed = parseRentDueDayInput(cfgRentDueDay)
+    if (!rentDueParsed.ok) return setError(rentDueParsed.message)
+
     let latestRentGraceDays: number | null = null
     if (cfgLatestRentGraceDays.trim() !== '') {
       const n = parseInt(cfgLatestRentGraceDays.trim(), 10)
@@ -469,6 +451,7 @@ export function OrdersPage() {
         depositMultiple: cfgDepositMultiple,
         rentCycle: cfgRentCycle,
         penaltyFormula: cfgPenaltyFormula,
+        rentDueDay: rentDueParsed.value,
         latestRentGraceDays,
         configRemarkHtml: cfgRemarkHtml.trim() ? cfgRemarkHtml : undefined,
         agreementSignDate: cfgAgreementSignDate.trim() === '' ? null : cfgAgreementSignDate,
@@ -650,9 +633,6 @@ export function OrdersPage() {
                         </button>
                         <button className="a-btn secondary" onClick={() => review(o.id, false)}>
                           审核拒绝
-                        </button>
-                        <button className="a-btn ghost" onClick={() => cancelOrder(o.id)}>
-                          取消订单并解锁房源
                         </button>
                       </>
                     ) : null}
@@ -1147,6 +1127,23 @@ export function OrdersPage() {
                   </div>
                 </div>
                 <div className="a-kv-row">
+                  <div className="a-kv-k">交租日</div>
+                  <div className="a-kv-v">
+                    <input
+                      className="a-filter-input"
+                      style={{ minWidth: 160 }}
+                      type="number"
+                      min={1}
+                      max={31}
+                      value={cfgRentDueDay}
+                      onChange={(e) => setCfgRentDueDay(e.target.value.replace(/\D/g, '').slice(0, 2))}
+                    />
+                    <div className="a-muted" style={{ marginTop: 4, fontSize: 12, maxWidth: 420 }}>
+                      {rentCycleDueDayHint(cfgRentCycle)}；当月无该日则取月末（如 2 月 30 日 → 2 月 28/29 日）。
+                    </div>
+                  </div>
+                </div>
+                <div className="a-kv-row">
                   <div className="a-kv-k">最晚交租宽限期（天）</div>
                   <div className="a-kv-v">
                     <input
@@ -1303,6 +1300,8 @@ export function OrdersPage() {
                       缴费周期：{rentCycleLabel(cfgRentCycle)}
                       <br />
                       滞纳金：{cfgPenaltyFormula}
+                      <br />
+                      交租日：每期起始月 {cfgRentDueDay || '—'} 日（{rentCycleLabel(cfgRentCycle)}）
                       <br />
                       最晚交租宽限期：
                       {cfgLatestRentGraceDays.trim() ? `${cfgLatestRentGraceDays.trim()} 天` : '未约定'}

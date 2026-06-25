@@ -125,7 +125,7 @@ export function RealNameVerifyPage() {
       <div className="m-card">
         <div className="m-h1">实名认证流程</div>
         <div className="m-muted" style={{ marginTop: 6 }}>
-          共 3 步：填写信息 → 上传材料 → 提交审核（演示版约 1 分钟内完成）
+          共 3 步：填写信息 → 上传材料 → 提交审核（约 1 分钟内完成）
         </div>
       </div>
 
@@ -164,7 +164,7 @@ export function RealNameVerifyPage() {
       <div className="m-card">
         <div style={{ fontWeight: 900 }}>2）上传认证材料</div>
         <div className="m-muted" style={{ marginTop: 4 }}>
-          演示版仅校验是否已选择文件，不会上传到后端
+          仅校验是否已选择文件，不会上传到后端
         </div>
         <div className="m-col" style={{ marginTop: 12, gap: 8 }}>
           <label className="m-upload-field">

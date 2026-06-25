@@ -32,6 +32,22 @@ export async function syncBaseRentBillItemsForContract(
     orderBy: { period: 'asc' },
   })
 
+  if (active.length === 0) {
+    const orphan = await tx.bill.findMany({
+      where: {
+        contractId: params.contractId,
+        kind: 'BASE',
+        status: { in: ['UNPAID', 'OVERDUE'] },
+      },
+      select: { id: true },
+    })
+    if (orphan.length) {
+      await tx.billItem.deleteMany({ where: { billId: { in: orphan.map((b) => b.id) } } })
+      await tx.bill.deleteMany({ where: { id: { in: orphan.map((b) => b.id) } } })
+    }
+    return
+  }
+
   const mergedMulti = order.isMergedBundle && active.length > 1
   const totalRent =
     active.length > 0 ? active.reduce((s, l) => s + l.rentMonthlySnapshot, 0) : params.rentMonthly

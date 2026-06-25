@@ -8,4 +8,6 @@ packages/server/data/contract-uploads/
 # 本地 SQLite（基线快照保存在 .versions/ 下）
 packages/server/prisma/*.db
 packages/server/prisma/*.db-journal
+packages/server/dev.db
+packages/server/receipts/
 

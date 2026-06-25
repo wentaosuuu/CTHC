@@ -63,6 +63,23 @@ enum BillKind {
 enum AdminRoleCode {
   SYSTEM_ADMIN
   STORE_MANAGER
+  FINANCE
+}
+
+enum TransactionReceiptStatus {
+  ACTIVE
+  VOID
+}
+
+enum ReceiptReprintRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ReceiptKind {
+  RENT
+  DEPOSIT
 }
 
 /// 租客信誉度：A/B/C/D 为人工维护的档案标记；各等级对应不同风控关注口径，系统不做自动拦截
@@ -250,12 +267,16 @@ model OrderLine {
   sortOrder            Int      @default(0)
   /// 子资产退租/换房迁出时间；有值则不再计入该合同后续 BASE 账单
   releasedAt           DateTime?
+  /// 合并合同部分换房：迁出子资产对应的新签合同
+  changeHouseNewContractId String?
   createdAt            DateTime @default(now())
 
   order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
   house House @relation(fields: [houseId], references: [id])
+  changeHouseNewContract Contract? @relation("OrderLineChangeHouseNew", fields: [changeHouseNewContractId], references: [id], onDelete: SetNull)
 
   @@index([orderId])
+  @@index([changeHouseNewContractId])
 }
 
 model Contract {
@@ -273,6 +294,8 @@ model Contract {
   depositMultiple Float          @default(1)
   rentCycle       String         @default("MONTHLY") // MONTHLY | BIMONTHLY | QUARTERLY | YEARLY
   penaltyFormula  String         @default("amount*0.1%*days")
+  /// 交租日（1–31）：每个缴费周期起始月内的应交日，适配月付/双月/季付/年付
+  rentDueDay      Int            @default(1)
   /// 已废弃：原「最晚交租固定日期」，请使用 latestRentGraceDays
   latestRentDueDate DateTime?
   /// 最晚交租宽限期（天）：相对每期应付日的规则，适配按月/按季/按年交付
@@ -320,6 +343,7 @@ model Contract {
   renewedTo   Contract[] @relation("ContractRenewal")
   changeHouseFrom Contract?  @relation("ContractHouseChange", fields: [changeHouseFromId], references: [id], onDelete: SetNull)
   changeHouseNew  Contract[] @relation("ContractHouseChange")
+  changeHouseFromOrderLines OrderLine[] @relation("OrderLineChangeHouseNew")
   payments Payment[]
   bills    Bill[]
   refunds  Refund[]
@@ -561,5 +585,52 @@ model AdminStore {
   store Store @relation(fields: [storeId], references: [id])
 
   @@unique([adminId, storeId])
+}
+
+/// 交易收据：每条交易流水独立维护打印次数、重打申请与作废状态
+model TransactionReceipt {
+  id              String                      @id @default(cuid())
+  /// 与交易记录列表中的 id 一致，如 offlog_xxx / bill_xxx
+  transactionId   String                      @unique
+  printCount      Int                         @default(0)
+  status          TransactionReceiptStatus    @default(ACTIVE)
+  /// 财务已批准、待店长消耗的一次重打资格
+  reprintApproved Boolean                     @default(false)
+  reprintRequestStatus ReceiptReprintRequestStatus?
+  reprintRequestReason String?
+  reprintRequestedAt   DateTime?
+  reprintRequestedByAdminId String?
+  reprintReviewedAt    DateTime?
+  reprintReviewedByAdminId String?
+  reprintReviewRemark  String?
+  voidedAt        DateTime?
+  voidedByAdminId String?
+  voidReason      String?
+  lastPrintedAt   DateTime?
+  lastPrintedByAdminId String?
+  lastReceiptKind ReceiptKind?
+  createdAt       DateTime                    @default(now())
+  updatedAt       DateTime                    @updatedAt
+
+  printLogs TransactionReceiptPrintLog[]
+
+  @@index([reprintRequestStatus])
+  @@index([status])
+}
+
+/// 收据打印审计：记录每次打印的序号、类型与操作人
+model TransactionReceiptPrintLog {
+  id                   String   @id @default(cuid())
+  transactionReceiptId String
+  receiptKind          ReceiptKind
+  printSeq             Int
+  printedAt            DateTime @default(now())
+  printedByAdminId     String?
+  printedByAdminName   String?
+  printedByAdminEmail  String?
+
+  transactionReceipt TransactionReceipt @relation(fields: [transactionReceiptId], references: [id], onDelete: Cascade)
+
+  @@index([transactionReceiptId, printedAt])
 }
 

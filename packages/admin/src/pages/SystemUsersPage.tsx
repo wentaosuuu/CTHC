@@ -5,7 +5,7 @@ type User = {
   id: string
   name: string
   login: string
-  roleCode: 'SYSTEM_ADMIN' | 'STORE_MANAGER'
+  roleCode: 'SYSTEM_ADMIN' | 'STORE_MANAGER' | 'FINANCE'
   /** 担任店长的门店 id 列表（可多选） */
   storeIds: string[]
   status: 'enabled' | 'disabled'
@@ -14,6 +14,7 @@ type User = {
 const ROLE_OPTIONS = [
   { code: 'SYSTEM_ADMIN' as const, label: '系统管理员' },
   { code: 'STORE_MANAGER' as const, label: '店长' },
+  { code: 'FINANCE' as const, label: '财务' },
 ]
 
 /** 门店列表（Demo 静态数据，后续可接接口） */
@@ -43,6 +44,14 @@ const initialUsers: User[] = [
     login: 'manager',
     roleCode: 'STORE_MANAGER',
     storeIds: ['jn'],
+    status: 'enabled',
+  },
+  {
+    id: 'u3',
+    name: '财务专员',
+    login: 'finance',
+    roleCode: 'FINANCE',
+    storeIds: ['hq'],
     status: 'enabled',
   },
 ]
@@ -176,7 +185,7 @@ export function SystemUsersPage() {
       <div className="a-card">
         <div className="a-h1">用户管理</div>
         <div className="a-muted">
-          这里管理后台账号（系统管理员、店长等），包括登录名、角色、担任门店。一个用户可以是多个门店的店长，在编辑时勾选多个门店即可。Demo 数据仅在前端展示，后续可接真实接口。
+          这里管理后台账号（系统管理员、店长等），包括登录名、角色、担任门店。一个用户可以是多个门店的店长，在编辑时勾选多个门店即可。数据可对接真实接口。
         </div>
       </div>
 

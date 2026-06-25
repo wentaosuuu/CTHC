@@ -1,52 +1,22 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { addMyOrder, apiPost, setTenantPhone } from '../api'
 import {
   BOWAN_ASSET_TYPE,
-  cartCheckoutLane,
   cartHasMixedLanes,
   cartLaneLabel,
   filterCartByLane,
   getCart,
+  patchCartLines,
   removeManyFromCart,
   type CartCheckoutLane,
   type CartLine,
 } from '../cartStorage'
 import {
-  isHkmTwPermitNo,
-  isMainland18Id,
-  isPassportNo,
-  isUscc18,
-  optionalDocExpiryMessage,
-  readFileAsDataURL,
-  validateIdExpiryMessage,
-} from '../idCardUtils'
-
-export type IdDocType = 'IDCARD' | 'PASSPORT' | 'HKM_TW_PERMIT' | 'USCC'
-
-const DOC_TYPE_LABEL: Record<IdDocType, string> = {
-  IDCARD: '身份证',
-  PASSPORT: '护照',
-  HKM_TW_PERMIT: '港澳台通行证',
-  USCC: '统一社会信用代码',
-}
-
-type RecognizeResp = {
-  ok: true
-  rawText: string
-  name?: string | null
-  idNumber?: string | null
-  validFrom?: string
-  validUntil?: string
-  longTerm: boolean
-}
-
-function imageFileError(file: File | null): string | null {
-  if (!file) return null
-  if (!file.type.startsWith('image/')) return '请选择图片文件'
-  if (file.size > 5 * 1024 * 1024) return '单张图片请不超过 5MB'
-  return null
-}
+  IdDocumentFields,
+  validateIdDocumentForm,
+  type IdDocType,
+} from '../components/IdDocumentFields'
 
 export function RentCheckoutPage() {
   const [searchParams] = useSearchParams()
@@ -54,6 +24,7 @@ export function RentCheckoutPage() {
     ? searchParams.get('lane')
     : null) as CartCheckoutLane | null
   const [cartLines, setCartLines] = useState<CartLine[]>([])
+  const [cartHint, setCartHint] = useState('')
   const [loadErr, setLoadErr] = useState('')
   const [contractMode, setContractMode] = useState<'ONE_PER_ASSET' | 'MERGED'>('MERGED')
   const [leaseMonths, setLeaseMonths] = useState(12)
@@ -70,219 +41,113 @@ export function RentCheckoutPage() {
   const [faceSubmitting, setFaceSubmitting] = useState(false)
   const disabled = useMemo(() => cartLines.length === 0, [cartLines.length])
 
-  const [idFrontPreview, setIdFrontPreview] = useState<string | null>(null)
-  const [idBackPreview, setIdBackPreview] = useState<string | null>(null)
-  const [ocrFrontBusy, setOcrFrontBusy] = useState(false)
-  const [ocrBackBusy, setOcrBackBusy] = useState(false)
-  const [idFrontRecognizedOk, setIdFrontRecognizedOk] = useState(false)
-  const [idBackRecognizedOk, setIdBackRecognizedOk] = useState(false)
   const [idLongTerm, setIdLongTerm] = useState(false)
   const [idValidUntil, setIdValidUntil] = useState('')
-
-  const [ppPreview, setPpPreview] = useState<string | null>(null)
-  const [passportPageOk, setPassportPageOk] = useState(false)
-
-  const [hkmFrontPreview, setHkmFrontPreview] = useState<string | null>(null)
-  const [hkmBackPreview, setHkmBackPreview] = useState<string | null>(null)
-  const [hkmFrontOk, setHkmFrontOk] = useState(false)
-  const [hkmBackOk, setHkmBackOk] = useState(false)
-
-  const [usccPreview, setUsccPreview] = useState<string | null>(null)
-  const [usccScanOk, setUsccScanOk] = useState(false)
-
-  /** 护照 / 港澳台通行证 可选填的「有效期至」 */
   const [extraDocValidUntil, setExtraDocValidUntil] = useState('')
 
+  useEffect(() => {
+    const all = getCart()
+    if (!all.length) {
+      setCartLines([])
+      setCartHint('')
+      return
+    }
+    if (checkoutLane) {
+      const filtered = filterCartByLane(all, checkoutLane)
+      if (!filtered.length) {
+        setCartLines([])
+        setCartHint(`购物车中没有「${cartLaneLabel(checkoutLane)}」类房源，请返回购物车。`)
+        return
+      }
+      setCartHint('')
+      const loaded = filtered
+      setCartLines(loaded)
+      if (loaded.length) {
+        setLeaseMonths(loaded[0].leaseMonths)
+        setMoveInDate(loaded[0].moveInDate)
+      }
+      return
+    }
+    if (cartHasMixedLanes(all)) {
+      setCartLines([])
+      setCartHint('购物车含泊湾与其他类资产，请返回购物车分别结算。')
+      return
+    }
+    setCartHint('')
+    setCartLines(all)
+    if (all.length) {
+      setLeaseMonths(all[0].leaseMonths)
+      setMoveInDate(all[0].moveInDate)
+    }
+  }, [checkoutLane])
+
   const allBowan = cartLines.length > 0 && cartLines.every((l) => l.assetType === BOWAN_ASSET_TYPE)
+  const isMerged = contractMode === 'MERGED'
+
+  function applyUnifiedLease(patch: { leaseMonths?: number; moveInDate?: string }) {
+    const lm = patch.leaseMonths ?? leaseMonths
+    const md = patch.moveInDate ?? moveInDate
+    if (patch.leaseMonths != null) setLeaseMonths(lm)
+    if (patch.moveInDate != null) setMoveInDate(md)
+    const next = cartLines.map((l) => ({ ...l, leaseMonths: lm, moveInDate: md }))
+    setCartLines(next)
+    patchCartLines(
+      cartLines.map((l) => l.houseId),
+      { leaseMonths: lm, moveInDate: md },
+    )
+  }
+
+  function updateLineLease(houseId: string, patch: Partial<Pick<CartLine, 'leaseMonths' | 'moveInDate'>>) {
+    const next = cartLines.map((l) => (l.houseId === houseId ? { ...l, ...patch } : l))
+    setCartLines(next)
+    patchCartLines([houseId], patch)
+  }
+
+  function onContractModeChange(mode: 'ONE_PER_ASSET' | 'MERGED') {
+    if (mode === contractMode) return
+    setContractMode(mode)
+    if (mode === 'MERGED' && cartLines.length) {
+      const lm = cartLines[0].leaseMonths
+      const md = cartLines[0].moveInDate
+      setLeaseMonths(lm)
+      setMoveInDate(md)
+      applyUnifiedLease({ leaseMonths: lm, moveInDate: md })
+    }
+  }
   const totalRentMonthly = useMemo(
     () => cartLines.reduce((s, l) => s + l.rentMonthly, 0),
     [cartLines],
   )
 
-  const revokeIf = useCallback((u: string | null) => {
-    if (u) URL.revokeObjectURL(u)
-  }, [])
-
-  const resetAllDocumentUploads = useCallback(() => {
-    revokeIf(idFrontPreview)
-    revokeIf(idBackPreview)
-    revokeIf(ppPreview)
-    revokeIf(hkmFrontPreview)
-    revokeIf(hkmBackPreview)
-    revokeIf(usccPreview)
-    setIdFrontPreview(null)
-    setIdBackPreview(null)
-    setPpPreview(null)
-    setHkmFrontPreview(null)
-    setHkmBackPreview(null)
-    setUsccPreview(null)
-    setOcrFrontBusy(false)
-    setOcrBackBusy(false)
-    setIdFrontRecognizedOk(false)
-    setIdBackRecognizedOk(false)
-    setPassportPageOk(false)
-    setHkmFrontOk(false)
-    setHkmBackOk(false)
-    setUsccScanOk(false)
+  function onDocTypeChange(next: IdDocType) {
+    if (next === docType) return
+    setDocType(next)
+    setIdNumber('')
     setIdLongTerm(false)
     setIdValidUntil('')
     setExtraDocValidUntil('')
-  }, [
-    idFrontPreview,
-    idBackPreview,
-    ppPreview,
-    hkmFrontPreview,
-    hkmBackPreview,
-    usccPreview,
-    revokeIf,
-  ])
-
-  useEffect(() => {
-    return () => {
-      revokeIf(idFrontPreview)
-      revokeIf(idBackPreview)
-      revokeIf(ppPreview)
-      revokeIf(hkmFrontPreview)
-      revokeIf(hkmBackPreview)
-      revokeIf(usccPreview)
-    }
-  }, [idFrontPreview, idBackPreview, ppPreview, hkmFrontPreview, hkmBackPreview, usccPreview, revokeIf])
-
-  useEffect(() => {
-    const all = getCart()
-    if (!all.length) {
-      setLoadErr('')
-      setCartLines([])
-      return
-    }
-    if (cartHasMixedLanes(all) && !checkoutLane) {
-      setLoadErr('购物车含泊湾公寓与其他类资产，请返回购物车分别结算。')
-      setCartLines([])
-      return
-    }
-    const lane: CartCheckoutLane =
-      checkoutLane ?? (filterCartByLane(all, 'bowan').length ? 'bowan' : 'other')
-    const c = filterCartByLane(all, lane)
-    if (!c.length) {
-      setLoadErr(`当前没有可结算的${cartLaneLabel(lane)}房源，请返回购物车。`)
-      setCartLines([])
-      return
-    }
-    if (c.some((l) => cartCheckoutLane(l.assetType) !== lane)) {
-      setLoadErr('结算类别与房源类型不一致，请返回购物车重试。')
-      setCartLines([])
-      return
-    }
-    setLoadErr('')
-    setCartLines(c)
-    setLeaseMonths(c[0]?.leaseMonths ?? 12)
-    setMoveInDate(c[0]?.moveInDate || new Date().toISOString().slice(0, 10))
-  }, [checkoutLane])
-
-  function onDocTypeChange(next: IdDocType) {
-    if (next === docType) return
-    resetAllDocumentUploads()
-    setDocType(next)
-    setIdNumber('')
     setError('')
   }
 
-  async function onPickIdFront(file: File | null) {
-    setError('')
-    const err = imageFileError(file)
-    if (err || !file) return
-    setIdFrontRecognizedOk(false)
-    setOcrFrontBusy(true)
-    revokeIf(idFrontPreview)
-    const url = URL.createObjectURL(file)
-    setIdFrontPreview(url)
-    try {
-      const dataUrl = await readFileAsDataURL(file)
-      const r = await apiPost<RecognizeResp>('/api/id-card/recognize', { side: 'front', image: dataUrl })
-      if (!r.ok) {
-        setError(r.error)
-        setOcrFrontBusy(false)
-        return
-      }
-      setIdFrontRecognizedOk(true)
-      if (r.data.name) setName(r.data.name)
-      if (r.data.idNumber) setIdNumber(r.data.idNumber)
-    } catch {
-      setError('读取人像面图片失败')
-    }
-    setOcrFrontBusy(false)
-  }
-
-  async function onPickIdBack(file: File | null) {
-    setError('')
-    const err = imageFileError(file)
-    if (err || !file) return
-    setIdBackRecognizedOk(false)
-    setOcrBackBusy(true)
-    revokeIf(idBackPreview)
-    const url = URL.createObjectURL(file)
-    setIdBackPreview(url)
-    try {
-      const dataUrl = await readFileAsDataURL(file)
-      const r = await apiPost<RecognizeResp>('/api/id-card/recognize', { side: 'back', image: dataUrl })
-      if (!r.ok) {
-        setError(r.error)
-        setOcrBackBusy(false)
-        return
-      }
-      setIdBackRecognizedOk(true)
-      if (r.data.longTerm) {
-        setIdLongTerm(true)
-        setIdValidUntil('')
-      } else if (r.data.validUntil) {
-        setIdLongTerm(false)
-        setIdValidUntil(r.data.validUntil)
-      }
-    } catch {
-      setError('读取国徽面图片失败')
-    }
-    setOcrBackBusy(false)
-  }
-
-  function onPickPassportPage(file: File | null) {
-    setError('')
-    const err = imageFileError(file)
-    if (err || !file) return
-    revokeIf(ppPreview)
-    setPpPreview(URL.createObjectURL(file))
-    setPassportPageOk(true)
-  }
-
-  function onPickHkmFront(file: File | null) {
-    setError('')
-    const err = imageFileError(file)
-    if (err || !file) return
-    revokeIf(hkmFrontPreview)
-    setHkmFrontPreview(URL.createObjectURL(file))
-    setHkmFrontOk(true)
-  }
-
-  function onPickHkmBack(file: File | null) {
-    setError('')
-    const err = imageFileError(file)
-    if (err || !file) return
-    revokeIf(hkmBackPreview)
-    setHkmBackPreview(URL.createObjectURL(file))
-    setHkmBackOk(true)
-  }
-
-  function onPickUsccScan(file: File | null) {
-    setError('')
-    const err = imageFileError(file)
-    if (err || !file) return
-    revokeIf(usccPreview)
-    setUsccPreview(URL.createObjectURL(file))
-    setUsccScanOk(true)
-  }
-
-  async function submitOrderToBackend() {
+    async function submitOrderToBackend() {
     if (!cartLines.length) return
     setError('')
+    if (contractMode === 'MERGED') {
+      if (!leaseMonths || leaseMonths < 1) {
+        setError('请填写统一租期（至少 1 个月）')
+        return
+      }
+      if (!moveInDate.trim()) {
+        setError('请填写起租日')
+        return
+      }
+    } else {
+      const bad = cartLines.find((l) => !l.leaseMonths || l.leaseMonths < 1 || !l.moveInDate.trim())
+      if (bad) {
+        setError(`请为「${bad.title}」填写租期与起租日`)
+        return
+      }
+    }
     setOkMsg('')
     setSuccessWecom(null)
     const createdAt = new Date().toISOString()
@@ -359,64 +224,19 @@ export function RentCheckoutPage() {
 
   function onTapDirectOrder() {
     setError('')
-    if (!name.trim()) {
-      setError('请填写姓名')
+    const formErr = validateIdDocumentForm({
+      docType,
+      name,
+      idNumber,
+      phone,
+      idLongTerm,
+      idValidUntil,
+      extraDocValidUntil,
+    })
+    if (formErr) {
+      setError(formErr)
       return
     }
-
-    if (docType === 'IDCARD') {
-      if (!idFrontRecognizedOk || !idBackRecognizedOk) {
-        setError('请先上传身份证人像面与国徽面，并等待识别完成（若识别不完整请手动补充）')
-        return
-      }
-      if (!isMainland18Id(idNumber)) {
-        setError('请填写正确的 18 位身份证号')
-        return
-      }
-      const ve = validateIdExpiryMessage(idValidUntil, idLongTerm)
-      if (ve) {
-        setError(ve)
-        return
-      }
-    } else if (docType === 'PASSPORT') {
-      if (!passportPageOk) {
-        setError('请上传护照资料页照片')
-        return
-      }
-      if (!isPassportNo(idNumber)) {
-        setError('护照号码须为 6–24 位字母、数字或连字符')
-        return
-      }
-      const oe = optionalDocExpiryMessage(extraDocValidUntil)
-      if (oe) {
-        setError(oe)
-        return
-      }
-    } else if (docType === 'HKM_TW_PERMIT') {
-      if (!hkmFrontOk || !hkmBackOk) {
-        setError('请上传港澳台通行证正面与反面照片')
-        return
-      }
-      if (!isHkmTwPermitNo(idNumber)) {
-        setError('请填写正确的通行证号码')
-        return
-      }
-      const oe = optionalDocExpiryMessage(extraDocValidUntil)
-      if (oe) {
-        setError(oe)
-        return
-      }
-    } else if (docType === 'USCC') {
-      if (!usccScanOk) {
-        setError('请上传证件扫描件（如营业执照）')
-        return
-      }
-      if (!isUscc18(idNumber)) {
-        setError('请填写正确的 18 位统一社会信用代码')
-        return
-      }
-    }
-
     setShowFaceModal(true)
   }
 
@@ -429,198 +249,25 @@ export function RentCheckoutPage() {
 
   const orderPlaced = Boolean(okMsg)
 
-  const numberLabel =
-    docType === 'IDCARD'
-      ? '身份证号'
-      : docType === 'PASSPORT'
-        ? '护照号码'
-        : docType === 'HKM_TW_PERMIT'
-          ? '通行证号码'
-          : '统一社会信用代码'
-
-  const numberPlaceholder =
-    docType === 'IDCARD'
-      ? '18 位身份证号'
-      : docType === 'PASSPORT'
-        ? '护照号码'
-        : docType === 'HKM_TW_PERMIT'
-          ? '通行证号码'
-          : '18 位统一社会信用代码'
-
-  const namePlaceholder =
-    docType === 'USCC' ? '联系人姓名（与证件材料一致）' : '与证件一致'
-
   const documentBlock = !orderPlaced ? (
-    <div className="m-card m-col">
-      <div style={{ fontWeight: 900 }}>证件信息</div>
-      <label className="m-muted m-label-required">证件类型</label>
-      <select
-        className="m-input"
-        value={docType}
-        onChange={(e) => onDocTypeChange(e.target.value as IdDocType)}
-      >
-        {(Object.keys(DOC_TYPE_LABEL) as IdDocType[]).map((k) => (
-          <option key={k} value={k}>
-            {DOC_TYPE_LABEL[k]}
-          </option>
-        ))}
-      </select>
-
-      {docType === 'IDCARD' ? (
-        <>
-          <div className="m-muted" style={{ lineHeight: 1.6, marginTop: 10 }}>
-            请上传身份证<strong>人像面</strong>与<strong>国徽面</strong>。系统将自动识别姓名、号码与「有效期限」；识别后请核对。
-            <strong> 首次识别可能需十余秒</strong>。
-          </div>
-          <div style={{ height: 12 }} />
-          <div className="m-row" style={{ gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-            <div style={{ flex: 1, minWidth: 140 }}>
-              <div className="m-muted" style={{ marginBottom: 6 }}>人像面（必填）</div>
-              <label className="m-upload-field" style={{ display: 'block' }}>
-                <span>{ocrFrontBusy ? '识别中…' : idFrontRecognizedOk ? '已上传（可重选）' : '上传人像面'}</span>
-                <input
-                  type="file"
-                  accept="image/*"
-                  disabled={ocrFrontBusy}
-                  onChange={(e) => void onPickIdFront(e.target.files?.[0] ?? null)}
-                />
-              </label>
-              {idFrontPreview ? (
-                <img src={idFrontPreview} alt="" style={{ width: '100%', marginTop: 8, borderRadius: 8 }} />
-              ) : null}
-            </div>
-            <div style={{ flex: 1, minWidth: 140 }}>
-              <div className="m-muted" style={{ marginBottom: 6 }}>国徽面（必填）</div>
-              <label className="m-upload-field" style={{ display: 'block' }}>
-                <span>{ocrBackBusy ? '识别中…' : idBackRecognizedOk ? '已上传（可重选）' : '上传国徽面'}</span>
-                <input
-                  type="file"
-                  accept="image/*"
-                  disabled={ocrBackBusy}
-                  onChange={(e) => void onPickIdBack(e.target.files?.[0] ?? null)}
-                />
-              </label>
-              {idBackPreview ? (
-                <img src={idBackPreview} alt="" style={{ width: '100%', marginTop: 8, borderRadius: 8 }} />
-              ) : null}
-            </div>
-          </div>
-          <div style={{ height: 12 }} />
-          <label className="m-muted m-label-required">证件有效期</label>
-          <div className="m-col" style={{ gap: 8 }}>
-            <label className="m-verify-agree" style={{ margin: 0 }}>
-              <input
-                type="checkbox"
-                checked={idLongTerm}
-                onChange={(e) => {
-                  setIdLongTerm(e.target.checked)
-                  if (e.target.checked) setIdValidUntil('')
-                }}
-              />
-              <span>长期有效（国徽面「至长期」）</span>
-            </label>
-            {!idLongTerm ? (
-              <input
-                className="m-input"
-                type="date"
-                value={idValidUntil}
-                onChange={(e) => setIdValidUntil(e.target.value)}
-              />
-            ) : null}
-          </div>
-        </>
-      ) : null}
-
-      {docType === 'PASSPORT' ? (
-        <>
-          <div className="m-muted" style={{ lineHeight: 1.6, marginTop: 10 }}>
-            请上传<strong>护照资料页</strong>（含照片与号码页）照片，并填写护照号码。可选填「有效期至」以便后台核对。
-          </div>
-          <div style={{ height: 12 }} />
-          <label className="m-upload-field" style={{ display: 'block' }}>
-            <span>{passportPageOk ? '已上传资料页（可重选）' : '上传护照资料页'}</span>
-            <input type="file" accept="image/*" onChange={(e) => onPickPassportPage(e.target.files?.[0] ?? null)} />
-          </label>
-          {ppPreview ? (
-            <img src={ppPreview} alt="" style={{ width: '100%', maxHeight: 220, objectFit: 'contain', marginTop: 8, borderRadius: 8 }} />
-          ) : null}
-          <label className="m-muted" style={{ marginTop: 12 }}>有效期至（选填）</label>
-          <input
-            className="m-input"
-            type="date"
-            value={extraDocValidUntil}
-            onChange={(e) => setExtraDocValidUntil(e.target.value)}
-          />
-        </>
-      ) : null}
-
-      {docType === 'HKM_TW_PERMIT' ? (
-        <>
-          <div className="m-muted" style={{ lineHeight: 1.6, marginTop: 10 }}>
-            请上传<strong>通行证正面</strong>与<strong>反面</strong>照片，并填写证件号码。可选填「有效期至」。
-          </div>
-          <div style={{ height: 12 }} />
-          <div className="m-row" style={{ gap: 12, flexWrap: 'wrap' }}>
-            <div style={{ flex: 1, minWidth: 140 }}>
-              <div className="m-muted" style={{ marginBottom: 6 }}>正面（必填）</div>
-              <label className="m-upload-field" style={{ display: 'block' }}>
-                <span>{hkmFrontOk ? '已上传（可重选）' : '上传正面'}</span>
-                <input type="file" accept="image/*" onChange={(e) => onPickHkmFront(e.target.files?.[0] ?? null)} />
-              </label>
-              {hkmFrontPreview ? (
-                <img src={hkmFrontPreview} alt="" style={{ width: '100%', marginTop: 8, borderRadius: 8 }} />
-              ) : null}
-            </div>
-            <div style={{ flex: 1, minWidth: 140 }}>
-              <div className="m-muted" style={{ marginBottom: 6 }}>反面（必填）</div>
-              <label className="m-upload-field" style={{ display: 'block' }}>
-                <span>{hkmBackOk ? '已上传（可重选）' : '上传反面'}</span>
-                <input type="file" accept="image/*" onChange={(e) => onPickHkmBack(e.target.files?.[0] ?? null)} />
-              </label>
-              {hkmBackPreview ? (
-                <img src={hkmBackPreview} alt="" style={{ width: '100%', marginTop: 8, borderRadius: 8 }} />
-              ) : null}
-            </div>
-          </div>
-          <label className="m-muted" style={{ marginTop: 12 }}>有效期至（选填）</label>
-          <input
-            className="m-input"
-            type="date"
-            value={extraDocValidUntil}
-            onChange={(e) => setExtraDocValidUntil(e.target.value)}
-          />
-        </>
-      ) : null}
-
-      {docType === 'USCC' ? (
-        <>
-          <div className="m-muted" style={{ lineHeight: 1.6, marginTop: 10 }}>
-            请上传<strong>证件扫描件</strong>（如营业执照），并填写 18 位<strong>统一社会信用代码</strong>。
-          </div>
-          <div style={{ height: 12 }} />
-          <label className="m-upload-field" style={{ display: 'block' }}>
-            <span>{usccScanOk ? '已上传（可重选）' : '上传证件扫描件'}</span>
-            <input type="file" accept="image/*" onChange={(e) => onPickUsccScan(e.target.files?.[0] ?? null)} />
-          </label>
-          {usccPreview ? (
-            <img src={usccPreview} alt="" style={{ width: '100%', maxHeight: 220, objectFit: 'contain', marginTop: 8, borderRadius: 8 }} />
-          ) : null}
-        </>
-      ) : null}
-
-      <div style={{ height: 8 }} />
-      <label className="m-muted m-label-required">姓名</label>
-      <input className="m-input" value={name} onChange={(e) => setName(e.target.value)} placeholder={namePlaceholder} />
-
-      <label className="m-muted m-label-required">{numberLabel}</label>
-      <input className="m-input" value={idNumber} onChange={(e) => setIdNumber(e.target.value)} placeholder={numberPlaceholder} />
-
-      <label className="m-muted m-label-required">手机号</label>
-      <input className="m-input" value={phone} onChange={(e) => setPhone(e.target.value)} />
-
-      <label className="m-muted">微信（可选）</label>
-      <input className="m-input" value={wechat} onChange={(e) => setWechat(e.target.value)} />
-    </div>
+    <IdDocumentFields
+      docType={docType}
+      name={name}
+      idNumber={idNumber}
+      phone={phone}
+      wechat={wechat}
+      idLongTerm={idLongTerm}
+      idValidUntil={idValidUntil}
+      extraDocValidUntil={extraDocValidUntil}
+      onDocTypeChange={onDocTypeChange}
+      onNameChange={setName}
+      onIdNumberChange={setIdNumber}
+      onPhoneChange={setPhone}
+      onWechatChange={setWechat}
+      onIdLongTermChange={setIdLongTerm}
+      onIdValidUntilChange={setIdValidUntil}
+      onExtraDocValidUntilChange={setExtraDocValidUntil}
+    />
   ) : null
 
   if (loadErr) {
@@ -637,7 +284,7 @@ export function RentCheckoutPage() {
   if (!cartLines.length) {
     return (
       <div className="m-col">
-        <div className="m-card m-muted">购物车为空，请先选择房源。</div>
+        <div className="m-card m-muted">{cartHint || '购物车为空，请先选择房源。'}</div>
         <Link className="m-btn" to="/cart">
           去购物车
         </Link>
@@ -649,35 +296,13 @@ export function RentCheckoutPage() {
     <div className="m-col">
       {!orderPlaced ? (
         <>
-          <div className="m-card m-checkout-summary">
-            <div className="m-checkout-summary-head">
-              <span className="m-checkout-summary-title">
-                结算房源 · {checkoutLane ? cartLaneLabel(checkoutLane) : '当前类别'}
-              </span>
-              <span className="m-checkout-summary-count">{cartLines.length} 套</span>
+          <div className="m-card m-checkout-intro">
+            <div className="m-checkout-summary-title">
+              结算 · {checkoutLane ? cartLaneLabel(checkoutLane) : '当前类别'} · {cartLines.length} 套
             </div>
-            <div className="m-checkout-line-list">
-              {cartLines.map((l) => (
-                <div key={l.houseId} className="m-checkout-line">
-                  <div className="m-checkout-line-body">
-                    <div className="m-checkout-line-title">{l.title}</div>
-                    <div className="m-checkout-line-sub">{l.subtitle}</div>
-                    <div className="m-checkout-line-tag">{l.assetType}</div>
-                  </div>
-                  <div className="m-checkout-line-rent">
-                    <span className="m-checkout-line-rent-num">¥{l.rentMonthly}</span>
-                    <span className="m-checkout-line-rent-suf">/月</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-            <div className="m-checkout-summary-foot">
-              <span>月租合计（不含物业、水电等）</span>
-              <strong className="m-checkout-summary-total">¥{totalRentMonthly}</strong>
-              <Link to="/cart" className="m-checkout-edit-link">
-                调整
-              </Link>
-            </div>
+            <p className="m-muted" style={{ margin: '6px 0 0', fontSize: 13, lineHeight: 1.5 }}>
+              请先选择合同形式，再填写租期与起租日。
+            </p>
           </div>
 
           <div className="m-card m-checkout-mode">
@@ -686,8 +311,8 @@ export function RentCheckoutPage() {
               <input
                 type="radio"
                 name="cm"
-                checked={contractMode === 'MERGED'}
-                onChange={() => setContractMode('MERGED')}
+                checked={isMerged}
+                onChange={() => onContractModeChange('MERGED')}
               />
               <span>
                 <strong>多对一</strong>：多套合并为一份合同，账单按该合同出账；费用明细可按套展开查看。
@@ -698,55 +323,126 @@ export function RentCheckoutPage() {
                 type="radio"
                 name="cm"
                 checked={contractMode === 'ONE_PER_ASSET'}
-                onChange={() => setContractMode('ONE_PER_ASSET')}
+                onChange={() => onContractModeChange('ONE_PER_ASSET')}
               />
               <span>
                 <strong>一对一</strong>：每套单独生成订单，后续各签一份合同。
               </span>
             </label>
-            {contractMode === 'MERGED' ? (
+            {isMerged ? (
               <div className="m-checkout-mode-hint">
-                合并模式要求租期与入住日一致；{allBowan ? '下方统一填写，应用于全部房源。' : '各套租期与入住日请在购物车中保持一致后再提交。'}
+                合并为一份合同，<strong>全部资产共用同一租期与起租日</strong>，请在下方统一填写。
               </div>
             ) : (
               <div className="m-checkout-mode-hint">
-                各套租期与入住日请在 <Link to="/cart">购物车</Link> 中分别设置。
+                每套单独签约，请在下方资产清单中<strong>分别填写</strong>各套租期与起租日。
               </div>
             )}
           </div>
 
-          {contractMode === 'MERGED' && cartLines.length > 1 ? (
-            <div className="m-checkout-merge-strip">
-              本单共 {cartLines.length} 套 · 将生成 1 份合同 · 后续账单按月汇总展示
+          {isMerged ? (
+            <div className="m-card m-checkout-lease-card">
+              <div className="m-checkout-sec-title">统一租期与起租日</div>
+              <div className="m-checkout-lease-grid">
+                <div className="m-checkout-lease-field m-checkout-lease-field--months">
+                  <label className="m-checkout-lease-label">租期（月）</label>
+                  <input
+                    className="m-input"
+                    type="number"
+                    min={1}
+                    max={36}
+                    value={leaseMonths}
+                    onChange={(e) => applyUnifiedLease({ leaseMonths: Number(e.target.value) })}
+                  />
+                </div>
+                <div className="m-checkout-lease-field">
+                  <label className="m-checkout-lease-label">起租日</label>
+                  <input
+                    className="m-input"
+                    type="date"
+                    value={moveInDate}
+                    onChange={(e) => applyUnifiedLease({ moveInDate: e.target.value })}
+                  />
+                </div>
+              </div>
+              <p className="m-checkout-lease-foot">将应用于本单全部 {cartLines.length} 套资产。</p>
             </div>
           ) : null}
+
+          {isMerged && cartLines.length > 1 ? (
+            <div className="m-checkout-merge-strip">
+              本单共 {cartLines.length} 套 · 将生成 1 份合同 · 租期 {leaseMonths} 月 · 起租 {moveInDate}
+            </div>
+          ) : null}
+
+          <div className="m-card m-checkout-summary">
+            <div className="m-checkout-summary-head">
+              <span className="m-checkout-summary-title">资产清单</span>
+              <Link to="/cart" className="m-checkout-edit-link">
+                调整
+              </Link>
+            </div>
+            <div className="m-checkout-line-list">
+              {cartLines.map((l) => (
+                <div key={l.houseId} className="m-checkout-line m-checkout-line--stacked">
+                  <div className="m-checkout-line-main">
+                    <div className="m-checkout-line-body">
+                      <div className="m-checkout-line-title">{l.title}</div>
+                      <div className="m-checkout-line-sub">{l.subtitle}</div>
+                      <div className="m-checkout-line-tag">{l.assetType}</div>
+                      {isMerged ? (
+                        <div className="m-checkout-line-lease-read">
+                          租期 {leaseMonths} 月 · 起租 {moveInDate}
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="m-checkout-line-rent">
+                      <span className="m-checkout-line-rent-num">¥{l.rentMonthly}</span>
+                      <span className="m-checkout-line-rent-suf">/月</span>
+                    </div>
+                  </div>
+                  {!isMerged ? (
+                    <div className="m-checkout-line-lease">
+                      <div className="m-checkout-line-lease-field">
+                        <span className="m-checkout-line-lease-label">租期</span>
+                        <input
+                          className="m-cart-line-input m-cart-line-input--months"
+                          type="number"
+                          min={1}
+                          max={36}
+                          inputMode="numeric"
+                          value={l.leaseMonths}
+                          onChange={(e) => updateLineLease(l.houseId, { leaseMonths: Number(e.target.value) })}
+                          aria-label={`${l.title} 租期`}
+                        />
+                      </div>
+                      <div className="m-checkout-line-lease-field">
+                        <span className="m-checkout-line-lease-label">起租</span>
+                        <input
+                          className="m-cart-line-input m-cart-line-input--date"
+                          type="date"
+                          value={l.moveInDate}
+                          onChange={(e) => updateLineLease(l.houseId, { moveInDate: e.target.value })}
+                          aria-label={`${l.title} 起租日`}
+                        />
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+            <div className="m-checkout-summary-foot">
+              <span>月租合计（不含物业、水电等）</span>
+              <strong className="m-checkout-summary-total">¥{totalRentMonthly}</strong>
+            </div>
+          </div>
 
           {!allBowan ? (
             <div className="m-card m-checkout-note">
               <div className="m-checkout-note-title">多资产意向</div>
               <p className="m-checkout-note-body">
-                含非泊湾公寓类房源时，仅提交意向由店长审核；租期与入住日已在购物车中填写，如需修改请返回购物车。
+                含非泊湾公寓类房源时，仅提交意向由店长审核；租期与起租日按上方所选合同形式填写即可。
               </p>
-            </div>
-          ) : null}
-
-          {allBowan && contractMode === 'MERGED' ? (
-            <div className="m-card m-checkout-lease-grid">
-              <div className="m-checkout-lease-field">
-                <label className="m-checkout-lease-label">租期（月）</label>
-                <input
-                  className="m-input"
-                  type="number"
-                  min={1}
-                  max={36}
-                  value={leaseMonths}
-                  onChange={(e) => setLeaseMonths(Number(e.target.value))}
-                />
-              </div>
-              <div className="m-checkout-lease-field">
-                <label className="m-checkout-lease-label">入住日期</label>
-                <input className="m-input" type="date" value={moveInDate} onChange={(e) => setMoveInDate(e.target.value)} />
-              </div>
             </div>
           ) : null}
 
@@ -850,7 +546,7 @@ export function RentCheckoutPage() {
               真实场景中会打开摄像头进行人脸识别，通过后即可提交购物车订单至店长审核。
             </div>
             <div className="m-face-demo-tip">
-              <strong>Demo 说明：</strong>不实际调用认证接口，点击下方按钮即视为「认证成功」，
+              <strong>说明：</strong>不实际调用认证接口，点击下方按钮即视为「认证成功」，
               随后将把订单信息提交至管理后台。
             </div>
             <div className="m-modal-actions">

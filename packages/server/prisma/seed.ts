@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client'
 import bcrypt from 'bcryptjs'
+import { reconcileBaseBillsAfterMergedLineRelease } from '../src/orderLineRelease.js'
 import { upsertAssetSnapshot } from '../src/services/assetSync.js'
 
 const prisma = new PrismaClient()
@@ -409,6 +410,18 @@ async function main() {
       roleCode: 'STORE_MANAGER',
     },
     update: {},
+  })
+
+  const financePassword = await bcrypt.hash('finance123', 10)
+  await prisma.admin.upsert({
+    where: { email: 'finance@example.com' },
+    create: {
+      email: 'finance@example.com',
+      name: '财务专员',
+      passwordHash: financePassword,
+      roleCode: 'FINANCE',
+    },
+    update: { roleCode: 'FINANCE' },
   })
 
   const firstStore = await prisma.store.findFirst({ where: { name: '南宁市-江南区' } })
@@ -1211,7 +1224,7 @@ async function main() {
           houseId: h0.id,
           tenantId: mergeTenant.id,
           orderId: order.id,
-          status: 'PENDING_PAYMENT',
+          status: 'ACTIVE',
           startDate,
           endDate,
           rentMonthly: sumRent,
@@ -1392,6 +1405,8 @@ async function main() {
     })
   }
 
+  await ensureMergedBundlePartialChangeHouseDemo(prisma)
+
   await seedHouseChangeLogsForDemo(prisma, systemAdmin, manager)
 
   await seedDemoContractPrepayments(prisma)
@@ -1405,6 +1420,132 @@ async function main() {
   console.log('Admin login: admin@example.com / admin123')
   // eslint-disable-next-line no-console
   console.log('Manager login: manager@example.com / manager123')
+  // eslint-disable-next-line no-console
+  console.log('Finance login: finance@example.com / finance123')
+}
+
+/** 合并合同 HT20260288118：三套资产中一套已换房，原合同仍保留两套在租并停止对已换资产的计费 */
+async function ensureMergedBundlePartialChangeHouseDemo(db: PrismaClient) {
+  const MERGED_CONTRACT_NO = 'HT20260288118'
+  const merged = await db.contract.findFirst({
+    where: { contractNo: MERGED_CONTRACT_NO },
+    include: {
+      order: {
+        include: {
+          lines: {
+            orderBy: { sortOrder: 'asc' },
+            include: { house: { include: { apartment: true } } },
+          },
+        },
+      },
+    },
+  })
+  if (!merged?.order?.isMergedBundle || merged.order.lines.length < 3) return
+  if (merged.order.lines.some((l) => l.changeHouseNewContractId)) return
+
+  const lines = merged.order.lines
+  const srcLine = lines[1] ?? lines[0]!
+  const storeId = srcLine.house.apartment.storeId
+  const occupiedIds = lines.map((l) => l.houseId)
+
+  const target = await db.house.findFirst({
+    where: {
+      status: 'VACANT',
+      isPublished: true,
+      apartment: { storeId },
+      id: { notIn: occupiedIds },
+    },
+    include: { apartment: true },
+  })
+  if (!target) {
+    // eslint-disable-next-line no-console
+    console.warn('合并合同部分换房演示：未找到同门店空置目标房，跳过。')
+    return
+  }
+
+  const moveDate = new Date()
+  moveDate.setMonth(moveDate.getMonth() - 1)
+  moveDate.setDate(15)
+  const moveEnd = new Date(moveDate)
+  moveEnd.setHours(23, 59, 59, 999)
+  const newStart = new Date(moveDate)
+  newStart.setDate(newStart.getDate() + 1)
+  const leaseMonths = 12
+  const newEnd = new Date(newStart)
+  newEnd.setMonth(newEnd.getMonth() + leaseMonths)
+  const newContractNo = `CH${new Date().getFullYear()}${String(Date.now()).slice(-6)}`
+  const newRent = target.rentMonthly
+  const newDep = target.deposit
+
+  await db.$transaction(async (tx) => {
+    const newOrder = await tx.order.create({
+      data: {
+        houseId: target.id,
+        tenantId: merged.tenantId,
+        leaseMonths,
+        moveInDate: newStart,
+        status: 'APPROVED',
+      },
+    })
+    const nc = await tx.contract.create({
+      data: {
+        contractNo: newContractNo,
+        houseId: target.id,
+        tenantId: merged.tenantId,
+        orderId: newOrder.id,
+        status: 'WAIT_TENANT_SIGN',
+        startDate: newStart,
+        endDate: newEnd,
+        rentMonthly: newRent,
+        deposit: newDep,
+        changeHouseFromId: merged.id,
+      },
+    })
+
+    await tx.orderLine.update({
+      where: { id: srcLine.id },
+      data: { releasedAt: moveEnd, changeHouseNewContractId: nc.id },
+    })
+    await tx.house.update({ where: { id: srcLine.houseId }, data: { status: 'VACANT' } })
+    await tx.house.update({ where: { id: target.id }, data: { status: 'RESERVED' } })
+
+    const after = await tx.orderLine.findMany({
+      where: { orderId: merged.order!.id, releasedAt: null },
+      orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
+    })
+    const rentSum = after.reduce((s, l) => s + l.rentMonthlySnapshot, 0)
+    const depSum = after.reduce((s, l) => s + l.depositSnapshot, 0)
+    await tx.contract.update({
+      where: { id: merged.id },
+      data: {
+        status: 'ACTIVE',
+        houseId: after[0]!.houseId,
+        rentMonthly: rentSum,
+        deposit: depSum,
+      },
+    })
+
+    await reconcileBaseBillsAfterMergedLineRelease(tx, {
+      contractId: merged.id,
+      orderId: merged.order!.id,
+      rentMonthly: rentSum,
+      moveEnd,
+      leaseEnd: merged.endDate,
+    })
+
+    await tx.refund.create({
+      data: {
+        contractId: merged.id,
+        amount: 0,
+        reason: `部分换房：迁出 ${srcLine.house.apartment.name} ${srcLine.house.houseNo} → 新签 ${target.apartment.name} ${target.houseNo}，新合同 ${newContractNo}`,
+      },
+    })
+  })
+
+  // eslint-disable-next-line no-console
+  console.log(
+    `Demo: 合并合同 ${MERGED_CONTRACT_NO} 已写入部分换房样例（${srcLine.house.apartment.name} ${srcLine.house.houseNo} → ${target.apartment.name} ${target.houseNo}，新合同 ${newContractNo}）。`,
+  )
 }
 
 main()

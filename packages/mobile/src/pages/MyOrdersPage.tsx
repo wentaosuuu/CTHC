@@ -44,9 +44,7 @@ function OrderCountdownBlock(props: {
 
   if (!contract) return null
 
-  const demoTag = showDemoBadge ? (
-    <div className="m-order-deadline__demo">演示数据 · 非真实后台</div>
-  ) : null
+  const demoTag = null
 
   if (contract.status === 'VOID' || contract.status === 'TERMINATED') return null
 
@@ -164,7 +162,7 @@ export function MyOrdersPage() {
         <div className="m-card m-order-deadline m-order-deadline--muted">
           <div style={{ fontWeight: 800 }}>提示：绑定手机号</div>
           <div style={{ marginTop: 6 }}>
-            列表中<strong>橙色 / 紫色 / 蓝色</strong>区块为<strong>演示用倒计时</strong>，便于向客户讲解流程。填写与下单一致的手机号后，可与后台<strong>真实合同</strong>进度同步展示。
+            填写与下单一致的手机号后，可与后台合同进度同步展示。
           </div>
           <div style={{ marginTop: 10 }}>
             <Link className="m-btn" to="/me/profile">

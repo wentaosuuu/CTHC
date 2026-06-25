@@ -30,21 +30,15 @@ export function isMainland18Id(s: string): boolean {
   return /^[1-9]\d{5}(18|19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dX]$/.test(v)
 }
 
-/** 返回错误码（与接口 JSON error 一致）或 null 表示通过 */
-export function validateIdNumberForDocType(docType: IdDocType, idNumber: string): string | null {
-  if (docType === 'IDCARD') return isMainland18Id(idNumber) ? null : 'INVALID_ID_NUMBER'
-  if (docType === 'PASSPORT') return isPassportNo(idNumber) ? null : 'INVALID_PASSPORT_NO'
-  if (docType === 'HKM_TW_PERMIT') return isHkmTwPermitNo(idNumber) ? null : 'INVALID_PERMIT_NO'
-  if (docType === 'USCC') return isUscc18(idNumber) ? null : 'INVALID_USCC'
-  return 'INVALID_ID_DOC_TYPE'
+/** 返回错误码（与接口 JSON error 一致）或 null 表示通过（仅校验非空，不校验证件号格式） */
+export function validateIdNumberForDocType(_docType: IdDocType, idNumber: string): string | null {
+  if (!idNumber.trim()) return 'ID_NUMBER_REQUIRED'
+  return null
 }
 
 export function optionalDocValidUntilOk(ymd: string | undefined): string | null {
   if (!ymd || !String(ymd).trim()) return null
   const t = String(ymd).trim()
   if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) return 'INVALID_DOC_VALID_UNTIL'
-  const [y, mo, d] = t.split('-').map((x) => Number(x))
-  const end = new Date(y, mo - 1, d, 23, 59, 59, 999)
-  if (end.getTime() < Date.now()) return 'DOC_EXPIRED'
   return null
 }

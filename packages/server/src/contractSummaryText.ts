@@ -23,7 +23,7 @@ export function buildContractSummaryText(contract: ContractForSummaryText): stri
   lines.push(`租客：${contract.tenant.name}  ${contract.tenant.phone}`)
   lines.push(`租期：${toYmd(contract.startDate)} 至 ${toYmd(contract.endDate)}`)
   lines.push(`月租：¥${contract.rentMonthly}  押金：¥${contract.deposit}`)
-  lines.push(`缴费周期：${contract.rentCycle ?? '—'}  滞纳金公式：${contract.penaltyFormula ?? '—'}`)
+  lines.push(`缴费周期：${contract.rentCycle ?? '—'}  交租日：每期 ${contract.rentDueDay ?? 1} 日  滞纳金公式：${contract.penaltyFormula ?? '—'}`)
 
   const ol = contract.order?.lines?.filter((l) => !l.releasedAt) ?? []
   if (contract.order?.isMergedBundle && ol.length > 0) {

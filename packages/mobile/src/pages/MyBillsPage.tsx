@@ -76,7 +76,7 @@ export function MyBillsPage() {
     const ids = [...selectedBillIds]
     if (ids.length === 0) return
     if (ids.some((id) => id.startsWith('DEMO-'))) {
-      setBatchMsg('演示账单不支持合并支付，请取消勾选以「DEMO-」开头的项，或在各账单详情页单笔支付。')
+      setBatchMsg('部分账单不支持合并支付，请取消勾选以「DEMO-」开头的项，或在各账单详情页单笔支付。')
       return
     }
     setBatchLoading(true)

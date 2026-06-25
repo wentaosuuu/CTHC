@@ -4,6 +4,7 @@ import { ContractRemarkEditor } from '../components/ContractRemarkEditor'
 import { contractAttachmentsLockedUntilPaid } from '../contractAttachmentPolicy'
 import { downloadFileWithAuth, previewFileWithAuth } from '../fileAuth'
 import { Pagination, paginate } from '../components/Pagination'
+import { parseRentDueDayInput, rentCycleDueDayHint, rentDueDayFromYmd } from '../rentDueDay'
 
 /** 与合同 rentCycle 字段及后端校验一致 */
 type RentCycle = 'MONTHLY' | 'BIMONTHLY' | 'QUARTERLY' | 'YEARLY'
@@ -11,6 +12,29 @@ type RentCycle = 'MONTHLY' | 'BIMONTHLY' | 'QUARTERLY' | 'YEARLY'
 function normalizeRentCycle(v: string | undefined | null): RentCycle {
   if (v === 'BIMONTHLY' || v === 'QUARTERLY' || v === 'YEARLY') return v
   return 'MONTHLY'
+}
+
+type ContractTemplateKind = 'TRIPARTITE' | 'APARTMENT'
+
+function normalizeContractTemplate(v: string | undefined | null): ContractTemplateKind {
+  return v === 'TRIPARTITE' ? 'TRIPARTITE' : 'APARTMENT'
+}
+
+function contractTemplateZh(t: ContractTemplateKind) {
+  return t === 'TRIPARTITE' ? '三方合同' : '公寓合同'
+}
+
+function rentCycleLabel(c: RentCycle) {
+  switch (c) {
+    case 'MONTHLY':
+      return '月付'
+    case 'BIMONTHLY':
+      return '双月'
+    case 'QUARTERLY':
+      return '季付'
+    default:
+      return '年付'
+  }
 }
 
 /** 一单多房源合并签约：列表/详情与订单 OrderLine 对齐 */
@@ -25,6 +49,10 @@ type MergedBundleListInfo = {
     houseNo: string
     rentMonthlySnapshot: number
     releasedAt?: string | null
+    changeHouseNewContractId?: string | null
+    changeHouseNewContractNo?: string | null
+    lineStatus?: 'IN_USE' | 'CHANGED' | 'MOVED_OUT'
+    lineStatusLabel?: string
   }[]
 }
 
@@ -128,6 +156,19 @@ function formatContractNo(contractNo: string) {
   return digits ? `HT${digits}` : contractNo
 }
 
+/** 「修改合同配置」：仅租客已申请修改或管理员已驳回、且合同仍可改配置时展示 */
+function canShowEditContractConfigButton(c: {
+  status: string
+  modificationRequestedAt: string | null
+  modificationRejectedAt: string | null
+}): boolean {
+  if (!c.modificationRequestedAt && !c.modificationRejectedAt) return false
+  if (c.status === 'VOID' || c.status === 'TERMINATED' || c.status === 'WAIT_TENANT_MOVEOUT_SIGN') {
+    return false
+  }
+  return true
+}
+
 /** 与 H5 合同签字倒计时风格一致（≥1 天用「X天Y小时」，否则 HH:MM:SS） */
 function formatCountdownHms(ms: number) {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000))
@@ -209,7 +250,10 @@ function apiErrorZh(code: string) {
     NEW_START_BEFORE_MOVE: '新合同起租日不能早于换房日',
     CHANGE_HOUSE_NEED_ACTIVE: '仅「已生效」的在租合同可办理换房',
     DEPOSIT_REFUND_NEED_TERMINATED: '仅已退租（已终止）合同可以退押金',
-    DEPOSIT_REFUND_EXCEED_DEPOSIT: '退押金金额不能超过合同押金',
+    DEPOSIT_REFUND_EXCEED_DEPOSIT: '退押金金额不能超过合同可退上限',
+    DEPOSIT_REFUND_NO_REMAINING: '该合同押金已全部退还，无可退余额',
+    DEPOSIT_REFUND_INVALID_SELECTION: '所选账单无效或不属于本合同',
+    DEPOSIT_REFUND_NOTHING_SELECTED: '请选择要退的账单或首期款记录',
     RENEW_WINDOW_NOT_OPEN: '续签须在合同到期前 2 个月内发起，当前未到窗口',
     HOUSING_RECEIPT_NOT_READY: '报备未完成或尚无回执文件，无法下载',
     HOUSING_RECEIPT_FILE_MISSING: '回执文件在服务器上不存在，请重新发起报备',
@@ -246,6 +290,7 @@ type ContractDetail = {
   deposit: number
   rentCycle?: string
   penaltyFormula?: string
+  rentDueDay?: number | null
   latestRentGraceDays: number | null
   configRemarkHtml?: string
   attachments?: { id: string; name: string; file: string; previewUrl: string; downloadUrl: string }[]
@@ -346,8 +391,40 @@ export function ContractsPage() {
   const [moveOutReleaseHouseIds, setMoveOutReleaseHouseIds] = useState<string[]>([])
   const [moveOutAttachments, setMoveOutAttachments] = useState<{ id: string; name: string; file: string }[]>([])
   // 退押金
+  type DepositRefundOptions = {
+    contractDeposit: number
+    refundedAmount: number
+    maxRefundable: number
+    billSources: {
+      billId: string
+      period: string
+      kind: string
+      status: string
+      label: string
+      maxAmount: number
+      amountReceived: number
+      itemSummary: string
+    }[]
+    paymentSource: {
+      paymentId: string
+      label: string
+      maxAmount: number
+      paidAmount: number
+      paidAt: string | null
+    } | null
+    balanceSource: {
+      id: 'CONTRACT_DEPOSIT_BALANCE'
+      label: string
+      maxAmount: number
+    } | null
+  }
   const [refundDepositModal, setRefundDepositModal] = useState<ContractItem | null>(null)
-  const [refundDepositAmount, setRefundDepositAmount] = useState('')
+  const [refundDepositOptions, setRefundDepositOptions] = useState<DepositRefundOptions | null>(null)
+  const [refundDepositOptionsLoading, setRefundDepositOptionsLoading] = useState(false)
+  const [refundDepositMode, setRefundDepositMode] = useState<'FULL' | 'SELECTED'>('FULL')
+  const [refundDepositBillIds, setRefundDepositBillIds] = useState<string[]>([])
+  const [refundDepositIncludePayment, setRefundDepositIncludePayment] = useState(false)
+  const [refundDepositIncludeBalance, setRefundDepositIncludeBalance] = useState(false)
   const [refundDepositRemark, setRefundDepositRemark] = useState('')
   const [refundDepositTemplate, setRefundDepositTemplate] = useState('')
   const [refundDepositSubmitting, setRefundDepositSubmitting] = useState(false)
@@ -372,6 +449,7 @@ export function ContractsPage() {
     depositMultiple: 1,
     rentCycle: 'MONTHLY' as RentCycle,
     penaltyFormula: 'amount*0.1%*days',
+    rentDueDay: '1',
     latestRentGraceDays: '',
   })
   const [renewSubmitting, setRenewSubmitting] = useState(false)
@@ -413,6 +491,7 @@ export function ContractsPage() {
     deposit: 0,
     rentCycle: 'MONTHLY' as RentCycle,
     penaltyFormula: 'amount*0.1%*days',
+    rentDueDay: '1',
     latestRentGraceDays: '' as string, // 天数，空表示未设置
   })
   const [editSubmitting, setEditSubmitting] = useState(false)
@@ -422,7 +501,15 @@ export function ContractsPage() {
   >([])
 
   // 管理员手动新建合同弹窗
-  type HousePick = { id: string; apartmentName: string; houseNo: string; storeName: string; status: string }
+  type HousePick = {
+    id: string
+    apartmentName: string
+    houseNo: string
+    storeName: string
+    status: string
+    rentMonthly: number
+    deposit: number
+  }
   const [createModalOpen, setCreateModalOpen] = useState(false)
   const [createHouseOptions, setCreateHouseOptions] = useState<HousePick[]>([])
   const [createForm, setCreateForm] = useState({
@@ -434,11 +521,15 @@ export function ContractsPage() {
     agreementSignDate: '' as string,
     leaseMonths: 12,
     rentMonthly: 0,
-    deposit: 0,
+    depositMultiple: 1,
     rentCycle: 'MONTHLY' as RentCycle,
     penaltyFormula: 'amount*0.1%*days',
+    rentDueDay: '1',
     latestRentGraceDays: '',
     remarkHtml: '',
+    contractTemplate: 'APARTMENT' as ContractTemplateKind,
+    terminationRentMulti: '2',
+    terminationDaysPastDue: '7',
   })
   const [createPendingFiles, setCreatePendingFiles] = useState<File[]>([])
   const [createSubmitting, setCreateSubmitting] = useState(false)
@@ -494,6 +585,7 @@ export function ContractsPage() {
         deposit: d.deposit,
         rentCycle: normalizeRentCycle(d.rentCycle),
         penaltyFormula: d.penaltyFormula ?? 'amount*0.1%*days',
+        rentDueDay: d.rentDueDay != null ? String(d.rentDueDay) : String(rentDueDayFromYmd(d.startDate)),
         latestRentGraceDays: d.latestRentGraceDays != null ? String(d.latestRentGraceDays) : '',
       })
       setEditRemarkHtml(d.configRemarkHtml ?? '')
@@ -542,6 +634,10 @@ export function ContractsPage() {
         depositMultiple: r.data.depositMultiple ?? 1,
         rentCycle: normalizeRentCycle(r.data.rentCycle),
         penaltyFormula: r.data.penaltyFormula ?? 'amount*0.1%*days',
+        rentDueDay:
+          d.ok && d.data.rentDueDay != null
+            ? String(d.data.rentDueDay)
+            : String(rentDueDayFromYmd(nextStart)),
         latestRentGraceDays:
           d.ok && d.data.latestRentGraceDays != null ? String(d.data.latestRentGraceDays) : '',
       })
@@ -626,6 +722,11 @@ export function ContractsPage() {
       setEditSubmitting(false)
       return setError(graceParsed.message)
     }
+    const rentDueParsed = parseRentDueDayInput(editForm.rentDueDay)
+    if (!rentDueParsed.ok) {
+      setEditSubmitting(false)
+      return setError(rentDueParsed.message)
+    }
     const r = await apiPatch<{ ok: true }>('/api/admin/contracts/' + editContract.id, {
       startDate: editForm.startDate,
       endDate: editForm.endDate,
@@ -634,6 +735,7 @@ export function ContractsPage() {
       deposit: editForm.deposit,
       rentCycle: editForm.rentCycle,
       penaltyFormula: editForm.penaltyFormula,
+      rentDueDay: rentDueParsed.value,
       latestRentGraceDays: graceParsed.value,
       configRemarkHtml: editRemarkHtml || null,
       attachmentsJson: JSON.stringify(
@@ -726,37 +828,100 @@ export function ContractsPage() {
 
   function openRefundDepositModal(c: ContractItem) {
     setRefundDepositModal(c)
-    setRefundDepositAmount('')
+    setRefundDepositOptions(null)
+    setRefundDepositMode('FULL')
+    setRefundDepositBillIds([])
+    setRefundDepositIncludePayment(false)
+    setRefundDepositIncludeBalance(false)
     setRefundDepositRemark('')
     setRefundDepositTemplate(DEPOSIT_REFUND_TEMPLATES[0]?.code ?? '')
+    setRefundDepositOptionsLoading(true)
+    setError('')
+    void apiGet<DepositRefundOptions>('/api/admin/contracts/' + c.id + '/refund-deposit-options').then((r) => {
+      setRefundDepositOptionsLoading(false)
+      if (!r.ok) {
+        setError(apiErrorZh(String(r.error)))
+        return
+      }
+      setRefundDepositOptions(r.data)
+      const hasBills = r.data.billSources.length > 0
+      const hasPayment = Boolean(r.data.paymentSource)
+      if (hasBills || hasPayment) {
+        setRefundDepositMode('SELECTED')
+      }
+    })
   }
 
+  const refundDepositSelectedAmount = useMemo(() => {
+    if (!refundDepositOptions) return 0
+    if (refundDepositMode === 'FULL') return refundDepositOptions.maxRefundable
+    let sum = 0
+    for (const b of refundDepositOptions.billSources) {
+      if (refundDepositBillIds.includes(b.billId)) sum += b.maxAmount
+    }
+    if (refundDepositIncludePayment && refundDepositOptions.paymentSource) {
+      sum += refundDepositOptions.paymentSource.maxAmount
+    }
+    if (refundDepositIncludeBalance && refundDepositOptions.balanceSource) {
+      sum += refundDepositOptions.balanceSource.maxAmount
+    }
+    return sum
+  }, [
+    refundDepositOptions,
+    refundDepositMode,
+    refundDepositBillIds,
+    refundDepositIncludePayment,
+    refundDepositIncludeBalance,
+  ])
+
   async function submitRefundDeposit() {
-    if (!refundDepositModal) return
-    const amount = Number(refundDepositAmount)
-    if (!Number.isFinite(amount) || amount <= 0) {
-      setError('请输入大于 0 的退押金金额')
-      return
-    }
-    if (!Number.isInteger(amount)) {
-      setError('退押金金额需为整数（单位：元）')
-      return
-    }
+    if (!refundDepositModal || !refundDepositOptions) return
     if (!refundDepositTemplate) {
       setError('请选择退押金模板类型')
       return
     }
+    if (refundDepositOptions.maxRefundable <= 0) {
+      setError('该合同押金已全部退还')
+      return
+    }
+    if (refundDepositMode === 'SELECTED') {
+      const hasBill = refundDepositBillIds.length > 0
+      const hasPay = refundDepositIncludePayment && refundDepositOptions.paymentSource
+      const hasBalance = refundDepositIncludeBalance && refundDepositOptions.balanceSource
+      if (!hasBill && !hasPay && !hasBalance) {
+        setError('请勾选要退的账单、首期款记录或合同押金余额')
+        return
+      }
+      if (refundDepositSelectedAmount <= 0) {
+        setError('所选来源无可退金额')
+        return
+      }
+      if (refundDepositSelectedAmount > refundDepositOptions.maxRefundable) {
+        setError('所选金额合计超过合同可退上限')
+        return
+      }
+    }
     setRefundDepositSubmitting(true)
     setError('')
-    const r = await apiPost<{ ok: true }>('/api/admin/contracts/' + refundDepositModal.id + '/refund-deposit', {
-      amount,
-      remark: refundDepositRemark.trim() || undefined,
-      refundTemplateCode: refundDepositTemplate,
-    })
+    const r = await apiPost<{ ok: true; amount: number }>(
+      '/api/admin/contracts/' + refundDepositModal.id + '/refund-deposit',
+      {
+        mode: refundDepositMode,
+        billIds: refundDepositMode === 'SELECTED' ? refundDepositBillIds : undefined,
+        includePayment:
+          refundDepositMode === 'SELECTED' ? refundDepositIncludePayment : undefined,
+        includeContractBalance:
+          refundDepositMode === 'SELECTED' ? refundDepositIncludeBalance : undefined,
+        remark: refundDepositRemark.trim() || undefined,
+        refundTemplateCode: refundDepositTemplate,
+      },
+    )
     setRefundDepositSubmitting(false)
     if (!r.ok) return setError(apiErrorZh(String(r.error)))
-    setMsg(`退押金成功：${formatContractNo(refundDepositModal.contractNo)} 已退 ¥${amount}`)
+    const amt = r.data.amount
+    setMsg(`退押金成功：${formatContractNo(refundDepositModal.contractNo)} 已退 ¥${amt}`)
     setRefundDepositModal(null)
+    setRefundDepositOptions(null)
     await load()
   }
 
@@ -769,6 +934,11 @@ export function ContractsPage() {
       setRenewSubmitting(false)
       return setError(graceParsed.message)
     }
+    const rentDueParsed = parseRentDueDayInput(renewForm.rentDueDay)
+    if (!rentDueParsed.ok) {
+      setRenewSubmitting(false)
+      return setError(rentDueParsed.message)
+    }
     const r = await apiPost<{ ok: true; newContractId: string; contractNo: string }>(
       '/api/admin/contracts/' + renewModal.id + '/renew',
       {
@@ -778,6 +948,7 @@ export function ContractsPage() {
         depositMultiple: renewForm.depositMultiple,
         rentCycle: renewForm.rentCycle,
         penaltyFormula: renewForm.penaltyFormula,
+        rentDueDay: rentDueParsed.value,
         latestRentGraceDays: graceParsed.value,
         configRemarkHtml: renewRemarkHtml.trim() ? renewRemarkHtml : null,
       },
@@ -927,21 +1098,63 @@ export function ContractsPage() {
     })
   }, [items, q, status, sourceFilter, reportStatusFilter, storeFilter, apartmentFilter, expiryWarnMin, expiryWarnMax])
 
+  const createSelectedHouse = useMemo(
+    () => createHouseOptions.find((h) => h.id === createForm.houseId) ?? null,
+    [createHouseOptions, createForm.houseId],
+  )
+
+  function applyCreateHouseDefaults(houseId: string, prev: typeof createForm) {
+    const h = createHouseOptions.find((x) => x.id === houseId)
+    return {
+      ...prev,
+      houseId,
+      rentMonthly: h?.rentMonthly ?? prev.rentMonthly,
+      depositMultiple:
+        h && h.rentMonthly > 0 ? h.deposit / h.rentMonthly : prev.depositMultiple,
+    }
+  }
+
   async function openCreateModal() {
     setError('')
     setMsg('')
     const r = await apiGet<{ items: HousePick[] }>('/api/admin/houses')
     if (!r.ok) return setError(r.error)
     // 仅允许选择空置房源
-    const opts = (r.data.items ?? []).filter((h) => h.status === 'VACANT')
+    const opts = (r.data.items ?? [])
+      .filter((h) => h.status === 'VACANT')
+      .map((h) => ({
+        id: h.id,
+        apartmentName: h.apartmentName,
+        houseNo: h.houseNo,
+        storeName: h.storeName,
+        status: h.status,
+        rentMonthly: h.rentMonthly ?? 0,
+        deposit: h.deposit ?? 0,
+      }))
     setCreateHouseOptions(opts)
-    setCreateForm((f) => ({
-      ...f,
-      houseId: opts.length === 1 ? opts[0].id : f.houseId,
+    const defaultHouse = opts.length === 1 ? opts[0] : null
+    setCreateForm({
+      houseId: defaultHouse?.id ?? '',
+      tenantName: '',
+      tenantPhone: '',
+      tenantIdNumber: '',
       startDate: todayYmd(),
       agreementSignDate: '',
+      leaseMonths: 12,
+      rentMonthly: defaultHouse?.rentMonthly ?? 0,
+      depositMultiple:
+        defaultHouse && defaultHouse.rentMonthly > 0
+          ? defaultHouse.deposit / defaultHouse.rentMonthly
+          : 1,
+      rentCycle: 'MONTHLY',
+      penaltyFormula: 'amount*0.1%*days',
+      rentDueDay: String(rentDueDayFromYmd(todayYmd())),
+      latestRentGraceDays: '',
       remarkHtml: '',
-    }))
+      contractTemplate: 'APARTMENT',
+      terminationRentMulti: '2',
+      terminationDaysPastDue: '7',
+    })
     setCreatePendingFiles([])
     setCreateModalOpen(true)
   }
@@ -951,12 +1164,31 @@ export function ContractsPage() {
     if (!createForm.tenantName.trim()) return setError('请填写租客姓名')
     if (!createForm.tenantPhone.trim()) return setError('请填写手机号')
     if (!createForm.tenantIdNumber.trim()) return setError('请填写身份证号')
-    if (!createForm.startDate) return setError('请填写起租日')
+    if (!createForm.startDate) return setError('请填写入住日期')
     if (createForm.leaseMonths <= 0) return setError('租期（月）需大于 0')
     if (createForm.rentMonthly <= 0) return setError('月租需大于 0')
-    if (createForm.deposit < 0) return setError('押金不能为负数')
+    if (createForm.depositMultiple <= 0) return setError('押金倍数须大于 0')
     const graceParsed = parseLatestRentGraceDaysInput(createForm.latestRentGraceDays)
     if (!graceParsed.ok) return setError(graceParsed.message)
+    const rentDueParsed = parseRentDueDayInput(createForm.rentDueDay)
+    if (!rentDueParsed.ok) return setError(rentDueParsed.message)
+
+    let terminationRentMultiple: number | null = null
+    let terminationDaysPastDue: number | null = null
+    if (createForm.contractTemplate === 'TRIPARTITE') {
+      const x = parseFloat(createForm.terminationRentMulti.trim())
+      if (Number.isNaN(x) || x <= 0) {
+        return setError('三方合同：请填写大于 0 的月租倍数')
+      }
+      terminationRentMultiple = x
+    } else {
+      const d = parseInt(createForm.terminationDaysPastDue.trim(), 10)
+      if (Number.isNaN(d) || d < 0) {
+        return setError('公寓合同：请填写不小于 0 的逾期天数（整数）')
+      }
+      terminationDaysPastDue = d
+    }
+
     setCreateSubmitting(true)
     setError('')
     const r = await apiPost<{ ok: true; contractId: string; contractNo: string }>('/api/admin/contracts/manual', {
@@ -970,11 +1202,15 @@ export function ContractsPage() {
       agreementSignDate: createForm.agreementSignDate.trim() === '' ? null : createForm.agreementSignDate,
       leaseMonths: createForm.leaseMonths,
       rentMonthly: createForm.rentMonthly,
-      deposit: createForm.deposit,
+      depositMultiple: createForm.depositMultiple,
       rentCycle: createForm.rentCycle,
       penaltyFormula: createForm.penaltyFormula,
+      rentDueDay: rentDueParsed.value,
       latestRentGraceDays: graceParsed.value,
       configRemarkHtml: createForm.remarkHtml.trim() ? createForm.remarkHtml : null,
+      contractTemplate: createForm.contractTemplate,
+      terminationRentMultiple,
+      terminationDaysPastDue,
     })
     setCreateSubmitting(false)
     if (!r.ok) return setError(apiErrorZh(String(r.error)))
@@ -1188,9 +1424,17 @@ export function ContractsPage() {
                             {' '}
                             · {ln.houseNo}
                           </span>
-                          {ln.releasedAt ? (
-                            <span className="a-badge status-void" style={{ marginLeft: 6, fontSize: 11 }}>
-                              已迁出
+                          {ln.lineStatus && ln.lineStatus !== 'IN_USE' ? (
+                            <span
+                              className={`a-badge ${ln.lineStatus === 'CHANGED' ? 'status-wait' : 'status-void'}`}
+                              style={{ marginLeft: 6, fontSize: 11 }}
+                              title={
+                                ln.lineStatus === 'CHANGED' && ln.changeHouseNewContractNo
+                                  ? `新合同 ${formatContractNo(ln.changeHouseNewContractNo)}`
+                                  : undefined
+                              }
+                            >
+                              {ln.lineStatusLabel ?? (ln.lineStatus === 'CHANGED' ? '已换' : '已迁出')}
                             </span>
                           ) : null}
                         </div>
@@ -1473,17 +1717,18 @@ export function ContractsPage() {
                         {c.depositRefunded ? '再次退押金' : '退押金'}
                       </button>
                     ) : null}
-                    {c.status !== 'ACTIVE' && (c.modificationRequestedAt || c.modificationRejectedAt) ? (
+                    {canShowEditContractConfigButton(c) ? (
                       <button
+                        type="button"
                         className="a-btn ghost"
                         onClick={() => {
                           setEditLoadingId(c.id)
                         }}
-                        disabled={
-                          editLoadingId === c.id ||
-                          c.status === 'VOID' ||
-                          c.status === 'TERMINATED' ||
-                          c.status === 'WAIT_TENANT_MOVEOUT_SIGN'
+                        disabled={editLoadingId === c.id}
+                        title={
+                          c.modificationRejectedAt
+                            ? '租客申请已驳回，可重新配置合同'
+                            : '租客已申请修改合同配置，点击处理'
                         }
                       >
                         {editLoadingId === c.id ? '加载中…' : '修改合同配置'}
@@ -1743,63 +1988,211 @@ export function ContractsPage() {
             </div>
             <div className="a-modal-body" style={{ display: 'block' }}>
               <div className="a-muted" style={{ marginBottom: 12, lineHeight: 1.6 }}>
-                仅支持已退租（已终止）合同。支持部分退押金。
+                仅支持已退租（已终止）合同。退押金额须从本合同账单/首期款记录勾选，不可手填任意数字。
                 <br />
-                已退累计：<strong>¥{refundDepositModal.refundedDepositAmount ?? 0}</strong>
+                合同押金：<strong>¥{refundDepositOptions?.contractDeposit ?? '—'}</strong>
+                {' · '}
+                已退累计：<strong>¥{refundDepositOptions?.refundedAmount ?? refundDepositModal.refundedDepositAmount ?? 0}</strong>
+                {' · '}
+                可退上限：<strong>¥{refundDepositOptions?.maxRefundable ?? '—'}</strong>
               </div>
-              <div className="a-kv">
-                <div className="a-kv-row">
-                  <div className="a-kv-k">模板类型</div>
-                  <div className="a-kv-v">
-                    <select
-                      className="a-filter-select"
-                      value={refundDepositTemplate}
-                      onChange={(e) => setRefundDepositTemplate(e.target.value)}
-                    >
-                      {DEPOSIT_REFUND_TEMPLATES.map((t) => (
-                        <option key={t.code} value={t.code}>
-                          {t.label}
-                        </option>
-                      ))}
-                    </select>
-                    <div className="a-muted" style={{ marginTop: 6, fontSize: 12 }}>
-                      按资产类型选择占位模板，后续可对接真实退押文书；将写入退款记录备注。
+              {refundDepositOptionsLoading ? (
+                <div className="a-muted">正在加载可退来源…</div>
+              ) : refundDepositOptions ? (
+                <>
+                  {refundDepositOptions.maxRefundable <= 0 ? (
+                    <div className="a-muted">该合同押金已全部退还，无可操作项。</div>
+                  ) : (
+                    <div className="a-kv">
+                      <div className="a-kv-row">
+                        <div className="a-kv-k">退押方式</div>
+                        <div className="a-kv-v" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          <label className="m-verify-agree" style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                            <input
+                              type="radio"
+                              name="refundDepositMode"
+                              checked={refundDepositMode === 'FULL'}
+                              onChange={() => setRefundDepositMode('FULL')}
+                            />
+                            <span>
+                              全额退押（剩余可退 <strong>¥{refundDepositOptions.maxRefundable}</strong>）
+                            </span>
+                          </label>
+                          <label className="m-verify-agree" style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                            <input
+                              type="radio"
+                              name="refundDepositMode"
+                              checked={refundDepositMode === 'SELECTED'}
+                              onChange={() => {
+                                setRefundDepositMode('SELECTED')
+                                if (
+                                  refundDepositOptions.balanceSource &&
+                                  !refundDepositOptions.paymentSource &&
+                                  refundDepositOptions.billSources.length === 0
+                                ) {
+                                  setRefundDepositIncludeBalance(true)
+                                }
+                              }}
+                            />
+                            <span>按来源勾选（账单 / 首期款 / 押金余额，合计不超过可退上限）</span>
+                          </label>
+                        </div>
+                      </div>
+                      {refundDepositMode === 'SELECTED' ? (
+                        <div className="a-kv-row">
+                          <div className="a-kv-k">勾选来源</div>
+                          <div className="a-kv-v">
+                            {refundDepositOptions.paymentSource ? (
+                              <label
+                                style={{
+                                  display: 'flex',
+                                  gap: 8,
+                                  alignItems: 'flex-start',
+                                  marginBottom: 8,
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={refundDepositIncludePayment}
+                                  onChange={(e) => setRefundDepositIncludePayment(e.target.checked)}
+                                />
+                                <span>
+                                  {refundDepositOptions.paymentSource.label}
+                                  <span className="a-muted" style={{ marginLeft: 6 }}>
+                                    可退 ¥{refundDepositOptions.paymentSource.maxAmount}
+                                    {refundDepositOptions.paymentSource.paidAt
+                                      ? ` · 支付于 ${new Date(refundDepositOptions.paymentSource.paidAt).toLocaleString()}`
+                                      : ''}
+                                  </span>
+                                </span>
+                              </label>
+                            ) : null}
+                            {refundDepositOptions.balanceSource ? (
+                              <label
+                                style={{
+                                  display: 'flex',
+                                  gap: 8,
+                                  alignItems: 'flex-start',
+                                  marginBottom: 8,
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={refundDepositIncludeBalance}
+                                  onChange={(e) => setRefundDepositIncludeBalance(e.target.checked)}
+                                />
+                                <span>
+                                  {refundDepositOptions.balanceSource.label}
+                                  <span className="a-muted" style={{ marginLeft: 6 }}>
+                                    可退 ¥{refundDepositOptions.balanceSource.maxAmount}
+                                  </span>
+                                </span>
+                              </label>
+                            ) : null}
+                            {refundDepositOptions.billSources.length === 0 ? (
+                              <div className="a-muted" style={{ fontSize: 12, marginBottom: 8 }}>
+                                本合同账单中暂无带「押金/保证金」明细的已收款项；可勾选上方「合同押金余额」或首期款记录。
+                              </div>
+                            ) : (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                {refundDepositOptions.billSources.map((b) => (
+                                  <label
+                                    key={b.billId}
+                                    style={{ display: 'flex', gap: 8, alignItems: 'flex-start', cursor: 'pointer' }}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={refundDepositBillIds.includes(b.billId)}
+                                      onChange={(e) => {
+                                        setRefundDepositBillIds((prev) =>
+                                          e.target.checked
+                                            ? [...prev, b.billId]
+                                            : prev.filter((id) => id !== b.billId),
+                                        )
+                                      }}
+                                    />
+                                    <span>
+                                      {b.label}
+                                      <span className="a-muted" style={{ display: 'block', fontSize: 12, marginTop: 2 }}>
+                                        实收 ¥{b.amountReceived} · 本项可退 ¥{b.maxAmount} · {b.itemSummary}
+                                      </span>
+                                    </span>
+                                  </label>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ) : null}
+                      <div className="a-kv-row">
+                        <div className="a-kv-k">本次退押</div>
+                        <div className="a-kv-v" style={{ fontWeight: 800, fontSize: 18 }}>
+                          ¥{refundDepositSelectedAmount}
+                        </div>
+                      </div>
+                      <div className="a-kv-row">
+                        <div className="a-kv-k">模板类型</div>
+                        <div className="a-kv-v">
+                          <select
+                            className="a-filter-select"
+                            value={refundDepositTemplate}
+                            onChange={(e) => setRefundDepositTemplate(e.target.value)}
+                          >
+                            {DEPOSIT_REFUND_TEMPLATES.map((t) => (
+                              <option key={t.code} value={t.code}>
+                                {t.label}
+                              </option>
+                            ))}
+                          </select>
+                          <div className="a-muted" style={{ marginTop: 6, fontSize: 12 }}>
+                            将写入退款记录备注，便于审计追溯。
+                          </div>
+                        </div>
+                      </div>
+                      <div className="a-kv-row">
+                        <div className="a-kv-k">备注</div>
+                        <div className="a-kv-v">
+                          <textarea
+                            className="a-filter-input"
+                            placeholder="可选：例如 扣除保洁费说明（金额仍须通过勾选来源确定）"
+                            rows={3}
+                            value={refundDepositRemark}
+                            onChange={(e) => setRefundDepositRemark(e.target.value)}
+                            style={{ resize: 'vertical', minHeight: 60 }}
+                          />
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">退押金金额（元）</div>
-                  <div className="a-kv-v">
-                    <input
-                      className="a-filter-input"
-                      type="number"
-                      min={1}
-                      step={1}
-                      placeholder="请输入金额，例如 1200"
-                      value={refundDepositAmount}
-                      onChange={(e) => setRefundDepositAmount(e.target.value)}
-                    />
-                  </div>
-                </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">备注</div>
-                  <div className="a-kv-v">
-                    <textarea
-                      className="a-filter-input"
-                      placeholder="可选：例如 扣除保洁费200元"
-                      rows={3}
-                      value={refundDepositRemark}
-                      onChange={(e) => setRefundDepositRemark(e.target.value)}
-                      style={{ resize: 'vertical', minHeight: 60 }}
-                    />
-                  </div>
-                </div>
-              </div>
+                  )}
+                </>
+              ) : (
+                <div className="a-muted">未能加载可退来源，请关闭后重试。</div>
+              )}
               <div style={{ marginTop: 14, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                <button className="a-btn" onClick={submitRefundDeposit} disabled={refundDepositSubmitting}>
-                  {refundDepositSubmitting ? '提交中…' : '确认退押金'}
+                <button
+                  type="button"
+                  className="a-btn"
+                  onClick={submitRefundDeposit}
+                  disabled={
+                    refundDepositSubmitting ||
+                    refundDepositOptionsLoading ||
+                    !refundDepositOptions ||
+                    refundDepositOptions.maxRefundable <= 0 ||
+                    refundDepositSelectedAmount <= 0
+                  }
+                >
+                  {refundDepositSubmitting ? '提交中…' : `确认退押金 ¥${refundDepositSelectedAmount}`}
                 </button>
-                <button className="a-btn ghost" onClick={() => setRefundDepositModal(null)}>
+                <button
+                  type="button"
+                  className="a-btn ghost"
+                  onClick={() => {
+                    setRefundDepositModal(null)
+                    setRefundDepositOptions(null)
+                  }}
+                >
                   取消
                 </button>
               </div>
@@ -1957,6 +2350,24 @@ export function ContractsPage() {
                           value={renewForm.penaltyFormula}
                           onChange={(e) => setRenewForm((f) => ({ ...f, penaltyFormula: e.target.value }))}
                         />
+                      </div>
+                    </div>
+                    <div className="a-kv-row">
+                      <div className="a-kv-k">交租日</div>
+                      <div className="a-kv-v">
+                        <input
+                          className="a-filter-input"
+                          type="number"
+                          min={1}
+                          max={31}
+                          value={renewForm.rentDueDay}
+                          onChange={(e) =>
+                            setRenewForm((f) => ({ ...f, rentDueDay: e.target.value.replace(/\D/g, '').slice(0, 2) }))
+                          }
+                        />
+                        <div className="a-muted" style={{ marginTop: 4, fontSize: 12 }}>
+                          {rentCycleDueDayHint(renewForm.rentCycle)}；当月无该日则取月末。
+                        </div>
                       </div>
                     </div>
                     <div className="a-kv-row">
@@ -2428,6 +2839,24 @@ export function ContractsPage() {
                   </div>
                 </div>
                 <div className="a-kv-row">
+                  <div className="a-kv-k">交租日</div>
+                  <div className="a-kv-v">
+                    <input
+                      className="a-filter-input"
+                      type="number"
+                      min={1}
+                      max={31}
+                      value={editForm.rentDueDay}
+                      onChange={(e) =>
+                        setEditForm((f) => ({ ...f, rentDueDay: e.target.value.replace(/\D/g, '').slice(0, 2) }))
+                      }
+                    />
+                    <div className="a-muted" style={{ marginTop: 4, fontSize: 12 }}>
+                      {rentCycleDueDayHint(editForm.rentCycle)}；当月无该日则取月末。
+                    </div>
+                  </div>
+                </div>
+                <div className="a-kv-row">
                   <div className="a-kv-k">最晚交租宽限期（天）</div>
                   <div className="a-kv-v">
                     <input
@@ -2570,108 +2999,80 @@ export function ContractsPage() {
             if (e.target === e.currentTarget && !createSubmitting) setCreateModalOpen(false)
           }}
         >
-          <div className="a-modal" style={{ maxWidth: 560 }} onClick={(e) => e.stopPropagation()}>
+          <div className="a-modal a-modal--change-log">
             <div className="a-modal-header">
               <div className="a-modal-title">新建合同（管理员手动创建，直接生效）</div>
               <button className="a-modal-close" onClick={() => setCreateModalOpen(false)} disabled={createSubmitting}>
                 关闭
               </button>
             </div>
-            <div className="a-modal-body" style={{ display: 'block' }}>
-              <div className="a-muted" style={{ marginBottom: 12, lineHeight: 1.6 }}>
-                该合同的<strong>合同来源</strong>将标记为「手动导入」。无需租客签字/盖章/支付，创建后直接为「已生效」。
-              </div>
 
+            <div className="a-modal-body">
               <div className="a-kv">
                 <div className="a-kv-row">
-                  <div className="a-kv-k">房源（空置）</div>
+                  <div className="a-kv-k">合同模板</div>
+                  <div className="a-kv-v">
+                    <select
+                      className="a-filter-select"
+                      value={createForm.contractTemplate}
+                      onChange={(e) =>
+                        setCreateForm((f) => ({ ...f, contractTemplate: e.target.value as ContractTemplateKind }))
+                      }
+                    >
+                      <option value="TRIPARTITE">三方合同</option>
+                      <option value="APARTMENT">公寓合同</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="a-kv-row">
+                  <div className="a-kv-k">房源</div>
                   <div className="a-kv-v">
                     <select
                       className="a-filter-select"
                       value={createForm.houseId}
-                      onChange={(e) => setCreateForm((f) => ({ ...f, houseId: e.target.value }))}
-                      style={{ width: '100%' }}
+                      onChange={(e) => setCreateForm((f) => applyCreateHouseDefaults(e.target.value, f))}
                     >
                       <option value="">请选择空置房源</option>
                       {createHouseOptions.map((h) => (
                         <option key={h.id} value={h.id}>
-                          {h.storeName} / {h.apartmentName} / {h.houseNo}
+                          {h.apartmentName} {h.houseNo}（{h.storeName}）
                         </option>
                       ))}
                     </select>
                   </div>
                 </div>
-
                 <div className="a-kv-row">
-                  <div className="a-kv-k">租客姓名</div>
+                  <div className="a-kv-k">租客</div>
                   <div className="a-kv-v">
                     <input
                       className="a-filter-input"
+                      style={{ minWidth: 160, marginBottom: 6 }}
                       value={createForm.tenantName}
                       onChange={(e) => setCreateForm((f) => ({ ...f, tenantName: e.target.value }))}
-                      placeholder="例如：张三"
+                      placeholder="姓名，例如：张三"
                     />
-                  </div>
-                </div>
-
-                <div className="a-kv-row">
-                  <div className="a-kv-k">手机号</div>
-                  <div className="a-kv-v">
                     <input
                       className="a-filter-input"
+                      style={{ minWidth: 160, marginBottom: 6 }}
                       value={createForm.tenantPhone}
                       onChange={(e) => setCreateForm((f) => ({ ...f, tenantPhone: e.target.value }))}
-                      placeholder="例如：13800000000"
+                      placeholder="手机号，例如：13800000000"
                     />
-                  </div>
-                </div>
-
-                <div className="a-kv-row">
-                  <div className="a-kv-k">身份证号</div>
-                  <div className="a-kv-v">
                     <input
                       className="a-filter-input"
+                      style={{ minWidth: 220 }}
                       value={createForm.tenantIdNumber}
                       onChange={(e) => setCreateForm((f) => ({ ...f, tenantIdNumber: e.target.value }))}
-                      placeholder="用于合同资料留档"
+                      placeholder="身份证号，用于合同资料留档"
                     />
                   </div>
                 </div>
-
-                <div className="a-kv-row">
-                  <div className="a-kv-k">起租日</div>
-                  <div className="a-kv-v">
-                    <input
-                      className="a-filter-input"
-                      type="date"
-                      value={createForm.startDate}
-                      onChange={(e) => setCreateForm((f) => ({ ...f, startDate: e.target.value }))}
-                    />
-                    <div className="a-muted" style={{ marginTop: 6, fontSize: 12 }}>
-                      支持倒签：起租日可早于今天（例如 1 月 2 日录入 1 月 1 日起租的合同）。
-                    </div>
-                  </div>
-                </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">签订日期</div>
-                  <div className="a-kv-v">
-                    <input
-                      className="a-filter-input"
-                      type="date"
-                      value={createForm.agreementSignDate}
-                      onChange={(e) => setCreateForm((f) => ({ ...f, agreementSignDate: e.target.value }))}
-                    />
-                    <div className="a-muted" style={{ marginTop: 4, fontSize: 12 }}>
-                      可选；可与起租日或落款日不一致，用于合同档案展示。
-                    </div>
-                  </div>
-                </div>
-
                 <div className="a-kv-row">
                   <div className="a-kv-k">租期（月）</div>
                   <div className="a-kv-v">
                     <input
                       className="a-filter-input"
+                      style={{ minWidth: 160 }}
                       type="number"
                       value={createForm.leaseMonths}
                       onChange={(e) =>
@@ -2682,33 +3083,67 @@ export function ContractsPage() {
                     />
                   </div>
                 </div>
-
+                <div className="a-kv-row">
+                  <div className="a-kv-k">入住日期</div>
+                  <div className="a-kv-v">
+                    <input
+                      className="a-filter-input"
+                      style={{ minWidth: 160 }}
+                      type="date"
+                      value={createForm.startDate}
+                      onChange={(e) => {
+                        const startDate = e.target.value
+                        setCreateForm((f) => ({
+                          ...f,
+                          startDate,
+                          rentDueDay: startDate ? String(rentDueDayFromYmd(startDate)) : f.rentDueDay,
+                        }))
+                      }}
+                    />
+                  </div>
+                </div>
+                <div className="a-kv-row">
+                  <div className="a-kv-k">签订日期</div>
+                  <div className="a-kv-v">
+                    <input
+                      className="a-filter-input"
+                      style={{ minWidth: 160 }}
+                      type="date"
+                      value={createForm.agreementSignDate}
+                      onChange={(e) => setCreateForm((f) => ({ ...f, agreementSignDate: e.target.value }))}
+                    />
+                    <div className="a-muted" style={{ marginTop: 4, fontSize: 12, maxWidth: 420 }}>
+                      可选；书面合同落款用「签订日期」，可与实际电子签字时间不同。留空则清空该字段。
+                    </div>
+                  </div>
+                </div>
                 <div className="a-kv-row">
                   <div className="a-kv-k">月租（元）</div>
                   <div className="a-kv-v">
                     <input
                       className="a-filter-input"
+                      style={{ minWidth: 160 }}
                       type="number"
                       value={createForm.rentMonthly}
                       onChange={(e) => setCreateForm((f) => ({ ...f, rentMonthly: Number(e.target.value || 0) }))}
-                      min={0}
                     />
                   </div>
                 </div>
-
                 <div className="a-kv-row">
-                  <div className="a-kv-k">押金（元）</div>
+                  <div className="a-kv-k">押金倍数</div>
                   <div className="a-kv-v">
                     <input
                       className="a-filter-input"
+                      style={{ minWidth: 160 }}
                       type="number"
-                      value={createForm.deposit}
-                      onChange={(e) => setCreateForm((f) => ({ ...f, deposit: Number(e.target.value || 0) }))}
-                      min={0}
+                      step="0.5"
+                      value={createForm.depositMultiple}
+                      onChange={(e) =>
+                        setCreateForm((f) => ({ ...f, depositMultiple: Number(e.target.value || 0) }))
+                      }
                     />
                   </div>
                 </div>
-
                 <div className="a-kv-row">
                   <div className="a-kv-k">缴费周期</div>
                   <div className="a-kv-v">
@@ -2724,60 +3159,89 @@ export function ContractsPage() {
                     </select>
                   </div>
                 </div>
-
+                <div className="a-kv-row">
+                  <div className="a-kv-k">滞纳金公式</div>
+                  <div className="a-kv-v">
+                    <input
+                      className="a-filter-input"
+                      style={{ minWidth: 220 }}
+                      value={createForm.penaltyFormula}
+                      onChange={(e) => setCreateForm((f) => ({ ...f, penaltyFormula: e.target.value }))}
+                      placeholder="例如 amount*0.1%*days"
+                    />
+                  </div>
+                </div>
+                <div className="a-kv-row">
+                  <div className="a-kv-k">交租日</div>
+                  <div className="a-kv-v">
+                    <input
+                      className="a-filter-input"
+                      style={{ minWidth: 160 }}
+                      type="number"
+                      min={1}
+                      max={31}
+                      value={createForm.rentDueDay}
+                      onChange={(e) =>
+                        setCreateForm((f) => ({ ...f, rentDueDay: e.target.value.replace(/\D/g, '').slice(0, 2) }))
+                      }
+                    />
+                    <div className="a-muted" style={{ marginTop: 4, fontSize: 12, maxWidth: 420 }}>
+                      {rentCycleDueDayHint(createForm.rentCycle)}；当月无该日则取月末（如 2 月 30 日 → 2 月 28/29 日）。
+                    </div>
+                  </div>
+                </div>
                 <div className="a-kv-row">
                   <div className="a-kv-k">最晚交租宽限期（天）</div>
                   <div className="a-kv-v">
                     <input
                       className="a-filter-input"
+                      style={{ minWidth: 160 }}
                       type="text"
                       inputMode="numeric"
                       autoComplete="off"
-                      placeholder="可不填"
+                      placeholder="例如 5"
+                      title="相对每期应付日的宽限天数（与月付/双月/季付/年付约定兼容）"
                       value={createForm.latestRentGraceDays}
                       onChange={(e) =>
                         setCreateForm((f) => ({ ...f, latestRentGraceDays: e.target.value.replace(/\D/g, '') }))
                       }
                     />
-                    <div className="a-muted" style={{ marginTop: 4, fontSize: 12 }}>
-                      相对每期应付日的宽限天数。
-                    </div>
                   </div>
                 </div>
-
-                <div className="a-kv-row">
-                  <div className="a-kv-k">备注（富文本）</div>
-                  <div className="a-kv-v">
-                    <ContractRemarkEditor value={createForm.remarkHtml} onChange={(v) => setCreateForm((f) => ({ ...f, remarkHtml: v }))} />
+                <div className="a-kv-row" style={{ alignItems: 'flex-start' }}>
+                  <div className="a-kv-k">备注</div>
+                  <div className="a-kv-v" style={{ maxWidth: '100%' }}>
+                    <ContractRemarkEditor
+                      value={createForm.remarkHtml}
+                      onChange={(v) => setCreateForm((f) => ({ ...f, remarkHtml: v }))}
+                    />
                   </div>
                 </div>
-
-                <div className="a-kv-row">
+                <div className="a-kv-row" style={{ alignItems: 'flex-start' }}>
                   <div className="a-kv-k">附件</div>
                   <div className="a-kv-v">
-                    <div className="a-muted" style={{ marginBottom: 8 }}>
-                      创建后上传到<strong>新合同</strong>，单文件 ≤15MB
-                    </div>
                     <input
                       type="file"
                       multiple
+                      disabled={createSubmitting}
                       onChange={(e) => {
                         const list = Array.from(e.target.files ?? [])
                         if (list.length > 0) setCreatePendingFiles((prev) => [...prev, ...list])
                         e.currentTarget.value = ''
                       }}
                     />
+                    <div className="a-muted" style={{ fontSize: 12, marginTop: 4 }}>
+                      创建后自动上传到新生成的合同；单文件 ≤15MB
+                    </div>
                     {createPendingFiles.length > 0 ? (
-                      <div className="a-muted" style={{ marginTop: 8, lineHeight: 1.6 }}>
-                        待上传 {createPendingFiles.length} 个：
+                      <ul style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 13 }}>
                         {createPendingFiles.map((f, idx) => (
-                          <span key={`${f.name}-${idx}`}>
-                            {' '}
-                            {f.name}
+                          <li key={`${f.name}-${idx}`} style={{ marginBottom: 4 }}>
+                            {f.name}{' '}
                             <button
                               type="button"
                               className="a-btn ghost"
-                              style={{ padding: '0 6px', fontSize: 11, marginLeft: 6 }}
+                              style={{ padding: '2px 8px', fontSize: 12 }}
                               onClick={() =>
                                 setCreatePendingFiles((prev) => prev.filter((_, i) => i !== idx))
                               }
@@ -2785,21 +3249,118 @@ export function ContractsPage() {
                             >
                               移除
                             </button>
-                          </span>
+                          </li>
                         ))}
-                      </div>
+                      </ul>
                     ) : null}
+                  </div>
+                </div>
+                <div className="a-kv-row" style={{ alignItems: 'flex-start' }}>
+                  <div className="a-kv-k">解除合同短信发送时间</div>
+                  <div className="a-kv-v" style={{ maxWidth: 560, fontSize: 13, lineHeight: 1.65 }}>
+                    {createForm.contractTemplate === 'TRIPARTITE' ? (
+                      <>
+                        当<strong>逾期金额</strong>超过<strong>月租</strong>的{' '}
+                        <input
+                          className="a-filter-input"
+                          type="number"
+                          step="0.1"
+                          min={0.1}
+                          style={{ width: 86 }}
+                          value={createForm.terminationRentMulti}
+                          onChange={(e) =>
+                            setCreateForm((f) => ({ ...f, terminationRentMulti: e.target.value }))
+                          }
+                        />{' '}
+                        倍时触发（规则配置存档；实际短信以业务接通为准）。
+                      </>
+                    ) : (
+                      <>
+                        当<strong>逾期天数</strong>超过<strong>最晚缴费日</strong>（含宽限期后的应付口径）后满{' '}
+                        <input
+                          className="a-filter-input"
+                          type="text"
+                          inputMode="numeric"
+                          style={{ width: 86 }}
+                          value={createForm.terminationDaysPastDue}
+                          onChange={(e) =>
+                            setCreateForm((f) => ({
+                              ...f,
+                              terminationDaysPastDue: e.target.value.replace(/\D/g, ''),
+                            }))
+                          }
+                        />{' '}
+                        天时触发（规则配置存档；实际短信以业务接通为准）。
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
 
-              <div style={{ marginTop: 14, display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                <button className="a-btn ghost" onClick={() => setCreateModalOpen(false)} disabled={createSubmitting}>
-                  取消
-                </button>
-                <button className="a-btn" onClick={submitCreate} disabled={createSubmitting}>
-                  {createSubmitting ? '创建中…' : '确认创建并生效'}
-                </button>
+              <div className="a-kv">
+                <div className="a-kv-row">
+                  <div className="a-kv-k">合同预览</div>
+                  <div className="a-kv-v">
+                    <div style={{ fontWeight: 900, marginBottom: 6 }}>租赁合同（预览）</div>
+                    <div className="a-muted" style={{ lineHeight: 1.8 }}>
+                      租客：
+                      {createForm.tenantName.trim() || '—'}
+                      {createForm.tenantPhone.trim() ? `（${createForm.tenantPhone.trim()}）` : ''}
+                      <br />
+                      房源：
+                      {createSelectedHouse
+                        ? `${createSelectedHouse.apartmentName} ${createSelectedHouse.houseNo}（${createSelectedHouse.storeName}）`
+                        : '—'}
+                      <br />
+                      租期：{createForm.leaseMonths} 个月，入住：{createForm.startDate || '—'}
+                      <br />
+                      月租：¥{createForm.rentMonthly}，押金：¥
+                      {Math.round(createForm.rentMonthly * createForm.depositMultiple)}
+                      <br />
+                      缴费周期：{rentCycleLabel(createForm.rentCycle)}
+                      <br />
+                      滞纳金：{createForm.penaltyFormula}
+                      <br />
+                      交租日：每期起始月 {createForm.rentDueDay || '—'} 日（{rentCycleLabel(createForm.rentCycle)}）
+                      <br />
+                      最晚交租宽限期：
+                      {createForm.latestRentGraceDays.trim()
+                        ? `${createForm.latestRentGraceDays.trim()} 天`
+                        : '未约定'}
+                      <br />
+                      合同模板：{contractTemplateZh(createForm.contractTemplate)}
+                      <br />
+                      合同来源：手动导入（创建后直接生效，无需租客签字/支付）
+                      <br />
+                      {createForm.contractTemplate === 'TRIPARTITE' ? (
+                        <>
+                          解除类短信：逾期金额超过月租的 {createForm.terminationRentMulti.trim() || '—'} 倍时触发
+                        </>
+                      ) : (
+                        <>
+                          解除类短信：超过最晚缴费日后满 {createForm.terminationDaysPastDue.trim() || '—'} 天时触发
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <div className="a-kv-row">
+                  <div className="a-kv-k">操作</div>
+                  <div className="a-kv-v">
+                    <div className="a-row">
+                      <button
+                        className="a-btn ghost"
+                        onClick={() => setCreateModalOpen(false)}
+                        disabled={createSubmitting}
+                      >
+                        取消
+                      </button>
+                      <button className="a-btn" onClick={() => void submitCreate()} disabled={createSubmitting}>
+                        {createSubmitting ? '创建中…' : '确认创建并生效'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -2816,7 +3377,7 @@ export function ContractsPage() {
             if (e.target === e.currentTarget) setDetailContract(null)
           }}
         >
-          <div className="a-modal" style={{ maxWidth: 560 }} onClick={(e) => e.stopPropagation()}>
+          <div className="a-modal a-modal--contract-detail" onClick={(e) => e.stopPropagation()}>
             <div className="a-modal-header">
               <div className="a-modal-title">合同详情 · {formatContractNo(detailContract.contractNo)}</div>
               <button className="a-modal-close" onClick={() => setDetailContract(null)}>
@@ -2824,7 +3385,7 @@ export function ContractsPage() {
               </button>
             </div>
             <div className="a-modal-body" style={{ display: 'block' }}>
-              <div className="a-kv">
+              <div className="a-kv a-contract-detail-kv">
                 <div className="a-kv-row">
                   <div className="a-kv-k">当前状态</div>
                   <div className="a-kv-v">
@@ -2922,17 +3483,18 @@ export function ContractsPage() {
                             : ''}
                           ；在租月租快照合计 ¥{detailContract.mergedBundle.rentMonthlySum}（与合同月租字段一致）。
                         </div>
-                        <table className="a-table" style={{ fontSize: 13, width: '100%' }}>
-                          <thead>
-                            <tr>
-                              <th>房源ID</th>
-                              <th>公寓 · 房号</th>
-                              <th style={{ textAlign: 'right' }}>月租快照</th>
-                              <th>状态</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {detailContract.mergedBundle.lines.map((ln) => (
+                        <div className="a-table-wrap a-contract-detail-merged-table">
+                          <table className="a-table" style={{ fontSize: 13, width: '100%' }}>
+                            <thead>
+                              <tr>
+                                <th>房源ID</th>
+                                <th>公寓 · 房号</th>
+                                <th style={{ textAlign: 'right' }}>月租快照</th>
+                                <th>状态</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {detailContract.mergedBundle.lines.map((ln) => (
                               <tr key={ln.houseBizId}>
                                 <td style={{ fontVariantNumeric: 'tabular-nums' }}>{ln.houseBizId}</td>
                                 <td>
@@ -2942,12 +3504,18 @@ export function ContractsPage() {
                                   ¥{ln.rentMonthlySnapshot}
                                 </td>
                                 <td className="a-muted" style={{ fontSize: 12 }}>
-                                  {ln.releasedAt ? '已迁出/退租' : '在租'}
+                                  {ln.lineStatusLabel ?? (ln.releasedAt ? '已迁出' : '在用')}
+                                  {ln.lineStatus === 'CHANGED' && ln.changeHouseNewContractNo ? (
+                                    <div style={{ marginTop: 4 }}>
+                                      新合同 {formatContractNo(ln.changeHouseNewContractNo)}
+                                    </div>
+                                  ) : null}
                                 </td>
                               </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
                         <div className="a-muted" style={{ fontSize: 12, marginTop: 8 }}>
                           主房源（合同/报备挂接）：{detailContract.house.apartmentName} {detailContract.house.houseNo}（
                           {detailContract.house.storeName}）
@@ -3053,6 +3621,14 @@ export function ContractsPage() {
                 <div className="a-kv-row">
                   <div className="a-kv-k">签订日期</div>
                   <div className="a-kv-v">{detailContract.agreementSignDate ?? '—'}</div>
+                </div>
+                <div className="a-kv-row">
+                  <div className="a-kv-k">交租日</div>
+                  <div className="a-kv-v">
+                    {detailContract.rentDueDay != null
+                      ? `每期起始月 ${detailContract.rentDueDay} 日`
+                      : '—'}
+                  </div>
                 </div>
                 <div className="a-kv-row">
                   <div className="a-kv-k">最晚交租宽限期（天）</div>

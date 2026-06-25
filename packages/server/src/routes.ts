@@ -18,6 +18,7 @@ import {
   startOfMonth,
   toYmd,
 } from './time.js'
+import { buildRentBillSchedule, normalizeRentDueDay } from './rentBillSchedule.js'
 import { buildContractSummaryText } from './contractSummaryText.js'
 import {
   applyPrepaidRentCreditToNewContract,
@@ -25,6 +26,11 @@ import {
   computePrepaidRentCredit,
   moveMonthPeriod,
 } from './changeHouseSettlement.js'
+import {
+  mergedOrderLineStatus,
+  mergedOrderLineStatusLabel,
+  reconcileBaseBillsAfterMergedLineRelease,
+} from './orderLineRelease.js'
 import { upsertAssetSnapshot } from './services/assetSync.js'
 import { ensureHousingReportRecord, performHousingReportNow } from './services/housingReport.js'
 import { computePenalty } from './services/penalty.js'
@@ -49,6 +55,12 @@ import { buildHouseImportTemplateBuffer, parseAndImportHouses } from './services
 import { buildCollectedReport, buildReceivableReport } from './services/financeReports.js'
 import { insertHouseChangeLogs, jsonArrayCount, truncateLogValue } from './services/houseChangeLog.js'
 import { houseBizId, numericCodeFromId } from './houseBizId.js'
+import {
+  buildReceiptDto,
+  isFinanceRole,
+  loadReceiptMap,
+  printTransactionReceipts,
+} from './transactionReceipt.js'
 import { parseHouseConfigItems, serializeHouseConfigItems } from './houseConfigJson.js'
 import {
   applyContractPreviewWatermark,
@@ -65,7 +77,6 @@ import {
 import {
   decodeBase64ImagePayload,
   recognizeIdCardSide,
-  validateIdCardExpiry,
 } from './idCardRec.js'
 import {
   normalizeIdDocType,
@@ -83,10 +94,13 @@ import {
   releaseOrderedHousesForOrder,
 } from './orderBundle.js'
 import { syncBaseRentBillItemsForContract } from './billRentItems.js'
+import { buildDepositRefundOptions, resolveDepositRefundAmount } from './depositRefund.js'
+import { maskIdNumber, maskMobilePhone, maskPersonName } from './piiMask.js'
 
 const MS_HOUR = 3600_000
 
 const zRentCycle = z.enum(['MONTHLY', 'BIMONTHLY', 'QUARTERLY', 'YEARLY'])
+const zRentDueDay = z.number().int().min(1).max(31)
 const zContractTemplate = z.enum(['TRIPARTITE', 'APARTMENT'])
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } })
@@ -168,16 +182,56 @@ function mergedUnitsFromContract(
   contract: {
     order: {
       isMergedBundle: boolean
-      lines: { house: { apartment: { name: string }; houseNo: string } }[]
+      lines: { releasedAt: Date | null; house: { apartment: { name: string }; houseNo: string } }[]
     } | null
   },
 ): { apartmentName: string; houseNo: string }[] | undefined {
   const ord = contract.order
   if (!ord?.isMergedBundle || !ord.lines?.length) return undefined
-  return ord.lines.map((l) => ({
+  const active = ord.lines.filter((l) => !l.releasedAt)
+  if (!active.length) return undefined
+  return active.map((l) => ({
     apartmentName: l.house.apartment.name,
     houseNo: l.house.houseNo,
   }))
+}
+
+function mapMergedBundleFromOrder(
+  order: {
+    isMergedBundle: boolean
+    lines: {
+      houseId: string
+      rentMonthlySnapshot: number
+      releasedAt: Date | null
+      changeHouseNewContractId: string | null
+      changeHouseNewContract?: { contractNo: string } | null
+      house: { id: string; houseNo: string; apartment: { name: string } }
+    }[]
+  } | null,
+) {
+  if (!order?.isMergedBundle || !order.lines.length) return null
+  const lines = order.lines
+  const activeLines = lines.filter((l) => !l.releasedAt)
+  return {
+    lineCount: activeLines.length,
+    lineHistoryCount: lines.length,
+    rentMonthlySum: activeLines.reduce((s, l) => s + l.rentMonthlySnapshot, 0),
+    lines: lines.map((l) => {
+      const lineStatus = mergedOrderLineStatus(l)
+      return {
+        houseId: l.houseId,
+        houseBizId: houseBizId(l.house.id),
+        apartmentName: l.house.apartment.name,
+        houseNo: l.house.houseNo,
+        rentMonthlySnapshot: l.rentMonthlySnapshot,
+        releasedAt: l.releasedAt?.toISOString() ?? null,
+        changeHouseNewContractId: l.changeHouseNewContractId,
+        changeHouseNewContractNo: l.changeHouseNewContract?.contractNo ?? null,
+        lineStatus,
+        lineStatusLabel: mergedOrderLineStatusLabel(lineStatus),
+      }
+    }),
+  }
 }
 
 function ensureContractUploadDir(contractId: string) {
@@ -294,18 +348,16 @@ function getAdminAuth(req: Request): AdminAuth {
 }
 
 function canAccessStore(auth: AdminAuth, storeId: string) {
-  if (auth.admin.roleCode === 'SYSTEM_ADMIN') return true
+  if (auth.admin.roleCode === 'SYSTEM_ADMIN' || auth.admin.roleCode === 'FINANCE') return true
   return auth.storeIds.includes(storeId)
+}
+
+function mustBeFinance(auth: AdminAuth) {
+  return isFinanceRole(auth.admin.roleCode)
 }
 
 function mustBeSystemAdmin(auth: AdminAuth) {
   return auth.admin.roleCode === 'SYSTEM_ADMIN'
-}
-
-function maskTenantIdNumber(raw: string) {
-  const t = raw.trim()
-  if (t.length <= 10) return '****'
-  return `${t.slice(0, 4)}****${t.slice(-4)}`
 }
 
 function contractTemplateTerminationData(body: {
@@ -318,6 +370,50 @@ function contractTemplateTerminationData(body: {
     contractTemplate: tmpl,
     terminationRentMultiple: tmpl === 'TRIPARTITE' ? body.terminationRentMultiple ?? null : null,
     terminationDaysPastDue: tmpl === 'APARTMENT' ? body.terminationDaysPastDue ?? null : null,
+  }
+}
+
+type BillWriteClient = Pick<PrismaClient, 'bill'>
+
+async function syncContractBaseRentBills(
+  client: BillWriteClient,
+  params: {
+    contractId: string
+    startDate: Date
+    leaseMonths: number
+    rentMonthly: number
+    rentCycle: string
+    rentDueDay: number
+  },
+  mode: 'upsert' | 'create',
+) {
+  const schedule = buildRentBillSchedule({
+    startDate: params.startDate,
+    leaseMonths: params.leaseMonths,
+    rentMonthly: params.rentMonthly,
+    rentCycle: params.rentCycle,
+    rentDueDay: params.rentDueDay,
+  })
+  for (const p of schedule) {
+    const data = {
+      contractId: params.contractId,
+      period: p.period,
+      dueDate: p.dueDate,
+      totalAmount: p.totalAmount,
+      status: 'UNPAID' as const,
+      kind: 'BASE' as const,
+    }
+    if (mode === 'upsert') {
+      await client.bill.upsert({
+        where: {
+          contractId_period_kind: { contractId: params.contractId, period: p.period, kind: 'BASE' },
+        },
+        create: data,
+        update: { dueDate: p.dueDate, totalAmount: p.totalAmount },
+      })
+    } else {
+      await client.bill.create({ data })
+    }
   }
 }
 
@@ -557,8 +653,6 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         if (!/^\d{4}-\d{2}-\d{2}$/.test(vu)) {
           return res.status(400).json({ error: 'ID_CARD_VALID_UNTIL_REQUIRED' })
         }
-        const exp = validateIdCardExpiry(vu, false)
-        if (!exp.ok) return res.status(400).json({ error: exp.error })
         idCardValidUntilDate = new Date(`${vu}T12:00:00.000Z`)
       }
     } else {
@@ -673,8 +767,6 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         if (!/^\d{4}-\d{2}-\d{2}$/.test(vu)) {
           return res.status(400).json({ error: 'ID_CARD_VALID_UNTIL_REQUIRED' })
         }
-        const exp = validateIdCardExpiry(vu, false)
-        if (!exp.ok) return res.status(400).json({ error: exp.error })
         idCardValidUntilDate = new Date(`${vu}T12:00:00.000Z`)
       }
     } else {
@@ -1659,11 +1751,11 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     res.json({
       items: rows.map((t) => ({
         id: t.id,
-        name: t.name,
-        phone: t.phone,
+        name: maskPersonName(t.name),
+        phone: maskMobilePhone(t.phone),
         wechat: t.wechat,
         idDocType: t.idDocType,
-        idNumberMasked: maskTenantIdNumber(t.idNumber),
+        idNumberMasked: maskIdNumber(t.idNumber),
         creditTier: t.creditTier,
         enteredAt: t.createdAt.toISOString(),
         orderCount: t._count.orders,
@@ -1714,11 +1806,11 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       ok: true,
       item: {
         id: updated.id,
-        name: updated.name,
-        phone: updated.phone,
+        name: maskPersonName(updated.name),
+        phone: maskMobilePhone(updated.phone),
         wechat: updated.wechat,
         idDocType: updated.idDocType,
-        idNumberMasked: maskTenantIdNumber(updated.idNumber),
+        idNumberMasked: maskIdNumber(updated.idNumber),
         creditTier: updated.creditTier,
         enteredAt: updated.createdAt.toISOString(),
         orderCount: updated._count.orders,
@@ -2613,6 +2705,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       depositMultiple: z.number().positive(),
       rentCycle: zRentCycle,
       penaltyFormula: z.string().min(1),
+      rentDueDay: zRentDueDay.optional(),
       latestRentGraceDays: z.union([z.number().int().min(0).max(999), z.null()]).optional(),
       configRemarkHtml: z.string().optional(),
       attachmentsJson: z.string().optional(),
@@ -2651,26 +2744,19 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       }
       // Ensure bills exist even if a previous attempt partially failed.
       const startDate = new Date(body.moveInDate)
-      const dueDate = startOfMonth(startDate)
-      for (let i = 0; i < body.leaseMonths; i += 1) {
-        const d = addMonths(dueDate, i)
-        const period = fmtPeriod(d)
-        await ctx.prisma.bill.upsert({
-          where: { contractId_period_kind: { contractId: order.contract.id, period, kind: 'BASE' } },
-          create: {
-            contractId: order.contract.id,
-            period,
-            dueDate: d,
-            totalAmount: body.rentMonthly,
-            status: 'UNPAID',
-            kind: 'BASE',
-          },
-          update: {
-            dueDate: d,
-            totalAmount: body.rentMonthly,
-          },
-        })
-      }
+      const rentDueDay = normalizeRentDueDay(body.rentDueDay, startDate)
+      await syncContractBaseRentBills(
+        ctx.prisma,
+        {
+          contractId: order.contract.id,
+          startDate,
+          leaseMonths: body.leaseMonths,
+          rentMonthly: body.rentMonthly,
+          rentCycle: body.rentCycle,
+          rentDueDay,
+        },
+        'upsert',
+      )
       const contractId = order.contract.id
       await ctx.prisma.$transaction(async (tx) => {
         await syncBaseRentBillItemsForContract(tx, {
@@ -2682,6 +2768,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       const deposit = Math.round(body.rentMonthly * body.depositMultiple)
       const startDate2 = new Date(body.moveInDate)
       const endDate2 = addMonths(startDate2, body.leaseMonths)
+      const rentDueDay2 = normalizeRentDueDay(body.rentDueDay, startDate2)
       const updated = await ctx.prisma.contract.update({
         where: { id: order.contract.id },
         data: {
@@ -2693,6 +2780,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
           depositMultiple: body.depositMultiple,
           rentCycle: body.rentCycle,
           penaltyFormula: body.penaltyFormula,
+          rentDueDay: rentDueDay2,
           ...(body.latestRentGraceDays !== undefined
             ? {
                 latestRentGraceDays: body.latestRentGraceDays,
@@ -2721,6 +2809,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     const endDate = addMonths(startDate, body.leaseMonths)
     const contractNo = `C${new Date().getFullYear()}${String(Date.now()).slice(-8)}`
     const deposit = Math.round(body.rentMonthly * body.depositMultiple)
+    const rentDueDay = normalizeRentDueDay(body.rentDueDay, startDate)
 
     const contract = await ctx.prisma.contract.create({
       data: {
@@ -2737,6 +2826,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         depositMultiple: body.depositMultiple,
         rentCycle: body.rentCycle,
         penaltyFormula: body.penaltyFormula,
+        rentDueDay,
         latestRentGraceDays: body.latestRentGraceDays ?? null,
         latestRentDueDate: null,
         configRemarkHtml: body.configRemarkHtml ?? null,
@@ -2747,31 +2837,26 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       },
     })
 
-    // Generate monthly bills (BASE: rent only; utilities etc may be 0)
-    const firstPeriod = fmtPeriod(startOfMonth(startDate))
-    const dueDate = startOfMonth(startDate)
-    const periods: { period: string; dueDate: Date }[] = []
-    for (let i = 0; i < body.leaseMonths; i += 1) {
-      const d = addMonths(dueDate, i)
-      periods.push({ period: fmtPeriod(d), dueDate: d })
-    }
-    for (const p of periods) {
-      await ctx.prisma.bill.upsert({
-        where: { contractId_period_kind: { contractId: contract.id, period: p.period, kind: 'BASE' } },
-        create: {
-          contractId: contract.id,
-          period: p.period,
-          dueDate: p.dueDate,
-          totalAmount: contract.rentMonthly,
-          status: 'UNPAID',
-          kind: 'BASE',
-        },
-        update: {
-          dueDate: p.dueDate,
-          totalAmount: contract.rentMonthly,
-        },
-      })
-    }
+    const schedule = buildRentBillSchedule({
+      startDate,
+      leaseMonths: body.leaseMonths,
+      rentMonthly: body.rentMonthly,
+      rentCycle: body.rentCycle,
+      rentDueDay,
+    })
+    const firstPeriod = schedule[0]?.period ?? fmtPeriod(startOfMonth(startDate))
+    await syncContractBaseRentBills(
+      ctx.prisma,
+      {
+        contractId: contract.id,
+        startDate,
+        leaseMonths: body.leaseMonths,
+        rentMonthly: body.rentMonthly,
+        rentCycle: body.rentCycle,
+        rentDueDay,
+      },
+      'upsert',
+    )
 
     await ctx.prisma.$transaction(async (tx) => {
       await syncBaseRentBillItemsForContract(tx, {
@@ -2802,14 +2887,20 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       leaseMonths: z.number().int().min(1).max(36),
       startDate: z.string().min(8), // YYYY-MM-DD
       rentMonthly: z.number().int().positive(),
-      deposit: z.number().int().nonnegative(),
+      depositMultiple: z.number().positive(),
       rentCycle: zRentCycle,
       penaltyFormula: z.string().min(1),
+      rentDueDay: zRentDueDay.optional(),
       latestRentGraceDays: z.union([z.number().int().min(0).max(999), z.null()]).optional(),
       configRemarkHtml: z.union([z.string(), z.null()]).optional(),
       agreementSignDate: z.union([z.string().min(8), z.null()]).optional(),
+      contractTemplate: zContractTemplate.optional(),
+      terminationRentMultiple: z.union([z.number().positive().max(999), z.null()]).optional(),
+      terminationDaysPastDue: z.union([z.number().int().min(0).max(999), z.null()]).optional(),
     })
     const body = Body.parse(req.body)
+    const tmplFields = contractTemplateTerminationData(body)
+    const deposit = Math.round(body.rentMonthly * body.depositMultiple)
 
     const house = await ctx.prisma.house.findUnique({
       where: { id: body.houseId },
@@ -2822,7 +2913,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     const start = new Date(body.startDate)
     const end = addMonths(start, body.leaseMonths)
     const contractNo = `C${new Date().getFullYear()}M${String(Date.now()).slice(-8)}`
-    const dueDate = startOfMonth(start)
+    const rentDueDay = normalizeRentDueDay(body.rentDueDay, start)
 
     const out = await ctx.prisma.$transaction(async (tx) => {
       const tenant = await tx.tenant.create({
@@ -2853,32 +2944,33 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
           startDate: start,
           endDate: end,
           rentMonthly: body.rentMonthly,
-          deposit: body.deposit,
-          depositMultiple: body.rentMonthly > 0 ? Math.round((body.deposit / body.rentMonthly) * 100) / 100 : 1,
+          deposit,
+          depositMultiple: body.depositMultiple,
           rentCycle: body.rentCycle,
           penaltyFormula: body.penaltyFormula,
+          rentDueDay,
           latestRentGraceDays: body.latestRentGraceDays ?? null,
           latestRentDueDate: null,
           configRemarkHtml: body.configRemarkHtml === undefined ? null : body.configRemarkHtml,
           agreementSignDate: body.agreementSignDate ? new Date(body.agreementSignDate) : null,
+          ...tmplFields,
           confirmedAt: new Date(),
           signedAt: new Date(),
           stampedAt: new Date(),
         },
       })
-      for (let i = 0; i < body.leaseMonths; i += 1) {
-        const d = addMonths(dueDate, i)
-        await tx.bill.create({
-          data: {
-            contractId: contract.id,
-            period: fmtPeriod(d),
-            dueDate: d,
-            totalAmount: body.rentMonthly,
-            status: 'UNPAID',
-            kind: 'BASE',
-          },
-        })
-      }
+      await syncContractBaseRentBills(
+        tx,
+        {
+          contractId: contract.id,
+          startDate: start,
+          leaseMonths: body.leaseMonths,
+          rentMonthly: body.rentMonthly,
+          rentCycle: body.rentCycle,
+          rentDueDay,
+        },
+        'create',
+      )
       await tx.house.update({ where: { id: house.id }, data: { status: 'RESERVED' } })
       return { contractId: contract.id, contractNo: contract.contractNo }
     })
@@ -2910,6 +3002,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
                 house: {
                   select: { id: true, houseNo: true, apartment: { select: { name: true } } },
                 },
+                changeHouseNewContract: { select: { contractNo: true } },
               },
             },
           },
@@ -2974,24 +3067,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
             /* ignore */
           }
         }
-        const lines = c.order?.lines ?? []
-        const activeLines = lines.filter((l) => !l.releasedAt)
-        const mergedBundle =
-          c.order?.isMergedBundle && lines.length > 0
-            ? {
-                lineCount: activeLines.length,
-                lineHistoryCount: lines.length,
-                rentMonthlySum: activeLines.reduce((s, l) => s + l.rentMonthlySnapshot, 0),
-                lines: lines.map((l) => ({
-                  houseId: l.houseId,
-                  houseBizId: houseBizId(l.house.id),
-                  apartmentName: l.house.apartment.name,
-                  houseNo: l.house.houseNo,
-                  rentMonthlySnapshot: l.rentMonthlySnapshot,
-                  releasedAt: l.releasedAt?.toISOString() ?? null,
-                })),
-              }
-            : null
+        const mergedBundle = mapMergedBundleFromOrder(c.order ?? null)
         return {
           id: c.id,
           contractNo: c.contractNo,
@@ -3116,6 +3192,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
                 house: {
                   select: { id: true, houseNo: true, apartment: { select: { name: true } } },
                 },
+                changeHouseNewContract: { select: { contractNo: true } },
               },
             },
           },
@@ -3134,24 +3211,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       contract.refunds.map((r) => ({ amount: r.amount, reason: r.reason })),
     )
 
-    const olines = contract.order?.lines ?? []
-    const oActive = olines.filter((l) => !l.releasedAt)
-    const mergedBundle =
-      contract.order?.isMergedBundle && olines.length > 0
-        ? {
-            lineCount: oActive.length,
-            lineHistoryCount: olines.length,
-            rentMonthlySum: oActive.reduce((s, l) => s + l.rentMonthlySnapshot, 0),
-            lines: olines.map((l) => ({
-              houseId: l.houseId,
-              houseBizId: houseBizId(l.house.id),
-              apartmentName: l.house.apartment.name,
-              houseNo: l.house.houseNo,
-              rentMonthlySnapshot: l.rentMonthlySnapshot,
-              releasedAt: l.releasedAt?.toISOString() ?? null,
-            })),
-          }
-        : null
+    const mergedBundle = mapMergedBundleFromOrder(contract.order ?? null)
 
     let changeHouseMoney: unknown = null
     if (contract.changeHouseMoneyJson) {
@@ -3214,6 +3274,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       rentMonthly: contract.rentMonthly,
       deposit: contract.deposit,
       rentCycle: contract.rentCycle,
+      rentDueDay: contract.rentDueDay,
       contractTemplate: contract.contractTemplate,
       terminationRentMultiple: contract.terminationRentMultiple ?? null,
       terminationDaysPastDue: contract.terminationDaysPastDue ?? null,
@@ -3330,6 +3391,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       rentMonthly: z.number().int().positive().optional(),
       deposit: z.number().int().nonnegative().optional(),
       rentCycle: zRentCycle.optional(),
+      rentDueDay: zRentDueDay.optional(),
       penaltyFormula: z.string().min(1).optional(),
       latestRentGraceDays: z.union([z.number().int().min(0).max(999), z.null()]).optional(),
       configRemarkHtml: z.string().nullable().optional(),
@@ -3361,6 +3423,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     if (body.data.rentMonthly != null) data.rentMonthly = body.data.rentMonthly
     if (body.data.deposit != null) data.deposit = body.data.deposit
     if (body.data.rentCycle != null) data.rentCycle = body.data.rentCycle
+    if (body.data.rentDueDay != null) data.rentDueDay = body.data.rentDueDay
     if (body.data.penaltyFormula != null) data.penaltyFormula = body.data.penaltyFormula
     if (body.data.latestRentGraceDays !== undefined) {
       data.latestRentGraceDays = body.data.latestRentGraceDays
@@ -3752,38 +3815,125 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     return res.status(409).json({ error: 'INVALID_STATUS' })
   })
 
+  app.get('/api/admin/contracts/:id/refund-deposit-options', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const contract = await ctx.prisma.contract.findUnique({
+      where: { id: String(req.params.id) },
+      include: {
+        house: { include: { apartment: true } },
+        refunds: { select: { amount: true, reason: true }, orderBy: { createdAt: 'desc' } },
+        bills: {
+          include: { items: { orderBy: { createdAt: 'asc' } } },
+          orderBy: [{ period: 'asc' }, { kind: 'asc' }],
+        },
+        payments: { orderBy: { createdAt: 'asc' } },
+      },
+    })
+    if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, contract.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (contract.status !== 'TERMINATED') return res.status(409).json({ error: 'DEPOSIT_REFUND_NEED_TERMINATED' })
+
+    const { refundedDepositAmount } = getDepositRefundSummary(contract.refunds)
+    const options = buildDepositRefundOptions({
+      contractDeposit: contract.deposit,
+      refundedAmount: refundedDepositAmount,
+      changeHouseFromId: contract.changeHouseFromId,
+      bills: contract.bills.map((b) => ({
+        id: b.id,
+        period: b.period,
+        kind: b.kind,
+        status: b.status,
+        amountReceived: b.amountReceived,
+        items: b.items.map((i) => ({ name: i.name, amount: i.amount })),
+      })),
+      payments: contract.payments.map((p) => ({
+        id: p.id,
+        amount: p.amount,
+        status: p.status,
+        paidAt: p.paidAt,
+      })),
+    })
+    res.json(options)
+  })
+
   app.post('/api/admin/contracts/:id/refund-deposit', adminAuth(ctx.prisma), async (req, res) => {
     const auth = getAdminAuth(req)
     const Body = z.object({
-      amount: z.number().int().positive(),
+      mode: z.enum(['FULL', 'SELECTED']),
+      billIds: z.array(z.string().min(1)).optional(),
+      includePayment: z.boolean().optional(),
+      includeContractBalance: z.boolean().optional(),
       remark: z.string().max(200).optional(),
       refundTemplateCode: z.string().max(64).optional(),
     })
     const body = Body.parse(req.body)
     const contract = await ctx.prisma.contract.findUnique({
       where: { id: String(req.params.id) },
-      include: { house: { include: { apartment: true } } },
+      include: {
+        house: { include: { apartment: true } },
+        refunds: { select: { amount: true, reason: true }, orderBy: { createdAt: 'desc' } },
+        bills: {
+          include: { items: { orderBy: { createdAt: 'asc' } } },
+          orderBy: [{ period: 'asc' }, { kind: 'asc' }],
+        },
+        payments: { orderBy: { createdAt: 'asc' } },
+      },
     })
     if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
     if (!canAccessStore(auth, contract.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
     if (contract.status !== 'TERMINATED') return res.status(409).json({ error: 'DEPOSIT_REFUND_NEED_TERMINATED' })
-    if (body.amount > contract.deposit) return res.status(409).json({ error: 'DEPOSIT_REFUND_EXCEED_DEPOSIT' })
+
+    const { refundedDepositAmount } = getDepositRefundSummary(contract.refunds)
+    const options = buildDepositRefundOptions({
+      contractDeposit: contract.deposit,
+      refundedAmount: refundedDepositAmount,
+      changeHouseFromId: contract.changeHouseFromId,
+      bills: contract.bills.map((b) => ({
+        id: b.id,
+        period: b.period,
+        kind: b.kind,
+        status: b.status,
+        amountReceived: b.amountReceived,
+        items: b.items.map((i) => ({ name: i.name, amount: i.amount })),
+      })),
+      payments: contract.payments.map((p) => ({
+        id: p.id,
+        amount: p.amount,
+        status: p.status,
+        paidAt: p.paidAt,
+      })),
+    })
+
+    const resolved = resolveDepositRefundAmount({
+      mode: body.mode,
+      billIds: body.billIds ?? [],
+      paymentSelected: Boolean(body.includePayment),
+      balanceSelected: Boolean(body.includeContractBalance),
+      options,
+    })
+    if (!resolved.ok) return res.status(409).json({ error: resolved.error })
 
     const tmpl =
       body.refundTemplateCode && DEPOSIT_REFUND_TEMPLATE_LABEL[body.refundTemplateCode]
         ? DEPOSIT_REFUND_TEMPLATE_LABEL[body.refundTemplateCode]
         : null
-    const reason = ['退押金', tmpl && `模板：${tmpl}`, body.remark?.trim() && `备注：${body.remark.trim()}`]
+    const reason = [
+      '退押金',
+      `金额 ¥${resolved.amount}`,
+      resolved.auditParts.length > 0 ? `来源：${resolved.auditParts.join('；')}` : null,
+      tmpl && `模板：${tmpl}`,
+      body.remark?.trim() && `备注：${body.remark.trim()}`,
+    ]
       .filter(Boolean)
       .join('；')
     await ctx.prisma.refund.create({
       data: {
         contractId: contract.id,
-        amount: body.amount,
+        amount: resolved.amount,
         reason,
       },
     })
-    res.json({ ok: true })
+    res.json({ ok: true, amount: resolved.amount })
   })
 
   /** 续签资格：已生效 + 所有账单已结清 + 到期前 2 个月窗口内 */
@@ -3850,6 +4000,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       rentMonthly: z.number().int().positive().optional(),
       depositMultiple: z.number().positive().optional(),
       rentCycle: zRentCycle.optional(),
+      rentDueDay: zRentDueDay.optional(),
       penaltyFormula: z.string().min(1).optional(),
       latestRentGraceDays: z.union([z.number().int().min(0).max(999), z.null()]).optional(),
       configRemarkHtml: z.string().nullable().optional(),
@@ -3880,6 +4031,8 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     const rentMonthly = body.rentMonthly ?? old.rentMonthly
     const depositMultiple = body.depositMultiple ?? old.depositMultiple
     const deposit = Math.round(rentMonthly * depositMultiple)
+    const rentCycle = body.rentCycle ?? old.rentCycle
+    const rentDueDay = normalizeRentDueDay(body.rentDueDay ?? old.rentDueDay, startDate)
     const contractNo = `C${new Date().getFullYear()}${String(Date.now()).slice(-8)}`
     const tenantSignDeadlineAt = computeRenewalTenantActionDeadline(startDate)
 
@@ -3905,8 +4058,9 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
           rentMonthly,
           deposit,
           depositMultiple,
-          rentCycle: body.rentCycle ?? old.rentCycle,
+          rentCycle,
           penaltyFormula: body.penaltyFormula ?? old.penaltyFormula,
+          rentDueDay,
           latestRentGraceDays:
             body.latestRentGraceDays !== undefined ? body.latestRentGraceDays : old.latestRentGraceDays,
           latestRentDueDate: null,
@@ -3917,19 +4071,18 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
           tenantSignDeadlineAt,
         },
       })
-      const dueDate = startOfMonth(startDate)
-      for (let i = 0; i < body.leaseMonths; i += 1) {
-        const d = addMonths(dueDate, i)
-        await tx.bill.create({
-          data: {
-            contractId: nc.id,
-            period: fmtPeriod(d),
-            dueDate: d,
-            totalAmount: rentMonthly,
-            status: 'UNPAID',
-          },
-        })
-      }
+      await syncContractBaseRentBills(
+        tx,
+        {
+          contractId: nc.id,
+          startDate,
+          leaseMonths: body.leaseMonths,
+          rentMonthly,
+          rentCycle,
+          rentDueDay,
+        },
+        'create',
+      )
       await tx.contract.update({
         where: { id: old.id },
         data: { status: 'TERMINATED', terminatedAt, endDate: terminatedAt },
@@ -4103,6 +4256,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
             depositMultiple: depMul,
             rentCycle: body.rentCycle ?? old.rentCycle,
             penaltyFormula: body.penaltyFormula ?? old.penaltyFormula,
+            rentDueDay: old.rentDueDay,
             latestRentGraceDays:
               body.latestRentGraceDays !== undefined ? body.latestRentGraceDays : old.latestRentGraceDays,
             latestRentDueDate: null,
@@ -4111,19 +4265,18 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
           },
         })
 
-        const dueDate = startOfMonth(newStart)
-        for (let i = 0; i < body.leaseMonths; i += 1) {
-          const d = addMonths(dueDate, i)
-          await tx.bill.create({
-            data: {
-              contractId: nc.id,
-              period: fmtPeriod(d),
-              dueDate: d,
-              totalAmount: newRent,
-              status: 'UNPAID',
-            },
-          })
-        }
+        await syncContractBaseRentBills(
+          tx,
+          {
+            contractId: nc.id,
+            startDate: newStart,
+            leaseMonths: body.leaseMonths,
+            rentMonthly: newRent,
+            rentCycle: body.rentCycle ?? old.rentCycle,
+            rentDueDay: old.rentDueDay,
+          },
+          'create',
+        )
 
         await syncBaseRentBillItemsForContract(tx, {
           contractId: nc.id,
@@ -4162,9 +4315,10 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
 
       if (partial && body.sourceHouseId) {
         const srcLine = activeLines.find((l) => l.houseId === body.sourceHouseId)!
+        const created = await createNewContractAndBills()
         await tx.orderLine.updateMany({
           where: { orderId: old.order!.id, houseId: body.sourceHouseId, releasedAt: null },
-          data: { releasedAt: moveEnd },
+          data: { releasedAt: moveEnd, changeHouseNewContractId: created.newContractId },
         })
         await tx.house.update({ where: { id: body.sourceHouseId }, data: { status: 'VACANT' } })
         const after = await tx.orderLine.findMany({
@@ -4182,10 +4336,12 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
             deposit: depSum,
           },
         })
-        await syncBaseRentBillItemsForContract(tx, {
+        await reconcileBaseBillsAfterMergedLineRelease(tx, {
           contractId: old.id,
           orderId: old.order!.id,
           rentMonthly: rentSum,
+          moveEnd,
+          leaseEnd: old.endDate,
         })
         await tx.refund.create({
           data: {
@@ -4194,7 +4350,6 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
             reason: `部分换房：迁出 ${srcLine.house.apartment.name} ${srcLine.house.houseNo} → 新签 ${target.apartment.name} ${target.houseNo}，新合同 ${contractNo}`,
           },
         })
-        const created = await createNewContractAndBills()
         await persistChangeHouseMoneyJson(created.newContractId, {
           prepaidSkippedReason: '合并合同部分换房：旧合同仍在租，预付租金跨合同结转需人工核对。',
           prepaid: { credit: 0, sources: [] },
@@ -5360,6 +5515,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
           downloadUrl: string
         }[]
       } | null
+      receipt: ReturnType<typeof buildReceiptDto>
     }
 
     const txs: Tx[] = []
@@ -5494,7 +5650,213 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     }
 
     txs.sort((a, b) => (a.occurredAt < b.occurredAt ? 1 : a.occurredAt > b.occurredAt ? -1 : 0))
-    res.json({ items: txs.slice(0, 500) })
+    const sliced = txs.slice(0, 500)
+    const receiptMap = await loadReceiptMap(
+      ctx.prisma,
+      sliced.map((x) => x.id),
+    )
+    const items = sliced.map((x) => ({
+      ...x,
+      receipt: buildReceiptDto(receiptMap.get(x.id) ?? null, x.id, auth.admin),
+    }))
+    res.json({ items })
+  })
+
+  app.post('/api/admin/transactions/receipts/print', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const body = z
+      .object({
+        transactionIds: z.array(z.string().min(1)).min(1),
+        receiptKind: z.enum(['RENT', 'DEPOSIT']),
+      })
+      .safeParse(req.body)
+    if (!body.success) return res.status(400).json({ error: 'BAD_REQUEST' })
+
+    try {
+      const results = await printTransactionReceipts(
+        ctx.prisma,
+        auth.admin,
+        body.data.transactionIds,
+        body.data.receiptKind,
+      )
+      res.json({
+        ok: true,
+        receiptKind: body.data.receiptKind,
+        results,
+        message: `已记录 ${results.length} 条收据导出（第 ${results.map((r) => r.printCount).join('、')} 次）。正式套打文件待模板接入后生成。`,
+      })
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (msg.startsWith('PRINT_BLOCKED:')) {
+        const parts = msg.split(':')
+        const reason = parts.slice(2).join(':') || '不可打印'
+        return res.status(403).json({ error: reason })
+      }
+      if (msg === 'EMPTY_TRANSACTION_IDS') return res.status(400).json({ error: '请选择交易记录' })
+      throw e
+    }
+  })
+
+  app.post('/api/admin/transactions/receipts/reprint-request', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const body = z
+      .object({
+        transactionId: z.string().min(1),
+        reason: z.string().trim().min(2).max(500),
+      })
+      .safeParse(req.body)
+    if (!body.success) return res.status(400).json({ error: '请填写再次导出原因（至少 2 字）' })
+
+    const receipt = await ctx.prisma.transactionReceipt.upsert({
+      where: { transactionId: body.data.transactionId },
+      create: { transactionId: body.data.transactionId },
+      update: {},
+    })
+    const dto = buildReceiptDto(receipt, body.data.transactionId, auth.admin)
+    if (!dto.canRequestReprint) {
+      return res.status(403).json({ error: dto.printBlockedReason ?? '当前不可申请再次导出' })
+    }
+
+    const updated = await ctx.prisma.transactionReceipt.update({
+      where: { id: receipt.id },
+      data: {
+        reprintRequestStatus: 'PENDING',
+        reprintRequestReason: body.data.reason,
+        reprintRequestedAt: new Date(),
+        reprintRequestedByAdminId: auth.admin.id,
+        reprintApproved: false,
+        reprintReviewedAt: null,
+        reprintReviewedByAdminId: null,
+        reprintReviewRemark: null,
+      },
+    })
+    res.json({ ok: true, receipt: buildReceiptDto(updated, body.data.transactionId, auth.admin) })
+  })
+
+  app.post('/api/admin/transactions/receipts/reprint-review', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    if (!mustBeFinance(auth)) return res.status(403).json({ error: '仅财务可审批再次导出申请' })
+
+    const body = z
+      .object({
+        transactionId: z.string().min(1),
+        action: z.enum(['APPROVE', 'REJECT']),
+        remark: z.string().trim().max(500).optional(),
+      })
+      .safeParse(req.body)
+    if (!body.success) return res.status(400).json({ error: 'BAD_REQUEST' })
+
+    const receipt = await ctx.prisma.transactionReceipt.findUnique({
+      where: { transactionId: body.data.transactionId },
+    })
+    if (!receipt) return res.status(404).json({ error: '未找到收据记录' })
+    if (receipt.status === 'VOID') return res.status(403).json({ error: '收据已作废' })
+    if (receipt.reprintRequestStatus !== 'PENDING') {
+      return res.status(403).json({ error: '当前无待审批的再次导出申请' })
+    }
+
+    const now = new Date()
+    const approved = body.data.action === 'APPROVE'
+    const updated = await ctx.prisma.transactionReceipt.update({
+      where: { id: receipt.id },
+      data: {
+        reprintRequestStatus: approved ? 'APPROVED' : 'REJECTED',
+        reprintApproved: approved,
+        reprintReviewedAt: now,
+        reprintReviewedByAdminId: auth.admin.id,
+        reprintReviewRemark: body.data.remark?.trim() || null,
+      },
+    })
+    res.json({ ok: true, receipt: buildReceiptDto(updated, body.data.transactionId, auth.admin) })
+  })
+
+  app.get('/api/admin/transactions/receipts/reprint-pending', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    if (!mustBeFinance(auth)) return res.status(403).json({ error: '仅财务可查看待审批列表' })
+
+    const rows = await ctx.prisma.transactionReceipt.findMany({
+      where: { reprintRequestStatus: 'PENDING', status: 'ACTIVE' },
+      orderBy: { reprintRequestedAt: 'asc' },
+      take: 100,
+    })
+    res.json({
+      items: rows.map((r) => ({
+        transactionId: r.transactionId,
+        printCount: r.printCount,
+        reprintRequestReason: r.reprintRequestReason,
+        reprintRequestedAt: r.reprintRequestedAt?.toISOString() ?? null,
+        receipt: buildReceiptDto(r, r.transactionId, auth.admin),
+      })),
+    })
+  })
+
+  app.post('/api/admin/transactions/receipts/void', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    if (!mustBeFinance(auth)) return res.status(403).json({ error: '仅财务可作废收据' })
+
+    const body = z
+      .object({
+        transactionId: z.string().min(1),
+        reason: z.string().trim().min(2).max(500),
+      })
+      .safeParse(req.body)
+    if (!body.success) return res.status(400).json({ error: '请填写作废原因（至少 2 字）' })
+
+    const receipt = await ctx.prisma.transactionReceipt.upsert({
+      where: { transactionId: body.data.transactionId },
+      create: { transactionId: body.data.transactionId },
+      update: {},
+    })
+    if (receipt.status === 'VOID') return res.status(403).json({ error: '收据已作废' })
+
+    const now = new Date()
+    const updated = await ctx.prisma.transactionReceipt.update({
+      where: { id: receipt.id },
+      data: {
+        status: 'VOID',
+        voidedAt: now,
+        voidedByAdminId: auth.admin.id,
+        voidReason: body.data.reason,
+        reprintApproved: false,
+        reprintRequestStatus: null,
+      },
+    })
+    res.json({ ok: true, receipt: buildReceiptDto(updated, body.data.transactionId, auth.admin) })
+  })
+
+  app.get('/api/admin/transactions/receipts/:transactionId/print-logs', adminAuth(ctx.prisma), async (req, res) => {
+    const transactionId = String(req.params.transactionId)
+    const receipt = await ctx.prisma.transactionReceipt.findUnique({
+      where: { transactionId },
+      include: { printLogs: { orderBy: { printedAt: 'desc' } } },
+    })
+    if (!receipt) return res.json({ items: [] })
+
+    const adminIds = [
+      ...new Set(receipt.printLogs.map((l) => l.printedByAdminId).filter((id): id is string => Boolean(id))),
+    ]
+    const admins =
+      adminIds.length > 0
+        ? await ctx.prisma.admin.findMany({
+            where: { id: { in: adminIds } },
+            select: { id: true, email: true, name: true },
+          })
+        : []
+    const adminMap = new Map(admins.map((a) => [a.id, a]))
+
+    res.json({
+      items: receipt.printLogs.map((l) => {
+        const admin = l.printedByAdminId ? adminMap.get(l.printedByAdminId) : undefined
+        return {
+          id: l.id,
+          receiptKind: l.receiptKind,
+          printSeq: l.printSeq,
+          printedAt: l.printedAt.toISOString(),
+          printedByAdminName: l.printedByAdminName ?? admin?.name ?? null,
+          printedByAdminEmail: l.printedByAdminEmail ?? admin?.email ?? null,
+        }
+      }),
+    })
   })
 
   /** 合同预收余额列表（线下核销超额等入账） */

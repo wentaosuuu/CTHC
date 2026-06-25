@@ -43,6 +43,13 @@ const initialRoles: Role[] = [
     description: '只能查看和操作自己门店的数据',
     menuIds: ['home', 'houses', 'orders', 'contracts', 'tenant_profiles', 'transactions', 'contract_prepayments', 'bills', 'overdue', 'rent_reminders', 'reports'],
   },
+  {
+    id: 'role_finance',
+    name: '财务',
+    code: 'FINANCE',
+    description: '可审批收据重打、作废收据，查看全部门店交易与账单',
+    menuIds: ['home', 'transactions', 'contract_prepayments', 'bills', 'overdue', 'rent_reminders', 'reports'],
+  },
 ]
 
 export function SystemRolesPage() {

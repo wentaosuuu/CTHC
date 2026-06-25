@@ -1842,7 +1842,7 @@ export function BillsPage() {
                 <img src={payQrData.qrImageUrl} alt="付款二维码" />
               </div>
               <p className="a-muted" style={{ fontSize: 13, lineHeight: 1.5, textAlign: 'center' }}>
-                请租客使用微信扫一扫，打开账单页后可「立即支付」。演示环境请确保手机能访问同一局域网下的 H5 地址。
+                请租客使用微信扫一扫，打开账单页后可「立即支付」。请确保手机能访问同一局域网下的 H5 地址。
               </p>
               <div className="a-bill-pay-qr-url">{payQrData.payUrl}</div>
               <div className="a-row" style={{ marginTop: 12, gap: 8 }}>

@@ -218,6 +218,35 @@ function formatAreaSqm(n: number): string {
   return `${n.toLocaleString('zh-CN', { maximumFractionDigits: 0 })} ㎡`
 }
 
+function formatKpiMoney(n: number): { value: string; unit: string } {
+  if (!Number.isFinite(n)) return { value: '-', unit: '' }
+  if (n >= 100_000_000) return { value: (n / 100_000_000).toFixed(2), unit: '亿元' }
+  if (n >= 10_000) return { value: (n / 10_000).toFixed(2), unit: '万元' }
+  return { value: n.toLocaleString('zh-CN', { maximumFractionDigits: 0 }), unit: '元' }
+}
+
+function formatKpiArea(n: number): { value: string; unit: string } {
+  if (!Number.isFinite(n)) return { value: '-', unit: '' }
+  if (n >= 10_000) return { value: (n / 10_000).toFixed(2), unit: '万㎡' }
+  return { value: n.toLocaleString('zh-CN', { maximumFractionDigits: 0 }), unit: '㎡' }
+}
+
+function HomeIndicatorCard({ label, value, unit }: { label: string; value: string; unit: string }) {
+  return (
+    <article className="a-home-ind">
+      <div className="a-home-ind-head">
+        <span className="a-home-ind-icon" aria-hidden />
+        <span className="a-home-ind-label">{label}</span>
+      </div>
+      <div className="a-home-ind-divider" aria-hidden />
+      <div className="a-home-ind-value-row">
+        <span className="a-home-ind-value">{value}</span>
+        {unit ? <span className="a-home-ind-unit">{unit}</span> : null}
+      </div>
+    </article>
+  )
+}
+
 /** 领导看板：租金/面积类 demo，随筛选维度变化 */
 function buildDemoLedger(seed: string, houseCount: number) {
   const h = hash01(seed)
@@ -516,9 +545,6 @@ export function HomePage() {
           <div>
             <p className="a-home-eyebrow">管理驾驶舱</p>
             <h1 className="a-home-title">经营总览</h1>
-            <p className="a-home-subtitle">
-              先按项目与资产维度收窄范围，再查看资金、面积与运营指标；租金/面积为演示汇总，可对接财务中台。
-            </p>
           </div>
         </div>
         <div className="a-home-filter-panel">
@@ -629,66 +655,61 @@ export function HomePage() {
             </div>
           ) : null}
         </div>
-        <p className="a-home-hint">
-          收缴率、累计收缴率及下方「比率趋势」按本周期与筛选维度统计；与逾期板块的时间口径相互独立。
-        </p>
       </section>
 
       <section className="a-home-section">
         <div className="a-home-section-head">
-          <h2 className="a-home-section-title">资金与面积（演示）</h2>
-          <p className="a-home-section-meta">随筛选维度联动</p>
+          <h2 className="a-home-section-title">资金与面积</h2>
         </div>
-        <div className="a-home-kpi-grid">
-          <article className="a-home-kpi a-home-kpi--blue">
-            <p className="a-home-kpi-label">应收租金（演示）</p>
-            <p className="a-home-kpi-num">{formatCurrencyYuan(demoLedger.receivable)}</p>
-            <p className="a-home-kpi-foot">含本期应付、已出账未到期</p>
-          </article>
-          <article className="a-home-kpi a-home-kpi--green">
-            <p className="a-home-kpi-label">实收租金（演示）</p>
-            <p className="a-home-kpi-num">{formatCurrencyYuan(demoLedger.received)}</p>
-            <p className="a-home-kpi-foot">银行流水 + 线下核销</p>
-          </article>
-          <article className="a-home-kpi a-home-kpi--slate">
-            <p className="a-home-kpi-label">总面积（演示）</p>
-            <p className="a-home-kpi-num">{formatAreaSqm(demoLedger.totalArea)}</p>
-            <p className="a-home-kpi-foot">在管可租面积口径</p>
-          </article>
-          <article className="a-home-kpi a-home-kpi--amber">
-            <p className="a-home-kpi-label">出租面积（演示）</p>
-            <p className="a-home-kpi-num">{formatAreaSqm(demoLedger.leasedArea)}</p>
-            <p className="a-home-kpi-foot">已租出面积</p>
-          </article>
+        <div className="a-home-ind-grid">
+          <HomeIndicatorCard label="应收租金" {...formatKpiMoney(demoLedger.receivable)} />
+          <HomeIndicatorCard label="实收租金" {...formatKpiMoney(demoLedger.received)} />
+          <HomeIndicatorCard label="总面积" {...formatKpiArea(demoLedger.totalArea)} />
+          <HomeIndicatorCard label="出租面积" {...formatKpiArea(demoLedger.leasedArea)} />
         </div>
       </section>
 
       <section className="a-home-section">
         <div className="a-home-section-head">
           <h2 className="a-home-section-title">运营快照</h2>
-          <p className="a-home-section-meta">与当前筛选一致</p>
         </div>
-        <div className="a-home-metric-strip">
-          <article className="a-home-metric a-home-metric--accent">
-            <p className="a-home-metric-label">累计出租率（演示）</p>
-            <p className="a-home-metric-value">{formatPct(demoLedger.cumulativeRentalRate)}</p>
-            <p className="a-home-metric-desc">与「出租面积 ÷ 总面积」演示口径一致</p>
-          </article>
-          <article className="a-home-metric">
-            <p className="a-home-metric-label">房源数</p>
-            <p className="a-home-metric-value">{stat.houses}</p>
-            <p className="a-home-metric-desc">在管房源套数</p>
-          </article>
-          <article className="a-home-metric">
-            <p className="a-home-metric-label">待办订单数</p>
-            <p className="a-home-metric-value">{stat.pendingOrders}</p>
-            <p className="a-home-metric-desc">待审核（PENDING_REVIEW）</p>
-          </article>
-          <article className="a-home-metric">
-            <p className="a-home-metric-label">合同数</p>
-            <p className="a-home-metric-value">{stat.contracts}</p>
-            <p className="a-home-metric-desc">合同条数</p>
-          </article>
+        <div className="a-home-ind-grid">
+          <HomeIndicatorCard
+            label="累计出租率"
+            value={formatPct(demoLedger.cumulativeRentalRate).replace('%', '')}
+            unit="%"
+          />
+          <HomeIndicatorCard label="房源数" value={String(stat.houses)} unit="套" />
+          <HomeIndicatorCard label="待办订单数" value={String(stat.pendingOrders)} unit="单" />
+          <HomeIndicatorCard label="合同数" value={String(stat.contracts)} unit="份" />
+        </div>
+      </section>
+
+      <section className="a-home-section">
+        <div className="a-home-section-head">
+          <h2 className="a-home-section-title">出租与收缴</h2>
+        </div>
+        <div className="a-home-ind-grid">
+          <HomeIndicatorCard
+            label="出租率"
+            value={rentalRate == null ? '-' : formatPct(rentalRate).replace('%', '')}
+            unit={rentalRate == null ? '' : '%'}
+          />
+          <HomeIndicatorCard
+            label="空置率"
+            value={vacancyRate == null ? '-' : formatPct(vacancyRate).replace('%', '')}
+            unit={vacancyRate == null ? '' : '%'}
+          />
+          <HomeIndicatorCard
+            label="收缴率"
+            value={collectionRate == null ? '-' : formatPct(collectionRate).replace('%', '')}
+            unit={collectionRate == null ? '' : '%'}
+          />
+          <HomeIndicatorCard
+            label="累计收缴率"
+            value={cumulativeCollectionRate == null ? '-' : formatPct(cumulativeCollectionRate).replace('%', '')}
+            unit={cumulativeCollectionRate == null ? '' : '%'}
+          />
         </div>
       </section>
 
@@ -696,9 +717,6 @@ export function HomePage() {
         <div className="a-home-overdue-head">
           <div>
             <h2 className="a-home-overdue-title">逾期风险</h2>
-            <p className="a-home-overdue-desc">
-              按账单「到期日」落在下列区间内汇总：本金 + 滞纳金；时间口径与顶部「统计周期」完全独立。
-            </p>
           </div>
           <p className="a-home-overdue-range">{overdueRangeLabel}</p>
         </div>
@@ -742,40 +760,10 @@ export function HomePage() {
         </div>
       </section>
 
-      <section className="a-home-section">
-        <div className="a-home-section-head">
-          <h2 className="a-home-section-title">出租与收缴</h2>
-          <p className="a-home-section-meta">基于真实在管数据 + 本周期账单</p>
-        </div>
-        <div className="a-home-metric-strip a-home-metric-strip--dense">
-          <article className="a-home-metric">
-            <p className="a-home-metric-label">出租率</p>
-            <p className="a-home-metric-value">{rentalRate == null ? '-' : formatPct(rentalRate)}</p>
-            <p className="a-home-metric-desc">已发布房源中非空置占比</p>
-          </article>
-          <article className="a-home-metric">
-            <p className="a-home-metric-label">空置率</p>
-            <p className="a-home-metric-value">{vacancyRate == null ? '-' : formatPct(vacancyRate)}</p>
-            <p className="a-home-metric-desc">与出租率互补</p>
-          </article>
-          <article className="a-home-metric">
-            <p className="a-home-metric-label">收缴率</p>
-            <p className="a-home-metric-value">{collectionRate == null ? '-' : formatPct(collectionRate)}</p>
-            <p className="a-home-metric-desc">本周期内 PAID / 到期应收</p>
-          </article>
-          <article className="a-home-metric">
-            <p className="a-home-metric-label">累计收缴率</p>
-            <p className="a-home-metric-value">{cumulativeCollectionRate == null ? '-' : formatPct(cumulativeCollectionRate)}</p>
-            <p className="a-home-metric-desc">截至周期结束日累计</p>
-          </article>
-        </div>
-      </section>
-
       {showRateTrend || showStatTrend ? (
         <section className="a-home-section a-home-section--charts">
           <div className="a-home-section-head">
             <h2 className="a-home-section-title">趋势分析</h2>
-            <p className="a-home-section-meta">曲线为基于当前汇总量的演示序列</p>
           </div>
           <div className="a-home-charts">
           {showRateTrend ? (
@@ -880,7 +868,6 @@ export function HomePage() {
                 </ResponsiveContainer>
               </div>
 
-              <p className="a-home-chart-foot">接入按日汇总接口后可替换为真实序列。</p>
             </div>
           ) : null}
           </div>

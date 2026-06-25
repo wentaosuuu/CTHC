@@ -184,13 +184,13 @@ function buildHouseImages(seed: string) {
   <rect x="90" y="110" width="1020" height="480" rx="28" fill="rgba(255,255,255,0.92)" filter="url(#s)"/>
   <rect x="120" y="140" width="960" height="180" rx="22" fill="${t.c}"/>
   <text x="150" y="205" font-family="system-ui, -apple-system, Segoe UI, Roboto" font-size="42" font-weight="800" fill="#0f172a">${label}</text>
-  <text x="150" y="265" font-family="system-ui, -apple-system, Segoe UI, Roboto" font-size="22" fill="#334155">${title} · Demo Image ${idx}</text>
+  <text x="150" y="265" font-family="system-ui, -apple-system, Segoe UI, Roboto" font-size="22" fill="#334155">${title} · 示意图 ${idx}</text>
   <g opacity="0.9">
     <rect x="150" y="360" width="260" height="160" rx="18" fill="#0f172a"/>
     <rect x="430" y="360" width="260" height="160" rx="18" fill="#1e293b"/>
     <rect x="710" y="360" width="320" height="160" rx="18" fill="#334155"/>
   </g>
-  <text x="150" y="560" font-family="system-ui, -apple-system, Segoe UI, Roboto" font-size="18" fill="rgba(15,23,42,0.55)">该图片为系统内置生成示意图（用于演示轮播效果）</text>
+  <text x="150" y="560" font-family="system-ui, -apple-system, Segoe UI, Roboto" font-size="18" fill="rgba(15,23,42,0.55)">该图片为系统内置生成示意图</text>
 </svg>`
 
   return [
@@ -224,7 +224,7 @@ function buildMoreInfo(h: HouseItem) {
     propertyNo,
     landUse,
     builtYear: String(builtYear),
-    remark: '演示字段：后续可从资产系统同步或在后台补录。',
+    remark: '后续可从资产系统同步或在后台补录。',
   }
 }
 
@@ -412,7 +412,7 @@ export function HousesPage() {
     setImportResult(null)
     const r = await apiPost<{ ok: true; upsertedHouses: number }>('/api/admin/integrations/asset/sync-demo', {})
     if (!r.ok) return setError(r.error)
-    setMsg(`已完成同步（演示），更新房源数：${r.data.upsertedHouses}`)
+    setMsg(`已完成同步，更新房源数：${r.data.upsertedHouses}`)
     await load()
   }
 
@@ -839,7 +839,7 @@ export function HousesPage() {
         <strong style={{ color: '#334155' }}>状态说明：</strong>
         租客下单 →「下单锁定」（他人不可下单）；店长通过 →「预留锁定」（待签约/待付）；支付成功 →「已签约」。
         未上架/未配置（缺租金、图片或公寓地址）→ 状态会显示「未配置/未上架」，H5 不可见、不可下单。
-        未支付超时、作废待付合同、审核拒绝或「取消订单」→ 恢复「空置 · 可下单」（前提是已上架）。
+        未支付超时、作废待付合同、审核拒绝 → 恢复「空置 · 可下单」（前提是已上架）。
         批量维护：先「下载资产维护模板」，第一列为房源业务编号（与列表「房源ID」FY 开头一致），其余列按需填写后使用「批量资产维护」上传。
       </div>
 

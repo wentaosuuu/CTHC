@@ -24,7 +24,7 @@ export function MobileLayout({ children }: { children: ReactNode }) {
     return subscribeCart(() => setCartTick((x) => x + 1))
   }, [])
 
-  let title = '产投华创房产'
+  let title = '南宁产投华创投资发展集团有限责任公司信息化管理系统'
   if (loc.pathname === '/me') title = '我的'
   else if (loc.pathname === '/cart') title = '购物车'
   else if (loc.pathname === '/checkout') title = '结算下单'
@@ -32,7 +32,7 @@ export function MobileLayout({ children }: { children: ReactNode }) {
   else if (loc.pathname.startsWith('/me/verify')) title = '实名认证'
   else if (isBills) title = '我的账单'
   else if (loc.pathname.startsWith('/order/')) title = '在线下单'
-  else if (loc.pathname.startsWith('/houses/')) title = '房源详情'
+  else if (loc.pathname.startsWith('/houses/')) title = '资产详情'
 
   const cartSummary = useMemo(() => {
     const lines = getCart()
@@ -90,7 +90,7 @@ export function MobileLayout({ children }: { children: ReactNode }) {
           className={`m-tabbar-btn ${!isMe ? 'm-tabbar-btn-active' : ''}`}
           onClick={() => nav('/')}
         >
-          <span className="m-tabbar-btn-label">房源</span>
+          <span className="m-tabbar-btn-label">资产</span>
         </button>
         <button
           type="button"

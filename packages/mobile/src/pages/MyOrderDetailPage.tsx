@@ -66,7 +66,7 @@ export function MyOrderDetailPage() {
 
   function downloadDemoContract() {
     const lines = [
-      '租赁合同（演示版）',
+      '租赁合同',
       `合同号：${contractNo}`,
       `房源：${DEMO_CONTRACT.apartmentName} · ${DEMO_CONTRACT.houseNo}`,
       `门店：${DEMO_CONTRACT.storeName}`,
@@ -74,13 +74,13 @@ export function MyOrderDetailPage() {
       `租期：${DEMO_CONTRACT.startDate} 至 ${DEMO_CONTRACT.endDate}`,
       `月租：¥${DEMO_CONTRACT.rentMonthly} / 押金：¥${DEMO_CONTRACT.deposit}`,
       '',
-      '说明：该文件为前端演示下载文件，可替换为后端真实合同 PDF 下载链接。',
+      '说明：可替换为后端真实合同 PDF 下载链接。',
     ]
     const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `${contractNo}-租赁合同(演示).txt`
+    a.download = `${contractNo}-租赁合同.txt`
     document.body.appendChild(a)
     a.click()
     a.remove()

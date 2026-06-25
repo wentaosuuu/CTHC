@@ -7,21 +7,12 @@ import {
   filterCartByLane,
   getCart,
   removeFromCart,
-  setCart,
   subscribeCart,
   type CartCheckoutLane,
   type CartLine,
 } from '../cartStorage'
 
-function CartLineEditor({
-  line,
-  onUpdate,
-  onRemove,
-}: {
-  line: CartLine
-  onUpdate: (patch: Partial<Pick<CartLine, 'leaseMonths' | 'moveInDate'>>) => void
-  onRemove: () => void
-}) {
+function CartLineRow({ line, onRemove }: { line: CartLine; onRemove: () => void }) {
   return (
     <div className="m-cart-line">
       <div className="m-cart-line-top">
@@ -33,26 +24,7 @@ function CartLineEditor({
         </div>
         <div className="m-cart-line-price">¥{line.rentMonthly}</div>
       </div>
-      <div className="m-cart-line-row">
-        <span className="m-cart-line-label">租期</span>
-        <input
-          className="m-cart-line-input m-cart-line-input--months"
-          type="number"
-          min={1}
-          max={36}
-          inputMode="numeric"
-          value={line.leaseMonths}
-          onChange={(e) => onUpdate({ leaseMonths: Number(e.target.value) })}
-          aria-label="租期月数"
-        />
-        <span className="m-cart-line-label">入住</span>
-        <input
-          className="m-cart-line-input m-cart-line-input--date"
-          type="date"
-          value={line.moveInDate}
-          onChange={(e) => onUpdate({ moveInDate: e.target.value })}
-          aria-label="入住日期"
-        />
+      <div className="m-cart-line-actions">
         <button type="button" className="m-cart-line-remove" onClick={onRemove}>
           移除
         </button>
@@ -64,13 +36,11 @@ function CartLineEditor({
 function CartLaneSection({
   lane,
   lines,
-  onUpdateLine,
   onRemoveLine,
   onCheckout,
 }: {
   lane: CartCheckoutLane
   lines: CartLine[]
-  onUpdateLine: (houseId: string, patch: Partial<Pick<CartLine, 'leaseMonths' | 'moveInDate'>>) => void
   onRemoveLine: (houseId: string) => void
   onCheckout: (lane: CartCheckoutLane) => void
 }) {
@@ -83,12 +53,7 @@ function CartLaneSection({
         <span className="m-cart-lane-count">{lines.length} 套</span>
       </div>
       {lines.map((l) => (
-        <CartLineEditor
-          key={l.houseId}
-          line={l}
-          onUpdate={(patch) => onUpdateLine(l.houseId, patch)}
-          onRemove={() => onRemoveLine(l.houseId)}
-        />
+        <CartLineRow key={l.houseId} line={l} onRemove={() => onRemoveLine(l.houseId)} />
       ))}
       <div className="m-cart-lane-foot">
         <div className="m-cart-lane-total">¥{total.toLocaleString('zh-CN')}</div>
@@ -117,12 +82,6 @@ export function CartPage() {
     return subscribeCart(refresh)
   }, [])
 
-  function updateLine(houseId: string, patch: Partial<Pick<CartLine, 'leaseMonths' | 'moveInDate'>>) {
-    const next = lines.map((x) => (x.houseId === houseId ? { ...x, ...patch } : x))
-    setCart(next)
-    setLines(next)
-  }
-
   function removeLine(houseId: string) {
     removeFromCart(houseId)
     refresh()
@@ -142,7 +101,7 @@ export function CartPage() {
           购物车
         </div>
         <p className="m-cart-tip">
-          泊湾公寓与商铺/厂房/住宅合同模板不同，须<strong>分开结算</strong>；同类多套可在下一步选择一对一或多对一合同。
+          泊湾公寓与商铺/厂房/住宅合同模板不同，须<strong>分开结算</strong>。下一步选择合同形式后填写租期与起租日：多对一统一一套日期，一对一各套分别填写。
         </p>
         {mixed ? (
           <p className="m-cart-tip m-cart-tip--warn">
@@ -162,20 +121,8 @@ export function CartPage() {
       ) : (
         <>
           <div className="m-card" style={{ padding: '10px 12px 12px' }}>
-            <CartLaneSection
-              lane="bowan"
-              lines={bowanLines}
-              onUpdateLine={updateLine}
-              onRemoveLine={removeLine}
-              onCheckout={goCheckout}
-            />
-            <CartLaneSection
-              lane="other"
-              lines={otherLines}
-              onUpdateLine={updateLine}
-              onRemoveLine={removeLine}
-              onCheckout={goCheckout}
-            />
+            <CartLaneSection lane="bowan" lines={bowanLines} onRemoveLine={removeLine} onCheckout={goCheckout} />
+            <CartLaneSection lane="other" lines={otherLines} onRemoveLine={removeLine} onCheckout={goCheckout} />
           </div>
 
           <div className="m-muted" style={{ textAlign: 'center', fontSize: 12 }}>

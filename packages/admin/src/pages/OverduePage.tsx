@@ -535,10 +535,10 @@ export function OverduePage() {
                       value={smsModal.message}
                       onChange={(e) => setSmsModal({ ...smsModal, message: e.target.value })}
                       style={{ width: '100%', minHeight: 120, resize: 'vertical' }}
-                      placeholder="可编辑短信内容（演示版不会真实发出，仅记录台账）"
+                      placeholder="可编辑短信内容（仅记录台账，不会真实发出）"
                     />
                     <div className="a-muted" style={{ marginTop: 6, fontSize: 12 }}>
-                      提示：这里是 demo 演示，点击发送会写入「催租记录」台账；真实项目会在服务端对接短信网关。
+                      提示：点击发送将写入「催租记录」台账；正式环境需对接短信网关。
                     </div>
                   </div>
                 </div>
@@ -562,7 +562,7 @@ export function OverduePage() {
                       setError(r.error)
                       return
                     }
-                    setMsg('已发送（演示）并写入催租记录')
+                    setMsg('已发送并写入催租记录')
                     setSmsModal(null)
                   }}
                 >

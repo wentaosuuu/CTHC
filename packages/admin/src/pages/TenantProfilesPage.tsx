@@ -106,7 +106,7 @@ export function TenantProfilesPage() {
           <input
             className="a-input"
             style={{ minWidth: 220, flex: '1 1 200px' }}
-            placeholder="按姓名、手机、证件尾号搜索…"
+            placeholder="按姓名首字、手机尾号、证件尾号搜索…"
             value={q}
             onChange={(e) => setQ(e.target.value)}
           />
@@ -149,10 +149,12 @@ export function TenantProfilesPage() {
               ) : (
                 pageData.items.map((row) => (
                   <tr key={row.id}>
-                    <td style={{ fontWeight: 800 }}>{row.name}</td>
-                    <td>{row.phone}</td>
+                    <td style={{ fontWeight: 800 }} title="已脱敏展示">
+                      {row.name}
+                    </td>
+                    <td title="已脱敏展示">{row.phone}</td>
                     <td>{DOC_ZH[row.idDocType] ?? row.idDocType}</td>
-                    <td className="a-muted" style={{ fontSize: 12 }}>
+                    <td className="a-muted" style={{ fontSize: 12 }} title="已脱敏展示">
                       {row.idNumberMasked}
                     </td>
                     <td>

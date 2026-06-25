@@ -330,7 +330,7 @@ export function HouseListPage() {
           </div>
           <div className="m-muted">
             {items.length === 0
-              ? '你可以去后台同步演示房源，或将锁定房源取消订单/审核拒绝后恢复可租。'
+              ? '你可以去后台同步资产，或将锁定资产在审核拒绝后恢复可租。'
               : '试试调整筛选条件。'}
           </div>
         </div>

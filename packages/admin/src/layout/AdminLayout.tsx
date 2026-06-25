@@ -62,7 +62,10 @@ export function AdminLayout({ children }: { children: ReactNode }) {
   return (
     <div className="a-shell">
       <div className="a-topbar">
-        <div className="a-brand">公寓租赁管理后台</div>
+        <div className="a-brand-row">
+          <img className="a-brand-logo" src="/logo.png" alt="南宁产投华创" />
+          <div className="a-brand">南宁产投华创投资发展集团有限责任公司信息化管理系统</div>
+        </div>
         <div className="a-top-spacer" />
         {authed ? (
           <div className="a-top-user" ref={menuRef}>

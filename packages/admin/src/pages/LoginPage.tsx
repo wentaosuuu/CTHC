@@ -34,10 +34,10 @@ export function LoginPage() {
       <div className="a-login-center">
         <div className="a-login-card compact">
           <div className="a-login-brand-row">
-            <div className="a-login-logo" />
+            <img className="a-login-logo" src="/logo.png" alt="南宁产投华创" />
             <div>
-              <div className="a-login-title">公寓租赁管理后台</div>
-              <div className="a-login-subtitle">演示环境 · 统一后台</div>
+              <div className="a-login-title">南宁产投华创投资发展集团有限责任公司信息化管理系统</div>
+              <div className="a-login-subtitle">统一后台</div>
             </div>
           </div>
 
@@ -103,7 +103,7 @@ export function LoginPage() {
       </div>
 
       <div className="a-login-bottom">
-        © {new Date().getFullYear()} Apartment Leasing · Demo / 本地开发环境
+        © {new Date().getFullYear()} Apartment Leasing
       </div>
     </div>
   )

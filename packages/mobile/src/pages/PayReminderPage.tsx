@@ -187,7 +187,7 @@ export function PayReminderPage() {
                 {formatHms(signRemainingMs)}
               </div>
               <div className="m-muted" style={{ marginTop: 6 }}>
-                请在截止前于合同页完成「确认合同信息」（演示中含电子签字）；超时订单失效、房源重新开放。
+                请在截止前于合同页完成「确认合同信息」（含电子签字）；超时订单失效、房源重新开放。
               </div>
             </>
           ) : (

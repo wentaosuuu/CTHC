@@ -83,6 +83,10 @@ export function SystemDepartmentsPage() {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
   const [modal, setModal] = useState<ModalState | null>(null)
   const qrInputRef = useRef<HTMLInputElement | null>(null)
+  /** 新增部门：保存后再上传；编辑部门：也可先本地预览再点保存（或选图后立即上传） */
+  const [pendingQrFile, setPendingQrFile] = useState<File | null>(null)
+  const [qrPreviewUrl, setQrPreviewUrl] = useState<string | null>(null)
+  const [qrUploading, setQrUploading] = useState(false)
 
   const isSys = me?.roleCode === 'SYSTEM_ADMIN'
 
@@ -133,8 +137,15 @@ export function SystemDepartmentsPage() {
     })
   }
 
+  const clearQrPreview = () => {
+    if (qrPreviewUrl) URL.revokeObjectURL(qrPreviewUrl)
+    setQrPreviewUrl(null)
+    setPendingQrFile(null)
+  }
+
   const openAdd = () => {
     if (!isSys) return
+    clearQrPreview()
     setModal({
       type: 'add',
       form: {
@@ -151,6 +162,7 @@ export function SystemDepartmentsPage() {
 
   const openEdit = (dept: Dept) => {
     if (!canEditDept(dept)) return
+    clearQrPreview()
     setModal({
       type: 'edit',
       dept,
@@ -166,7 +178,10 @@ export function SystemDepartmentsPage() {
     })
   }
 
-  const closeModal = () => setModal(null)
+  const closeModal = () => {
+    clearQrPreview()
+    setModal(null)
+  }
 
   const setForm = (patch: Partial<ModalState['form']>) => {
     if (!modal) return
@@ -186,12 +201,18 @@ export function SystemDepartmentsPage() {
           parentId: f.parentId ? f.parentId : null,
           remark: f.remark.trim(),
           contactPhone: f.contactPhone.trim() || null,
-          wecomQrUrl: f.wecomQrUrl.trim() || null,
+          wecomQrUrl: null,
           linkedStoreId: f.linkedStoreId || null,
         })
         if (!r.ok) {
           window.alert(`保存失败：${r.error}`)
           return
+        }
+        if (pendingQrFile) {
+          const up = await apiUploadDepartmentQr(r.data.item.id, pendingQrFile)
+          if (!up.ok) {
+            window.alert(`部门已创建，但二维码上传失败：${up.error}`)
+          }
         }
       } else if (modal.dept) {
         const body: Record<string, unknown> = {
@@ -220,18 +241,37 @@ export function SystemDepartmentsPage() {
 
   const onPickQrFile = () => qrInputRef.current?.click()
 
+  const onClearQr = () => {
+    clearQrPreview()
+    setForm({ wecomQrUrl: '' })
+  }
+
   const onQrFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     e.target.value = ''
-    if (!file || !modal?.dept) return
+    if (!file || !modal) return
+
+    if (modal.type === 'add') {
+      clearQrPreview()
+      setPendingQrFile(file)
+      setQrPreviewUrl(URL.createObjectURL(file))
+      return
+    }
+
+    if (!modal.dept) return
+    setQrUploading(true)
     const r = await apiUploadDepartmentQr(modal.dept.id, file)
+    setQrUploading(false)
     if (!r.ok) {
       window.alert(`上传失败：${r.error}`)
       return
     }
+    clearQrPreview()
     setForm({ wecomQrUrl: r.data.wecomQrUrl })
     await loadAll()
   }
+
+  const qrDisplayUrl = qrPreviewUrl || modal?.form.wecomQrUrl || ''
 
   const parentOptions = useMemo(() => {
     return departments.map((d) => ({ value: d.id, label: d.name }))
@@ -445,29 +485,49 @@ export function SystemDepartmentsPage() {
                   <div className="a-kv-k">二维码</div>
                   <div className="a-kv-v">
                     <div className="a-row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                      <input
-                        type="text"
-                        className="a-filter-input"
-                        value={modal.form.wecomQrUrl}
-                        onChange={(e) => setForm({ wecomQrUrl: e.target.value })}
-                        placeholder="图片 URL，或上传自动生成 /api/public/... 链接"
-                        style={{ flex: 1, minWidth: 200 }}
-                      />
-                      {modal.type === 'edit' ? (
-                        <button type="button" className="a-btn ghost" onClick={onPickQrFile}>
-                          上传图片
+                      <button
+                        type="button"
+                        className="a-btn ghost"
+                        onClick={onPickQrFile}
+                        disabled={qrUploading}
+                      >
+                        {qrUploading ? '上传中…' : '选择图片上传'}
+                      </button>
+                      {qrDisplayUrl ? (
+                        <button type="button" className="a-btn ghost" onClick={onClearQr} disabled={qrUploading}>
+                          清除
                         </button>
                       ) : null}
                     </div>
-                    {modal.form.wecomQrUrl ? (
-                      <div style={{ marginTop: 8 }}>
+                    <div className="a-muted" style={{ marginTop: 6, fontSize: 12, lineHeight: 1.5 }}>
+                      支持 PNG、JPG、WebP。
+                      {modal.type === 'add'
+                        ? ' 新增时先选图，保存部门后将自动上传。'
+                        : ' 修改时选择图片后立即上传并更新。'}
+                    </div>
+                    {qrDisplayUrl ? (
+                      <div style={{ marginTop: 10 }}>
                         <img
-                          src={modal.form.wecomQrUrl}
-                          alt="预览"
+                          src={qrDisplayUrl}
+                          alt="二维码预览"
                           style={{ width: 120, height: 120, objectFit: 'contain', borderRadius: 8, background: '#f1f5f9' }}
                         />
                       </div>
-                    ) : null}
+                    ) : (
+                      <div
+                        className="a-muted"
+                        style={{
+                          marginTop: 10,
+                          padding: '20px 16px',
+                          border: '1px dashed #cbd5e1',
+                          borderRadius: 8,
+                          textAlign: 'center',
+                          fontSize: 12,
+                        }}
+                      >
+                        尚未上传二维码
+                      </div>
+                    )}
                   </div>
                 </div>
 
