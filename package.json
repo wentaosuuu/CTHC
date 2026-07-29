@@ -19,6 +19,7 @@
     "build:server": "npm -w server run build",
     "db:migrate": "npm -w server run db:migrate",
     "db:seed": "npm -w server run db:seed",
+    "db:seed-reports": "npm -w server run db:seed-reports",
     "lint": "npm -w mobile run lint && npm -w admin run lint"
   }
 }

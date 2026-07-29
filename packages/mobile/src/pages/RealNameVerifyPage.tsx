@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { apiPost, getTenantPhone } from '../api'
 
 type VerifyStatus = 'UNVERIFIED' | 'VERIFYING' | 'VERIFIED' | 'REJECTED'
 
@@ -100,13 +101,41 @@ export function RealNameVerifyPage() {
 
     const success = !idCardNo.endsWith('0000')
     if (success) {
+      const phone = getTenantPhone().trim()
+      if (phone) {
+        const apiR = await apiPost<{ ok: true; tenantId: string; mobileVerifiedAt: string }>(
+          '/api/tenant/realname-verify',
+          {
+            phone,
+            name: name.trim(),
+            idNumber: idCardNo.trim().toUpperCase(),
+          },
+        )
+        if (!apiR.ok) {
+          const rejected: VerifyResult = {
+            ...submittingResult,
+            status: 'REJECTED',
+            finishedAt: new Date().toISOString(),
+            rejectReason: `实名信息已记录，但同步失败：${apiR.error}`,
+          }
+          saveResult(rejected)
+          setMsg(rejected.rejectReason ?? '同步失败')
+          setSubmitting(false)
+          return
+        }
+      }
+
       const passed: VerifyResult = {
         ...submittingResult,
         status: 'VERIFIED',
         finishedAt: new Date().toISOString(),
       }
       saveResult(passed)
-      setMsg('实名认证通过，后续签约与支付可直接复用实名信息')
+      setMsg(
+        phone
+          ? '实名认证通过；若您有按身份证号匹配的待推送账单，将自动出现在「我的账单」中'
+          : '实名认证通过，请先在「我的」页填写手机号以便接收账单推送',
+      )
     } else {
       const rejected: VerifyResult = {
         ...submittingResult,

@@ -90,6 +90,18 @@ enum TenantCreditTier {
   D
 }
 
+enum TenantKind {
+  INDIVIDUAL
+  ENTERPRISE
+}
+
+enum TenantCreatedSource {
+  /// 租客在移动端下单、实名等自主产生
+  MOBILE_SELF
+  /// 店长/管理员在后台创建
+  ADMIN
+}
+
 /// 组织架构（总部 / 区域 / 门店等）：预约看房电话与二维码在门店级部门上配置，并与 Store 可选关联
 model Department {
   id        String   @id @default(cuid())
@@ -180,6 +192,8 @@ model House {
   rentCollectionUnit    String?
   /// 管理人
   managerName           String?
+  /// 管理部门（资产运营口径）
+  mgmtDepartment        String? @default("公寓管理部")
   /// 水表号列表 JSON：["WS-001","WS-002"]，与账单导入联动
   waterMeterNosJson     String @default("[]")
   /// 电表号列表 JSON：["EL-001"]
@@ -221,6 +235,10 @@ model Tenant {
   idNumber     String
   phone        String
   wechat       String?
+  /// 紧急联系人姓名（选填）
+  emergencyContactName  String?
+  /// 紧急联系人电话（选填）
+  emergencyContactPhone String?
   /// 证件类型：IDCARD | PASSPORT | HKM_TW_PERMIT | USCC（与 H5 下单一致）
   idDocType   String   @default("IDCARD")
   /// 身份证是否长期有效（国徽面「有效期限」至长期）
@@ -229,13 +247,44 @@ model Tenant {
   idCardValidUntil DateTime?
   /// 信誉度等级（档案标记，非自动风控）
   creditTier   TenantCreditTier @default(A)
+  /// 移动端完成实名认证的时间（用于按身份证号匹配推送账单）
+  mobileVerifiedAt DateTime?
+  /// 个人 / 企业
+  tenantKind       TenantKind          @default(INDIVIDUAL)
+  /// 档案创建来源：租客自主或后台代建
+  createdSource    TenantCreatedSource @default(MOBILE_SELF)
+  createdByAdminId String?
+  createdByAdmin   Admin?              @relation("TenantCreatedBy", fields: [createdByAdminId], references: [id])
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
   orders    Order[]
   contracts Contract[]
+  profileLogs TenantProfileLog[]
 
   @@index([phone])
+  @@index([idNumber])
+  @@index([createdByAdminId])
+}
+
+/// 租客档案操作记录（入档、信誉度调整、实名等）
+model TenantProfileLog {
+  id           String   @id @default(cuid())
+  tenantId     String
+  actionLabel  String
+  detail       String   @default("")
+  occurredAt   DateTime @default(now())
+  /// ADMIN=后台账号；TENANT=租客自主（移动端）
+  operatorKind String   @default("ADMIN")
+  adminId      String?
+  adminName    String?
+  adminEmail   String?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  admin  Admin? @relation(fields: [adminId], references: [id])
+
+  @@index([tenantId])
+  @@index([occurredAt])
 }
 
 model Order {
@@ -306,8 +355,10 @@ model Contract {
   agreementSignDate DateTime?
   /// JSON: [{ "id": "...", "name": "文件名", "file": "磁盘文件名" }]
   attachmentsJson  String?      @default("[]")
-  /// 合同模板：TRIPARTITE=三方合同，APARTMENT=公寓合同（后台配置存档）
-  contractTemplate String       @default("APARTMENT")
+  /// 合同模板专属配置 JSON（按 contractTemplate 解析，如 JIANGNAN_FACTORY 表单快照）
+  contractTemplateDataJson String?
+  /// 合同模板：RESIDENTIAL_ASSET / JIANGNAN_FACTORY / NON_RESIDENTIAL / NANNING_HOUSING（兼容历史 TRIPARTITE、APARTMENT）
+  contractTemplate String       @default("RESIDENTIAL_ASSET")
   /// 三方合同：逾期金额超过「月租×该倍数」时触发解除类短信（配置存档）
   terminationRentMultiple Float?
   /// 公寓合同：超过「最晚缴费日（应付日+宽限期口径）」后满该天数触发解除类短信（配置存档）
@@ -331,6 +382,10 @@ model Contract {
   billingPausedAt DateTime?
   /// 恢复计费日（按 UTC 日历日）；可设为未来以实现「择日恢复」
   billingResumeFrom DateTime?
+  /// 是否向租户移动端推送账单（南宁市房屋租赁合同等手动创建场景）
+  billPushToTenant Boolean @default(false)
+  /// NOT_ENABLED | PENDING_TENANT | ACTIVE
+  billPushStatus String @default("NOT_ENABLED")
   /// 退租待租客确认：JSON（terminateDate、reason、releaseHouseIds、attachments、deadlineAt 等）
   moveOutPendingJson String?
   createdAt       DateTime       @default(now())
@@ -401,6 +456,9 @@ model Bill {
   offlineVerifyAttachmentsJson String? @default("[]")
   /// 店长账单备注（与线下核销备注不同：用于费用说明、对账说明等）
   billingRemark String?
+  /// 租户端推送：NONE | SKIPPED | PENDING_TENANT | PUSHED
+  tenantPushStatus String @default("NONE")
+  pushedToTenantAt DateTime?
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 
@@ -420,6 +478,12 @@ model BillOfflineVerifyLog {
   billId            String
   /// 本次操作实收总额（元）：可能大于本账单剩余应付（超额部分记入合同预收）
   amount            Int
+  /// 收款渠道：OFFLINE_QR | TRANSFER | CASH
+  collectionChannel String?
+  /// 款项实际到账日期（与操作时间 createdAt 可能不同）
+  collectionDate    DateTime?
+  /// 核销时填写的资产名称（选填快照）
+  assetName         String?
   remark            String?
   attachmentsJson   String   @default("[]")
   adminId           String?
@@ -574,6 +638,8 @@ model Admin {
   adminStores AdminStore[]
   billChangeLogs BillChangeLog[]
   houseChangeLogs HouseChangeLog[]
+  tenantsCreated Tenant[] @relation("TenantCreatedBy")
+  tenantProfileLogs TenantProfileLog[]
 }
 
 model AdminStore {

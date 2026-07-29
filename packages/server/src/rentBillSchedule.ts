@@ -6,6 +6,8 @@ export function rentCycleMonths(cycle: string): number {
       return 2
     case 'QUARTERLY':
       return 3
+    case 'SEMIANNUAL':
+      return 6
     case 'YEARLY':
       return 12
     default:

@@ -1,7 +1,54 @@
 import { useEffect, useMemo, useState } from 'react'
 import { apiDeleteContractAttachment, apiDeleteMoveOutFile, apiGet, apiPatch, apiPost, apiUploadContractAttachment, apiUploadMoveOutFile } from '../api'
+import { JiangnanFactoryContractForm } from '../components/JiangnanFactoryContractForm'
+import { NonResidentialContractForm } from '../components/NonResidentialContractForm'
+import { NanningHousingContractForm } from '../components/NanningHousingContractForm'
+import { ResidentialAssetContractForm } from '../components/ResidentialAssetContractForm'
 import { ContractRemarkEditor } from '../components/ContractRemarkEditor'
+import { ContractTemplateSelect } from '../components/ContractTemplateSelect'
 import { contractAttachmentsLockedUntilPaid } from '../contractAttachmentPolicy'
+import {
+  contractTemplateUsesRentMultipleTermination,
+  contractTemplateZh,
+  type ContractTemplateKind,
+} from '../contractTemplate'
+import {
+  defaultJiangnanFactoryForm,
+  leaseMonthsFromRange,
+  performanceBondAmount,
+  serializeJiangnanFactoryForm,
+  sumHouseRentMonthly,
+  validateJiangnanFactoryForm,
+  type JiangnanFactoryFormData,
+} from '../jiangnanFactoryContract'
+import {
+  defaultNonResidentialForm,
+  leaseMonthsFromRange as nrLeaseMonthsFromRange,
+  nonResidentialPerformanceBondAmount,
+  serializeNonResidentialForm,
+  sumHouseRentMonthly as nrSumHouseRentMonthly,
+  validateNonResidentialForm,
+  type NonResidentialFormData,
+} from '../nonResidentialContract'
+import {
+  defaultResidentialAssetForm,
+  leaseMonthsFromRange as raLeaseMonthsFromRange,
+  residentialHousingBondAmount,
+  serializeResidentialAssetForm,
+  sumHouseRentMonthly as raSumHouseRentMonthly,
+  validateResidentialAssetForm,
+  type ResidentialAssetFormData,
+} from '../residentialAssetContract'
+import {
+  bowanMonthlyRentNumber,
+  bowanPenaltyFormula,
+  bowanPerformanceBondAmount,
+  defaultNanningHousingForm,
+  leaseMonthsFromRange as nhLeaseMonthsFromRange,
+  serializeNanningHousingForm,
+  validateNanningHousingForm,
+  type NanningHousingFormData,
+} from '../nanningHousingContract'
 import { downloadFileWithAuth, previewFileWithAuth } from '../fileAuth'
 import { Pagination, paginate } from '../components/Pagination'
 import { parseRentDueDayInput, rentCycleDueDayHint, rentDueDayFromYmd } from '../rentDueDay'
@@ -12,16 +59,6 @@ type RentCycle = 'MONTHLY' | 'BIMONTHLY' | 'QUARTERLY' | 'YEARLY'
 function normalizeRentCycle(v: string | undefined | null): RentCycle {
   if (v === 'BIMONTHLY' || v === 'QUARTERLY' || v === 'YEARLY') return v
   return 'MONTHLY'
-}
-
-type ContractTemplateKind = 'TRIPARTITE' | 'APARTMENT'
-
-function normalizeContractTemplate(v: string | undefined | null): ContractTemplateKind {
-  return v === 'TRIPARTITE' ? 'TRIPARTITE' : 'APARTMENT'
-}
-
-function contractTemplateZh(t: ContractTemplateKind) {
-  return t === 'TRIPARTITE' ? '三方合同' : '公寓合同'
 }
 
 function rentCycleLabel(c: RentCycle) {
@@ -90,6 +127,9 @@ type ContractItem = {
   houseStatus?: string
   leaseDaysLeft?: number
   leaseExpired?: boolean
+  contractTemplate?: string
+  billPushToTenant?: boolean
+  billPushStatus?: string | null
 }
 
 // 合同状态 -> 中文
@@ -109,6 +149,12 @@ const REPORT_STATUS_ZH: Record<string, string> = {
   PENDING: '已发起报备',
   SUCCESS: '完成报备',
   FAILED: '驳回',
+}
+
+const BILL_PUSH_STATUS_ZH: Record<string, string> = {
+  NOT_ENABLED: '未开启推送',
+  PENDING_TENANT: '等待租户注册',
+  ACTIVE: '推送已开通',
 }
 
 // 合同状态 tag 样式（不同底色便于区分）
@@ -335,6 +381,9 @@ type ContractDetail = {
   depositRefunded?: boolean
   refundedDepositAmount?: number
   refunds: { amount: number; reason: string; createdAt: string }[]
+  contractTemplate?: string
+  billPushToTenant?: boolean
+  billPushStatus?: string | null
 }
 
 function todayYmd() {
@@ -527,12 +576,17 @@ export function ContractsPage() {
     rentDueDay: '1',
     latestRentGraceDays: '',
     remarkHtml: '',
-    contractTemplate: 'APARTMENT' as ContractTemplateKind,
+    contractTemplate: 'RESIDENTIAL_ASSET' as ContractTemplateKind,
     terminationRentMulti: '2',
     terminationDaysPastDue: '7',
+    billPushToTenant: 'yes' as 'yes' | 'no',
   })
   const [createPendingFiles, setCreatePendingFiles] = useState<File[]>([])
   const [createSubmitting, setCreateSubmitting] = useState(false)
+  const [jiangnanForm, setJiangnanForm] = useState<JiangnanFactoryFormData>(() => defaultJiangnanFactoryForm())
+  const [nonResidentialForm, setNonResidentialForm] = useState<NonResidentialFormData>(() => defaultNonResidentialForm())
+  const [residentialForm, setResidentialForm] = useState<ResidentialAssetFormData>(() => defaultResidentialAssetForm())
+  const [nanningHousingForm, setNanningHousingForm] = useState<NanningHousingFormData>(() => defaultNanningHousingForm())
 
   const [nowTick, setNowTick] = useState(() => Date.now())
 
@@ -1151,15 +1205,278 @@ export function ContractsPage() {
       rentDueDay: String(rentDueDayFromYmd(todayYmd())),
       latestRentGraceDays: '',
       remarkHtml: '',
-      contractTemplate: 'APARTMENT',
+      contractTemplate: 'RESIDENTIAL_ASSET',
       terminationRentMulti: '2',
       terminationDaysPastDue: '7',
+      billPushToTenant: 'yes',
     })
     setCreatePendingFiles([])
+    setJiangnanForm(defaultJiangnanFactoryForm())
+    setNonResidentialForm(defaultNonResidentialForm())
+    setResidentialForm(defaultResidentialAssetForm())
+    setNanningHousingForm(defaultNanningHousingForm())
     setCreateModalOpen(true)
   }
 
+  async function submitCreateJiangnan() {
+    const formErr = validateJiangnanFactoryForm(jiangnanForm)
+    if (formErr) return setError(formErr)
+
+    const rentMonthly = sumHouseRentMonthly(jiangnanForm.houses)
+    if (rentMonthly <= 0) return setError('所选资产月租须大于 0')
+
+    const bondAmount = performanceBondAmount(jiangnanForm)
+    const depositMultiple = rentMonthly > 0 ? bondAmount / rentMonthly : 1
+    const leaseMonths = leaseMonthsFromRange(jiangnanForm.leaseStart, jiangnanForm.leaseEnd)
+    if (leaseMonths <= 0) return setError('租赁期限不合法')
+
+    let latestRentGraceDays: number | null = null
+    if (jiangnanForm.latestRentGraceDays.trim()) {
+      latestRentGraceDays = parseInt(jiangnanForm.latestRentGraceDays.trim(), 10)
+    }
+    const terminationDaysPastDue = parseInt(jiangnanForm.terminationDaysPastDue.trim() || '0', 10)
+    const rentDueParsed = parseRentDueDayInput(
+      jiangnanForm.rentCycle === 'MONTHLY' ? jiangnanForm.rentDueDay : '1',
+    )
+    if (!rentDueParsed.ok) return setError(rentDueParsed.message)
+
+    setCreateSubmitting(true)
+    setError('')
+    const r = await apiPost<{ ok: true; contractId: string; contractNo: string }>('/api/admin/contracts/manual', {
+      contractTemplate: 'JIANGNAN_FACTORY',
+      contractTemplateDataJson: serializeJiangnanFactoryForm(jiangnanForm),
+      tenantIds: jiangnanForm.tenantIds,
+      houseIds: jiangnanForm.houseIds,
+      leaseMonths,
+      startDate: jiangnanForm.leaseStart,
+      endDate: jiangnanForm.leaseEnd,
+      rentMonthly,
+      depositMultiple,
+      rentCycle: jiangnanForm.rentCycle,
+      penaltyFormula: 'amount*0.1%*days',
+      rentDueDay: rentDueParsed.value,
+      latestRentGraceDays,
+      configRemarkHtml: jiangnanForm.remarkHtml.trim() ? jiangnanForm.remarkHtml : null,
+      agreementSignDate: jiangnanForm.agreementSignDate.trim() === '' ? null : jiangnanForm.agreementSignDate,
+      terminationDaysPastDue,
+    })
+    setCreateSubmitting(false)
+    if (!r.ok) return setError(apiErrorZh(String(r.error)))
+    const newId = r.data.contractId
+    for (const f of createPendingFiles) {
+      const up = await apiUploadContractAttachment(newId, f)
+      if (!up.ok) {
+        setMsg(
+          `新建合同已生成 ${formatContractNo(r.data.contractNo)}，但附件「${f.name}」上传失败，请在合同详情中补传。`,
+        )
+        setCreateModalOpen(false)
+        await load()
+        return
+      }
+    }
+    setCreateModalOpen(false)
+    setMsg(`新建合同成功：${formatContractNo(r.data.contractNo)}（产投江南企业公园厂房租赁，已直接生效）。`)
+    await load()
+  }
+
+  async function submitCreateNonResidential() {
+    const formErr = validateNonResidentialForm(nonResidentialForm)
+    if (formErr) return setError(formErr)
+
+    const rentMonthly = nrSumHouseRentMonthly(nonResidentialForm.houses)
+    if (rentMonthly <= 0) return setError('所选资产月租须大于 0')
+
+    const bondAmount = nonResidentialPerformanceBondAmount(nonResidentialForm)
+    const depositMultiple = rentMonthly > 0 ? bondAmount / rentMonthly : 1
+    const leaseMonths = nrLeaseMonthsFromRange(nonResidentialForm.leaseStart, nonResidentialForm.leaseEnd)
+    if (leaseMonths <= 0) return setError('租赁期限不合法')
+
+    let latestRentGraceDays: number | null = null
+    if (nonResidentialForm.latestRentGraceDays.trim()) {
+      latestRentGraceDays = parseInt(nonResidentialForm.latestRentGraceDays.trim(), 10)
+    }
+    const terminationRentMultiple = parseFloat(nonResidentialForm.terminationRentMultiple.trim() || '0')
+    const rentDueParsed = parseRentDueDayInput(
+      nonResidentialForm.rentCycle === 'MONTHLY' ? nonResidentialForm.rentDueDay : '1',
+    )
+    if (!rentDueParsed.ok) return setError(rentDueParsed.message)
+
+    setCreateSubmitting(true)
+    setError('')
+    const r = await apiPost<{ ok: true; contractId: string; contractNo: string }>('/api/admin/contracts/manual', {
+      contractTemplate: 'NON_RESIDENTIAL',
+      contractTemplateDataJson: serializeNonResidentialForm(nonResidentialForm),
+      tenantIds: nonResidentialForm.tenantIds,
+      houseIds: nonResidentialForm.houseIds,
+      leaseMonths,
+      startDate: nonResidentialForm.leaseStart,
+      endDate: nonResidentialForm.leaseEnd,
+      rentMonthly,
+      depositMultiple,
+      rentCycle: nonResidentialForm.rentCycle,
+      penaltyFormula: 'amount*0.1%*days',
+      rentDueDay: rentDueParsed.value,
+      latestRentGraceDays,
+      configRemarkHtml: nonResidentialForm.remarkHtml.trim() ? nonResidentialForm.remarkHtml : null,
+      agreementSignDate: nonResidentialForm.agreementSignDate.trim() === '' ? null : nonResidentialForm.agreementSignDate,
+      terminationRentMultiple,
+    })
+    setCreateSubmitting(false)
+    if (!r.ok) return setError(apiErrorZh(String(r.error)))
+    const newId = r.data.contractId
+    for (const f of createPendingFiles) {
+      const up = await apiUploadContractAttachment(newId, f)
+      if (!up.ok) {
+        setMsg(
+          `新建合同已生成 ${formatContractNo(r.data.contractNo)}，但附件「${f.name}」上传失败，请在合同详情中补传。`,
+        )
+        setCreateModalOpen(false)
+        await load()
+        return
+      }
+    }
+    setCreateModalOpen(false)
+    setMsg(`新建合同成功：${formatContractNo(r.data.contractNo)}（非住宅资产租赁，已直接生效）。`)
+    await load()
+  }
+
+  async function submitCreateResidential() {
+    const formErr = validateResidentialAssetForm(residentialForm)
+    if (formErr) return setError(formErr)
+
+    const rentMonthly = raSumHouseRentMonthly(residentialForm.houses)
+    if (rentMonthly <= 0) return setError('所选资产月租须大于 0')
+
+    const bondAmount = residentialHousingBondAmount(residentialForm)
+    const depositMultiple = rentMonthly > 0 ? bondAmount / rentMonthly : 1
+    const leaseMonths = raLeaseMonthsFromRange(residentialForm.leaseStart, residentialForm.leaseEnd)
+    if (leaseMonths <= 0) return setError('租赁期限不合法')
+
+    let latestRentGraceDays: number | null = null
+    if (residentialForm.latestRentGraceDays.trim()) {
+      latestRentGraceDays = parseInt(residentialForm.latestRentGraceDays.trim(), 10)
+    }
+    const terminationDaysPastDue = parseInt(residentialForm.terminationDaysPastDue.trim() || '0', 10)
+    const rentDueParsed = parseRentDueDayInput(
+      residentialForm.rentCycle === 'MONTHLY' ? residentialForm.rentDueDay : '1',
+    )
+    if (!rentDueParsed.ok) return setError(rentDueParsed.message)
+
+    setCreateSubmitting(true)
+    setError('')
+    const r = await apiPost<{ ok: true; contractId: string; contractNo: string }>('/api/admin/contracts/manual', {
+      contractTemplate: 'RESIDENTIAL_ASSET',
+      contractTemplateDataJson: serializeResidentialAssetForm(residentialForm),
+      tenantIds: residentialForm.tenantIds,
+      houseIds: residentialForm.houseIds,
+      leaseMonths,
+      startDate: residentialForm.leaseStart,
+      endDate: residentialForm.leaseEnd,
+      rentMonthly,
+      depositMultiple,
+      rentCycle: residentialForm.rentCycle,
+      penaltyFormula: 'amount*0.1%*days',
+      rentDueDay: rentDueParsed.value,
+      latestRentGraceDays,
+      configRemarkHtml: residentialForm.remarkHtml.trim() ? residentialForm.remarkHtml : null,
+      agreementSignDate: residentialForm.agreementSignDate.trim() === '' ? null : residentialForm.agreementSignDate,
+      terminationDaysPastDue,
+    })
+    setCreateSubmitting(false)
+    if (!r.ok) return setError(apiErrorZh(String(r.error)))
+    const newId = r.data.contractId
+    for (const f of createPendingFiles) {
+      const up = await apiUploadContractAttachment(newId, f)
+      if (!up.ok) {
+        setMsg(
+          `新建合同已生成 ${formatContractNo(r.data.contractNo)}，但附件「${f.name}」上传失败，请在合同详情中补传。`,
+        )
+        setCreateModalOpen(false)
+        await load()
+        return
+      }
+    }
+    setCreateModalOpen(false)
+    setMsg(`新建合同成功：${formatContractNo(r.data.contractNo)}（住宅资产租赁，已直接生效）。`)
+    await load()
+  }
+
+  async function submitCreateNanningHousing() {
+    const formErr = validateNanningHousingForm(nanningHousingForm)
+    if (formErr) return setError(formErr)
+
+    const rentMonthly = bowanMonthlyRentNumber(nanningHousingForm)
+    if (rentMonthly <= 0) return setError('所选资产月租须大于 0')
+
+    const bondAmount = bowanPerformanceBondAmount(nanningHousingForm)
+    const depositMultiple = rentMonthly > 0 ? bondAmount / rentMonthly : 1
+    const leaseMonths = nhLeaseMonthsFromRange(nanningHousingForm.leaseStart, nanningHousingForm.leaseEnd)
+    if (leaseMonths <= 0) return setError('租赁期限不合法')
+
+    let latestRentGraceDays: number | null = null
+    if (nanningHousingForm.latestRentGraceDays.trim()) {
+      latestRentGraceDays = parseInt(nanningHousingForm.latestRentGraceDays.trim(), 10)
+    }
+    const terminationDaysPastDue = parseInt(nanningHousingForm.terminationDaysPastDue.trim() || '0', 10)
+    const rentDueParsed = parseRentDueDayInput(
+      nanningHousingForm.rentCycle === 'MONTHLY' ? nanningHousingForm.rentDueDay : '1',
+    )
+    if (!rentDueParsed.ok) return setError(rentDueParsed.message)
+
+    setCreateSubmitting(true)
+    setError('')
+    const r = await apiPost<{ ok: true; contractId: string; contractNo: string }>('/api/admin/contracts/manual', {
+      contractTemplate: 'NANNING_HOUSING',
+      contractTemplateDataJson: serializeNanningHousingForm(nanningHousingForm),
+      tenantIds: nanningHousingForm.tenantIds,
+      houseIds: nanningHousingForm.houseIds,
+      leaseMonths,
+      startDate: nanningHousingForm.leaseStart,
+      endDate: nanningHousingForm.leaseEnd,
+      rentMonthly,
+      depositMultiple,
+      rentCycle: nanningHousingForm.rentCycle,
+      penaltyFormula: bowanPenaltyFormula(nanningHousingForm),
+      rentDueDay: rentDueParsed.value,
+      latestRentGraceDays,
+      configRemarkHtml: nanningHousingForm.remarkHtml.trim() ? nanningHousingForm.remarkHtml : null,
+      agreementSignDate:
+        nanningHousingForm.agreementSignDate.trim() === '' ? null : nanningHousingForm.agreementSignDate,
+      terminationDaysPastDue,
+      billPushToTenant: nanningHousingForm.billPushToTenant === 'yes',
+    })
+    setCreateSubmitting(false)
+    if (!r.ok) return setError(apiErrorZh(String(r.error)))
+    const newId = r.data.contractId
+    for (const f of createPendingFiles) {
+      const up = await apiUploadContractAttachment(newId, f)
+      if (!up.ok) {
+        setMsg(
+          `新建合同已生成 ${formatContractNo(r.data.contractNo)}，但附件「${f.name}」上传失败，请在合同详情中补传。`,
+        )
+        setCreateModalOpen(false)
+        await load()
+        return
+      }
+    }
+    setCreateModalOpen(false)
+    setMsg(`新建合同成功：${formatContractNo(r.data.contractNo)}（南宁市房屋租赁合同·泊湾公寓，已直接生效）。`)
+    await load()
+  }
+
   async function submitCreate() {
+    if (createForm.contractTemplate === 'JIANGNAN_FACTORY') {
+      return submitCreateJiangnan()
+    }
+    if (createForm.contractTemplate === 'NON_RESIDENTIAL') {
+      return submitCreateNonResidential()
+    }
+    if (createForm.contractTemplate === 'RESIDENTIAL_ASSET') {
+      return submitCreateResidential()
+    }
+    if (createForm.contractTemplate === 'NANNING_HOUSING') {
+      return submitCreateNanningHousing()
+    }
     if (!createForm.houseId) return setError('请选择房源（仅支持空置房源）')
     if (!createForm.tenantName.trim()) return setError('请填写租客姓名')
     if (!createForm.tenantPhone.trim()) return setError('请填写手机号')
@@ -1175,16 +1492,16 @@ export function ContractsPage() {
 
     let terminationRentMultiple: number | null = null
     let terminationDaysPastDue: number | null = null
-    if (createForm.contractTemplate === 'TRIPARTITE') {
+    if (contractTemplateUsesRentMultipleTermination(createForm.contractTemplate)) {
       const x = parseFloat(createForm.terminationRentMulti.trim())
       if (Number.isNaN(x) || x <= 0) {
-        return setError('三方合同：请填写大于 0 的月租倍数')
+        return setError(`${contractTemplateZh(createForm.contractTemplate)}：请填写大于 0 的月租倍数`)
       }
       terminationRentMultiple = x
     } else {
       const d = parseInt(createForm.terminationDaysPastDue.trim(), 10)
       if (Number.isNaN(d) || d < 0) {
-        return setError('公寓合同：请填写不小于 0 的逾期天数（整数）')
+        return setError(`${contractTemplateZh(createForm.contractTemplate)}：请填写不小于 0 的逾期天数（整数）`)
       }
       terminationDaysPastDue = d
     }
@@ -1211,6 +1528,7 @@ export function ContractsPage() {
       contractTemplate: createForm.contractTemplate,
       terminationRentMultiple,
       terminationDaysPastDue,
+      billPushToTenant: createForm.billPushToTenant === 'yes',
     })
     setCreateSubmitting(false)
     if (!r.ok) return setError(apiErrorZh(String(r.error)))
@@ -3012,292 +3330,73 @@ export function ContractsPage() {
                 <div className="a-kv-row">
                   <div className="a-kv-k">合同模板</div>
                   <div className="a-kv-v">
-                    <select
-                      className="a-filter-select"
+                    <ContractTemplateSelect
                       value={createForm.contractTemplate}
-                      onChange={(e) =>
-                        setCreateForm((f) => ({ ...f, contractTemplate: e.target.value as ContractTemplateKind }))
-                      }
-                    >
-                      <option value="TRIPARTITE">三方合同</option>
-                      <option value="APARTMENT">公寓合同</option>
-                    </select>
-                  </div>
-                </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">房源</div>
-                  <div className="a-kv-v">
-                    <select
-                      className="a-filter-select"
-                      value={createForm.houseId}
-                      onChange={(e) => setCreateForm((f) => applyCreateHouseDefaults(e.target.value, f))}
-                    >
-                      <option value="">请选择空置房源</option>
-                      {createHouseOptions.map((h) => (
-                        <option key={h.id} value={h.id}>
-                          {h.apartmentName} {h.houseNo}（{h.storeName}）
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">租客</div>
-                  <div className="a-kv-v">
-                    <input
-                      className="a-filter-input"
-                      style={{ minWidth: 160, marginBottom: 6 }}
-                      value={createForm.tenantName}
-                      onChange={(e) => setCreateForm((f) => ({ ...f, tenantName: e.target.value }))}
-                      placeholder="姓名，例如：张三"
-                    />
-                    <input
-                      className="a-filter-input"
-                      style={{ minWidth: 160, marginBottom: 6 }}
-                      value={createForm.tenantPhone}
-                      onChange={(e) => setCreateForm((f) => ({ ...f, tenantPhone: e.target.value }))}
-                      placeholder="手机号，例如：13800000000"
-                    />
-                    <input
-                      className="a-filter-input"
-                      style={{ minWidth: 220 }}
-                      value={createForm.tenantIdNumber}
-                      onChange={(e) => setCreateForm((f) => ({ ...f, tenantIdNumber: e.target.value }))}
-                      placeholder="身份证号，用于合同资料留档"
-                    />
-                  </div>
-                </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">租期（月）</div>
-                  <div className="a-kv-v">
-                    <input
-                      className="a-filter-input"
-                      style={{ minWidth: 160 }}
-                      type="number"
-                      value={createForm.leaseMonths}
-                      onChange={(e) =>
-                        setCreateForm((f) => ({ ...f, leaseMonths: Number(e.target.value || 0) }))
-                      }
-                      min={1}
-                      max={36}
-                    />
-                  </div>
-                </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">入住日期</div>
-                  <div className="a-kv-v">
-                    <input
-                      className="a-filter-input"
-                      style={{ minWidth: 160 }}
-                      type="date"
-                      value={createForm.startDate}
-                      onChange={(e) => {
-                        const startDate = e.target.value
-                        setCreateForm((f) => ({
-                          ...f,
-                          startDate,
-                          rentDueDay: startDate ? String(rentDueDayFromYmd(startDate)) : f.rentDueDay,
-                        }))
+                      onChange={(next) => {
+                        setCreateForm((f) => ({ ...f, contractTemplate: next }))
+                        if (next === 'JIANGNAN_FACTORY') setJiangnanForm(defaultJiangnanFactoryForm())
+                        if (next === 'NON_RESIDENTIAL') setNonResidentialForm(defaultNonResidentialForm())
+                        if (next === 'RESIDENTIAL_ASSET') setResidentialForm(defaultResidentialAssetForm())
+                        if (next === 'NANNING_HOUSING') setNanningHousingForm(defaultNanningHousingForm())
                       }}
                     />
                   </div>
                 </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">签订日期</div>
-                  <div className="a-kv-v">
-                    <input
-                      className="a-filter-input"
-                      style={{ minWidth: 160 }}
-                      type="date"
-                      value={createForm.agreementSignDate}
-                      onChange={(e) => setCreateForm((f) => ({ ...f, agreementSignDate: e.target.value }))}
-                    />
-                    <div className="a-muted" style={{ marginTop: 4, fontSize: 12, maxWidth: 420 }}>
-                      可选；书面合同落款用「签订日期」，可与实际电子签字时间不同。留空则清空该字段。
-                    </div>
-                  </div>
-                </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">月租（元）</div>
-                  <div className="a-kv-v">
-                    <input
-                      className="a-filter-input"
-                      style={{ minWidth: 160 }}
-                      type="number"
-                      value={createForm.rentMonthly}
-                      onChange={(e) => setCreateForm((f) => ({ ...f, rentMonthly: Number(e.target.value || 0) }))}
-                    />
-                  </div>
-                </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">押金倍数</div>
-                  <div className="a-kv-v">
-                    <input
-                      className="a-filter-input"
-                      style={{ minWidth: 160 }}
-                      type="number"
-                      step="0.5"
-                      value={createForm.depositMultiple}
-                      onChange={(e) =>
-                        setCreateForm((f) => ({ ...f, depositMultiple: Number(e.target.value || 0) }))
-                      }
-                    />
-                  </div>
-                </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">缴费周期</div>
-                  <div className="a-kv-v">
-                    <select
-                      className="a-filter-select"
-                      value={createForm.rentCycle}
-                      onChange={(e) => setCreateForm((f) => ({ ...f, rentCycle: e.target.value as RentCycle }))}
-                    >
-                      <option value="MONTHLY">月付</option>
-                      <option value="BIMONTHLY">双月</option>
-                      <option value="QUARTERLY">季付</option>
-                      <option value="YEARLY">年付</option>
-                    </select>
-                  </div>
-                </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">滞纳金公式</div>
-                  <div className="a-kv-v">
-                    <input
-                      className="a-filter-input"
-                      style={{ minWidth: 220 }}
-                      value={createForm.penaltyFormula}
-                      onChange={(e) => setCreateForm((f) => ({ ...f, penaltyFormula: e.target.value }))}
-                      placeholder="例如 amount*0.1%*days"
-                    />
-                  </div>
-                </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">交租日</div>
-                  <div className="a-kv-v">
-                    <input
-                      className="a-filter-input"
-                      style={{ minWidth: 160 }}
-                      type="number"
-                      min={1}
-                      max={31}
-                      value={createForm.rentDueDay}
-                      onChange={(e) =>
-                        setCreateForm((f) => ({ ...f, rentDueDay: e.target.value.replace(/\D/g, '').slice(0, 2) }))
-                      }
-                    />
-                    <div className="a-muted" style={{ marginTop: 4, fontSize: 12, maxWidth: 420 }}>
-                      {rentCycleDueDayHint(createForm.rentCycle)}；当月无该日则取月末（如 2 月 30 日 → 2 月 28/29 日）。
-                    </div>
-                  </div>
-                </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">最晚交租宽限期（天）</div>
-                  <div className="a-kv-v">
-                    <input
-                      className="a-filter-input"
-                      style={{ minWidth: 160 }}
-                      type="text"
-                      inputMode="numeric"
-                      autoComplete="off"
-                      placeholder="例如 5"
-                      title="相对每期应付日的宽限天数（与月付/双月/季付/年付约定兼容）"
-                      value={createForm.latestRentGraceDays}
-                      onChange={(e) =>
-                        setCreateForm((f) => ({ ...f, latestRentGraceDays: e.target.value.replace(/\D/g, '') }))
-                      }
-                    />
-                  </div>
-                </div>
-                <div className="a-kv-row" style={{ alignItems: 'flex-start' }}>
-                  <div className="a-kv-k">备注</div>
-                  <div className="a-kv-v" style={{ maxWidth: '100%' }}>
-                    <ContractRemarkEditor
-                      value={createForm.remarkHtml}
-                      onChange={(v) => setCreateForm((f) => ({ ...f, remarkHtml: v }))}
-                    />
-                  </div>
-                </div>
-                <div className="a-kv-row" style={{ alignItems: 'flex-start' }}>
-                  <div className="a-kv-k">附件</div>
-                  <div className="a-kv-v">
-                    <input
-                      type="file"
-                      multiple
-                      disabled={createSubmitting}
-                      onChange={(e) => {
-                        const list = Array.from(e.target.files ?? [])
-                        if (list.length > 0) setCreatePendingFiles((prev) => [...prev, ...list])
-                        e.currentTarget.value = ''
-                      }}
-                    />
-                    <div className="a-muted" style={{ fontSize: 12, marginTop: 4 }}>
-                      创建后自动上传到新生成的合同；单文件 ≤15MB
-                    </div>
-                    {createPendingFiles.length > 0 ? (
-                      <ul style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 13 }}>
-                        {createPendingFiles.map((f, idx) => (
-                          <li key={`${f.name}-${idx}`} style={{ marginBottom: 4 }}>
-                            {f.name}{' '}
-                            <button
-                              type="button"
-                              className="a-btn ghost"
-                              style={{ padding: '2px 8px', fontSize: 12 }}
-                              onClick={() =>
-                                setCreatePendingFiles((prev) => prev.filter((_, i) => i !== idx))
-                              }
-                              disabled={createSubmitting}
-                            >
-                              移除
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : null}
-                  </div>
-                </div>
-                <div className="a-kv-row" style={{ alignItems: 'flex-start' }}>
-                  <div className="a-kv-k">解除合同短信发送时间</div>
-                  <div className="a-kv-v" style={{ maxWidth: 560, fontSize: 13, lineHeight: 1.65 }}>
-                    {createForm.contractTemplate === 'TRIPARTITE' ? (
-                      <>
-                        当<strong>逾期金额</strong>超过<strong>月租</strong>的{' '}
-                        <input
-                          className="a-filter-input"
-                          type="number"
-                          step="0.1"
-                          min={0.1}
-                          style={{ width: 86 }}
-                          value={createForm.terminationRentMulti}
-                          onChange={(e) =>
-                            setCreateForm((f) => ({ ...f, terminationRentMulti: e.target.value }))
-                          }
-                        />{' '}
-                        倍时触发（规则配置存档；实际短信以业务接通为准）。
-                      </>
-                    ) : (
-                      <>
-                        当<strong>逾期天数</strong>超过<strong>最晚缴费日</strong>（含宽限期后的应付口径）后满{' '}
-                        <input
-                          className="a-filter-input"
-                          type="text"
-                          inputMode="numeric"
-                          style={{ width: 86 }}
-                          value={createForm.terminationDaysPastDue}
-                          onChange={(e) =>
-                            setCreateForm((f) => ({
-                              ...f,
-                              terminationDaysPastDue: e.target.value.replace(/\D/g, ''),
-                            }))
-                          }
-                        />{' '}
-                        天时触发（规则配置存档；实际短信以业务接通为准）。
-                      </>
-                    )}
-                  </div>
-                </div>
+                {createForm.contractTemplate === 'JIANGNAN_FACTORY' ? (
+                  <JiangnanFactoryContractForm
+                    value={jiangnanForm}
+                    onChange={setJiangnanForm}
+                    pendingFiles={createPendingFiles}
+                    onPendingFilesChange={setCreatePendingFiles}
+                  />
+                ) : createForm.contractTemplate === 'NON_RESIDENTIAL' ? (
+                  <NonResidentialContractForm
+                    value={nonResidentialForm}
+                    onChange={setNonResidentialForm}
+                    pendingFiles={createPendingFiles}
+                    onPendingFilesChange={setCreatePendingFiles}
+                  />
+                ) : createForm.contractTemplate === 'RESIDENTIAL_ASSET' ? (
+                  <ResidentialAssetContractForm
+                    value={residentialForm}
+                    onChange={setResidentialForm}
+                    pendingFiles={createPendingFiles}
+                    onPendingFilesChange={setCreatePendingFiles}
+                  />
+                ) : createForm.contractTemplate === 'NANNING_HOUSING' ? (
+                  <NanningHousingContractForm
+                    value={nanningHousingForm}
+                    onChange={setNanningHousingForm}
+                    pendingFiles={createPendingFiles}
+                    onPendingFilesChange={setCreatePendingFiles}
+                  />
+                ) : null}
               </div>
 
               <div className="a-kv">
+                {createForm.contractTemplate === 'JIANGNAN_FACTORY' ||
+                createForm.contractTemplate === 'NON_RESIDENTIAL' ||
+                createForm.contractTemplate === 'RESIDENTIAL_ASSET' ||
+                createForm.contractTemplate === 'NANNING_HOUSING' ? (
+                  <div className="a-kv-row">
+                    <div className="a-kv-k">操作</div>
+                    <div className="a-kv-v">
+                      <div className="a-row">
+                        <button
+                          className="a-btn ghost"
+                          onClick={() => setCreateModalOpen(false)}
+                          disabled={createSubmitting}
+                        >
+                          取消
+                        </button>
+                        <button className="a-btn" onClick={() => void submitCreate()} disabled={createSubmitting}>
+                          {createSubmitting ? '创建中…' : '确认创建并生效'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                <>
                 <div className="a-kv-row">
                   <div className="a-kv-k">合同预览</div>
                   <div className="a-kv-v">
@@ -3332,7 +3431,7 @@ export function ContractsPage() {
                       <br />
                       合同来源：手动导入（创建后直接生效，无需租客签字/支付）
                       <br />
-                      {createForm.contractTemplate === 'TRIPARTITE' ? (
+                      {contractTemplateUsesRentMultipleTermination(createForm.contractTemplate) ? (
                         <>
                           解除类短信：逾期金额超过月租的 {createForm.terminationRentMulti.trim() || '—'} 倍时触发
                         </>
@@ -3361,6 +3460,8 @@ export function ContractsPage() {
                     </div>
                   </div>
                 </div>
+                </>
+                )}
               </div>
             </div>
           </div>
@@ -3539,6 +3640,31 @@ export function ContractsPage() {
                     </span>
                   </div>
                 </div>
+                {detailContract.billPushToTenant ? (
+                  <div className="a-kv-row">
+                    <div className="a-kv-k">账单推送</div>
+                    <div className="a-kv-v">
+                      <span
+                        className={
+                          detailContract.billPushStatus === 'ACTIVE'
+                            ? 'a-badge status-active'
+                            : detailContract.billPushStatus === 'PENDING_TENANT'
+                              ? 'a-badge status-wait-sign'
+                              : 'a-badge'
+                        }
+                      >
+                        {BILL_PUSH_STATUS_ZH[detailContract.billPushStatus ?? ''] ??
+                          detailContract.billPushStatus ??
+                          '—'}
+                      </span>
+                      {detailContract.billPushStatus === 'PENDING_TENANT' ? (
+                        <div className="a-muted" style={{ marginTop: 6, fontSize: 12 }}>
+                          租户尚未在移动端完成实名认证（按身份证号匹配），账单已生成但暂不可在租户端查看。
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
                 {detailContract.changeHouseFromContractNo ? (
                   <div className="a-kv-row">
                     <div className="a-kv-k">换房来源</div>

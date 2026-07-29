@@ -94,11 +94,15 @@ export async function parseAndBatchOfflineVerify(
     }
 
     const rem = Math.max(0, bill.totalAmount - bill.amountReceived)
+    const sod = new Date()
+    sod.setHours(0, 0, 0, 0)
     await prisma.$transaction(async (tx) => {
       await tx.billOfflineVerifyLog.create({
         data: {
           billId: bill.id,
           amount: rem,
+          collectionChannel: 'TRANSFER',
+          collectionDate: sod,
           remark: remark || null,
           attachmentsJson: '[]',
           adminId,

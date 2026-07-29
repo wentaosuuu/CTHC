@@ -2,6 +2,7 @@ import { PrismaClient } from '@prisma/client'
 import bcrypt from 'bcryptjs'
 import { reconcileBaseBillsAfterMergedLineRelease } from '../src/orderLineRelease.js'
 import { upsertAssetSnapshot } from '../src/services/assetSync.js'
+import { seedReportDemoData } from '../src/scripts/seedReportDemo.js'
 
 const prisma = new PrismaClient()
 
@@ -1410,6 +1411,8 @@ async function main() {
   await seedHouseChangeLogsForDemo(prisma, systemAdmin, manager)
 
   await seedDemoContractPrepayments(prisma)
+
+  await seedReportDemoData(prisma)
 
   const totalContracts = await prisma.contract.count()
   // eslint-disable-next-line no-console

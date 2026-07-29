@@ -67,6 +67,7 @@ type HouseItem = {
   projectName?: string | null
   rentCollectionUnit?: string | null
   managerName?: string | null
+  mgmtDepartment?: string | null
   houseNo: string
   houseType: string
   area: number
@@ -86,6 +87,9 @@ type HouseItem = {
   nearbySchools?: { name: string; type?: string; distanceMeters?: number }[]
   nearbyBusStops?: { name: string; routes: string[] }[]
 }
+
+const MGMT_DEPARTMENT_OPTIONS = ['公寓管理部'] as const
+const DEFAULT_MGMT_DEPARTMENT = '公寓管理部'
 
 type HouseChangeLogRow = {
   id: string
@@ -329,6 +333,7 @@ export function HousesPage() {
   const [configAssetType, setConfigAssetType] = useState('')
   const [configRentCollectionUnit, setConfigRentCollectionUnit] = useState('')
   const [configManagerName, setConfigManagerName] = useState('')
+  const [configMgmtDepartment, setConfigMgmtDepartment] = useState(DEFAULT_MGMT_DEPARTMENT)
   const [configWaterMeters, setConfigWaterMeters] = useState<string[]>([''])
   const [configElectricMeters, setConfigElectricMeters] = useState<string[]>([''])
   const [configHouseConfig, setConfigHouseConfig] = useState<HouseConfigRow[]>([])
@@ -499,6 +504,7 @@ export function HousesPage() {
     setConfigAssetType(h.assetType || '')
     setConfigRentCollectionUnit((h.rentCollectionUnit ?? '').trim())
     setConfigManagerName((h.managerName ?? '').trim())
+    setConfigMgmtDepartment((h.mgmtDepartment ?? '').trim() || DEFAULT_MGMT_DEPARTMENT)
     const wm = (h.waterMeterNos ?? []).map((x) => String(x).trim()).filter(Boolean)
     const em = (h.electricMeterNos ?? []).map((x) => String(x).trim()).filter(Boolean)
     setConfigWaterMeters(wm.length ? wm : [''])
@@ -617,11 +623,12 @@ export function HousesPage() {
       assetType: configAssetType.trim(),
       rentCollectionUnit: configRentCollectionUnit.trim() === '' ? '' : configRentCollectionUnit.trim(),
       managerName: configManagerName.trim() === '' ? '' : configManagerName.trim(),
+      mgmtDepartment: configMgmtDepartment.trim() === '' ? '' : configMgmtDepartment.trim(),
       waterMeterNos: configWaterMeters.map((s) => s.trim()).filter(Boolean),
       electricMeterNos: configElectricMeters.map((s) => s.trim()).filter(Boolean),
     })
     if (!r.ok) return setError(r.error)
-    setMsg('已保存房源配置（含首页同源维度：项目名称 / 资产类型 / 收租单位 / 管理人）')
+    setMsg('已保存房源配置（含首页同源维度：项目名称 / 资产类型 / 收租单位 / 管理人 / 管理部门）')
     setConfigTarget(null)
     await load()
   }
@@ -854,6 +861,7 @@ export function HousesPage() {
               <th>资产类型</th>
               <th>收租单位</th>
               <th>管理人</th>
+              <th>管理部门</th>
               <th>公寓</th>
               <th>房号</th>
               <th>房型</th>
@@ -881,6 +889,7 @@ export function HousesPage() {
                 <td>{h.assetType}</td>
                 <td>{(h.rentCollectionUnit ?? '').trim() || '—'}</td>
                 <td>{(h.managerName ?? '').trim() || '—'}</td>
+                <td>{(h.mgmtDepartment ?? '').trim() || DEFAULT_MGMT_DEPARTMENT}</td>
                 <td>{h.apartmentName}</td>
                 <td style={{ fontWeight: 900 }}>{h.houseNo}</td>
                 <td>{h.houseType}</td>
@@ -1016,6 +1025,7 @@ export function HousesPage() {
                     { k: '资产类型', v: detail.assetType },
                     { k: '收租单位', v: (detail.rentCollectionUnit ?? '').trim() || '—' },
                     { k: '管理人', v: (detail.managerName ?? '').trim() || '—' },
+                    { k: '管理部门', v: (detail.mgmtDepartment ?? '').trim() || DEFAULT_MGMT_DEPARTMENT },
                     { k: '水表号', v: (detail.waterMeterNos ?? []).filter(Boolean).join('、') || '—' },
                     { k: '电表号', v: (detail.electricMeterNos ?? []).filter(Boolean).join('、') || '—' },
                     { k: '公寓', v: detail.apartmentName },
@@ -1145,6 +1155,27 @@ export function HousesPage() {
                       placeholder="责任人姓名"
                       style={{ maxWidth: 240 }}
                     />
+                  </div>
+                </div>
+                <div className="a-kv-row">
+                  <div className="a-kv-k">管理部门</div>
+                  <div className="a-kv-v">
+                    <select
+                      className="a-filter-select"
+                      value={configMgmtDepartment}
+                      onChange={(e) => setConfigMgmtDepartment(e.target.value)}
+                      style={{ minWidth: 200 }}
+                    >
+                      {MGMT_DEPARTMENT_OPTIONS.map((opt) => (
+                        <option key={opt} value={opt}>
+                          {opt}
+                        </option>
+                      ))}
+                      {configMgmtDepartment &&
+                      !(MGMT_DEPARTMENT_OPTIONS as readonly string[]).includes(configMgmtDepartment) ? (
+                        <option value={configMgmtDepartment}>{configMgmtDepartment}</option>
+                      ) : null}
+                    </select>
                   </div>
                 </div>
 

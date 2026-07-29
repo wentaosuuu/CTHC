@@ -1,11 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { addMyOrder, apiGet, apiPost, setTenantPhone, type MyOrderSummary } from '../api'
-import {
-  IdDocumentFields,
-  validateIdDocumentForm,
-  type IdDocType,
-} from '../components/IdDocumentFields'
+import { IdDocumentFields, useIdDocumentForm } from '../components/IdDocumentFields'
 
 const BOWAN_ASSET = '泊湾公寓'
 
@@ -34,21 +30,14 @@ export function OrderCreatePage() {
   const [loadErr, setLoadErr] = useState('')
   const [leaseMonths, setLeaseMonths] = useState(12)
   const [moveInDate, setMoveInDate] = useState(() => new Date().toISOString().slice(0, 10))
-  const [docType, setDocType] = useState<IdDocType>('IDCARD')
-  const [name, setName] = useState('')
-  const [idNumber, setIdNumber] = useState('')
-  const [phone, setPhone] = useState('13800000000')
-  const [wechat, setWechat] = useState('wx_demo')
+  const idDoc = useIdDocumentForm({ phone: '13800000000', wechat: 'wx_demo' })
+  const { values: docValues, validate: validateDocForm } = idDoc
   const [error, setError] = useState('')
   const [okMsg, setOkMsg] = useState('')
   const [successWecom, setSuccessWecom] = useState<{ storeName: string; qrUrl: string | null } | null>(null)
   const [showFaceModal, setShowFaceModal] = useState(false)
   const [faceSubmitting, setFaceSubmitting] = useState(false)
   const disabled = useMemo(() => !houseId, [houseId])
-
-  const [idLongTerm, setIdLongTerm] = useState(false)
-  const [idValidUntil, setIdValidUntil] = useState('')
-  const [extraDocValidUntil, setExtraDocValidUntil] = useState('')
 
   const isBowan = house?.assetType === BOWAN_ASSET
   const browseExternalUrl = useMemo(() => (house?.externalBrowseUrl ?? '').trim(), [house])
@@ -71,16 +60,6 @@ export function OrderCreatePage() {
       alive = false
     }
   }, [houseId])
-
-  function onDocTypeChange(next: IdDocType) {
-    if (next === docType) return
-    setDocType(next)
-    setIdNumber('')
-    setIdLongTerm(false)
-    setIdValidUntil('')
-    setExtraDocValidUntil('')
-    setError('')
-  }
 
   async function submitOrderToBackend() {
     if (!houseId || !house) return
@@ -110,6 +89,7 @@ export function OrderCreatePage() {
       // ignore
     }
     const createdAt = new Date().toISOString()
+    const { docType, name, idNumber, phone, wechat, emergencyContactName, emergencyContactPhone, idLongTerm, idValidUntil, extraDocValidUntil } = docValues
     const idNorm =
       docType === 'IDCARD' || docType === 'USCC' ? idNumber.trim().toUpperCase() : idNumber.trim()
 
@@ -119,6 +99,8 @@ export function OrderCreatePage() {
       idNumber: idNorm,
       phone: phone.trim(),
       wechat,
+      ...(emergencyContactName.trim() ? { emergencyContactName: emergencyContactName.trim() } : {}),
+      ...(emergencyContactPhone.trim() ? { emergencyContactPhone: emergencyContactPhone.trim() } : {}),
       idDocType: docType,
     }
     if (docType === 'IDCARD') {
@@ -157,15 +139,8 @@ export function OrderCreatePage() {
 
   function onTapDirectOrder() {
     setError('')
-    const formErr = validateIdDocumentForm({
-      docType,
-      name,
-      idNumber,
-      phone,
-      idLongTerm,
-      idValidUntil,
-      extraDocValidUntil,
-    })
+    idDoc.setOcrError('')
+    const formErr = validateDocForm()
     if (formErr) {
       setError(formErr)
       return
@@ -182,26 +157,7 @@ export function OrderCreatePage() {
 
   const orderPlaced = Boolean(okMsg)
 
-  const documentBlock = !orderPlaced ? (
-    <IdDocumentFields
-      docType={docType}
-      name={name}
-      idNumber={idNumber}
-      phone={phone}
-      wechat={wechat}
-      idLongTerm={idLongTerm}
-      idValidUntil={idValidUntil}
-      extraDocValidUntil={extraDocValidUntil}
-      onDocTypeChange={onDocTypeChange}
-      onNameChange={setName}
-      onIdNumberChange={setIdNumber}
-      onPhoneChange={setPhone}
-      onWechatChange={setWechat}
-      onIdLongTermChange={setIdLongTerm}
-      onIdValidUntilChange={setIdValidUntil}
-      onExtraDocValidUntilChange={setExtraDocValidUntil}
-    />
-  ) : null
+  const documentBlock = !orderPlaced ? <IdDocumentFields {...idDoc.fieldsProps} /> : null
 
   if (loadErr) {
     return (

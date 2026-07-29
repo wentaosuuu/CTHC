@@ -36,6 +36,9 @@ type BillListItem = {
   status: string
   billingRemark?: string | null
   contractBillingPaused?: boolean
+  tenantPushStatus?: string
+  tenantPushStatusLabel?: string
+  billPushToTenant?: boolean
   items?: { name: string; amount: number }[]
 }
 
@@ -149,6 +152,47 @@ function statusLabelForBill(b: Pick<BillListItem, 'status' | 'amountReceived'>) 
 
 const FEE_ITEM_NAMES = ['租金', '水费', '电费', '物业费', '垃圾处理费', '公摊电费', '燃气费', '网络费', '滞纳金', '其他费用']
 
+const OFFLINE_VERIFY_CHANNELS = [
+  { value: 'OFFLINE_QR', label: '线下扫码' },
+  { value: 'TRANSFER', label: '转账' },
+  { value: 'CASH', label: '现金' },
+] as const
+
+function todayYmd() {
+  const d = new Date()
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+function defaultBillAssetName(b: Pick<BillListItem, 'apartmentName' | 'houseNo'>) {
+  return [b.apartmentName, b.houseNo].filter(Boolean).join(' ')
+}
+
+function parseOfflineVerifyAmountInput(raw: string): number | null {
+  const s = raw.trim()
+  if (!s) return null
+  if (!/^\d+(\.\d{1,2})?$/.test(s)) return null
+  const n = parseFloat(s)
+  if (!Number.isFinite(n) || n <= 0) return null
+  return Math.round(n)
+}
+
+function offlineVerifyFieldLabel(label: string, required?: boolean, hint?: string) {
+  return (
+    <>
+      {label}
+      {required ? <span className="a-req-mark">*</span> : null}
+      {hint ? (
+        <div className="a-muted" style={{ fontSize: 12, fontWeight: 400, marginTop: 4 }}>
+          {hint}
+        </div>
+      ) : null}
+    </>
+  )
+}
+
 function mergeFeeItemsForEdit(items: { name: string; amount: number }[]): { name: string; amount: number }[] {
   const map = new Map(items.map((i) => [i.name, i.amount]))
   const ordered = [...FEE_ITEM_NAMES]
@@ -222,6 +266,9 @@ export function BillsPage() {
   // offline verify
   const [offlineVerifyBill, setOfflineVerifyBill] = useState<BillListItem | null>(null)
   const [offlineVerifyAmount, setOfflineVerifyAmount] = useState('')
+  const [offlineVerifyChannel, setOfflineVerifyChannel] = useState<string>('TRANSFER')
+  const [offlineVerifyDate, setOfflineVerifyDate] = useState(todayYmd)
+  const [offlineVerifyAssetName, setOfflineVerifyAssetName] = useState('')
   const [offlineVerifyRemark, setOfflineVerifyRemark] = useState('')
   const [offlineVerifyFiles, setOfflineVerifyFiles] = useState<File[]>([])
   const [offlineVerifySubmitting, setOfflineVerifySubmitting] = useState(false)
@@ -448,9 +495,9 @@ export function BillsPage() {
     setCreatePeriodResult(null)
     setError('')
     const d = new Date()
-    const month = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-    setManualPeriod(month)
-    setManualStatStartDate(`${month}-01`)
+    const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    setManualPeriod(today)
+    setManualStatStartDate(today)
     setManualDueDate('')
     const r = await apiGet<{ items: AdminStore[] }>('/api/admin/stores')
     if (!r.ok) {
@@ -465,7 +512,7 @@ export function BillsPage() {
 
   async function submitCreatePeriodManual() {
     if (!manualStoreId) return setError('请选择门店')
-    if (!/^\d{4}-\d{2}$/.test(manualPeriod)) return setError('请选择正确的账期（年月）')
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(manualPeriod)) return setError('请选择正确的账期（精确到日）')
     if (!/^\d{4}-\d{2}-\d{2}$/.test(manualStatStartDate)) return setError('请选择开始统计时间')
     setCreatePeriodSubmitting(true)
     setError('')
@@ -600,8 +647,11 @@ export function BillsPage() {
     setImportContractId('')
     const y = new Date().getFullYear()
     const m = String(new Date().getMonth() + 1).padStart(2, '0')
-    setImportPeriod(current?.period ?? `${y}-${m}`)
-    setImportDueDate(`${y}-${m}-01`)
+    const d = String(new Date().getDate()).padStart(2, '0')
+    const cur = current?.period ?? ''
+    // 账期可选到日；若从月账期详情带入（YYYY-MM），默认补为当月 1 号
+    setImportPeriod(/^\d{4}-\d{2}-\d{2}$/.test(cur) ? cur : /^\d{4}-\d{2}$/.test(cur) ? `${cur}-01` : `${y}-${m}-${d}`)
+    setImportDueDate(/^\d{4}-\d{2}-\d{2}$/.test(cur) ? cur : /^\d{4}-\d{2}$/.test(cur) ? `${cur}-01` : `${y}-${m}-01`)
     setImportItems(FEE_ITEM_NAMES.map((name) => ({ name, amount: 0 })))
     setImportBillingRemark('')
     loadContractsForImport()
@@ -610,6 +660,7 @@ export function BillsPage() {
   async function submitImport() {
     const contract = contracts.find((c) => c.id === importContractId)
     if (!contract) return setError('请选择合同')
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(importPeriod)) return setError('请选择正确的账期（精确到日）')
     const itemsToSend = importItems.filter((i) => i.amount > 0)
     if (itemsToSend.length === 0) return setError('请至少填写一项金额大于 0 的收费项目')
     setImportSubmitting(true)
@@ -726,24 +777,55 @@ export function BillsPage() {
     setMsg('')
     setOfflineVerifyBill(b)
     const rem = typeof b.amountRemaining === 'number' ? b.amountRemaining : Math.max(0, b.totalAmount - (b.amountReceived ?? 0))
-    setOfflineVerifyAmount(String(rem))
+    setOfflineVerifyAmount(rem > 0 ? rem.toFixed(2) : b.totalAmount.toFixed(2))
+    setOfflineVerifyChannel('TRANSFER')
+    setOfflineVerifyDate(todayYmd())
+    setOfflineVerifyAssetName(defaultBillAssetName(b))
     setOfflineVerifyRemark('')
     setOfflineVerifyFiles([])
     if (offlineVerifyFileInputRef.current) offlineVerifyFileInputRef.current.value = ''
   }
 
+  function offlineVerifyErrorText(code: string) {
+    switch (code) {
+      case 'INVALID_COLLECTION_CHANNEL':
+        return '请选择收款渠道'
+      case 'INVALID_COLLECTION_DATE':
+        return '请填写收款日期（格式 YYYY-MM-DD）'
+      case 'INVALID_AMOUNT':
+        return '收款金额须为正数，最多保留 2 位小数，不可为 0'
+      case 'ALREADY_PAID':
+        return '该账单已结清'
+      case 'INVALID_STATUS':
+        return '当前账单状态不可核销'
+      default:
+        return code || '线下核销失败'
+    }
+  }
+
   async function submitOfflineVerify() {
     if (!offlineVerifyBill) return
-    const amt = parseInt(String(offlineVerifyAmount).trim(), 10)
-    if (!Number.isFinite(amt) || amt <= 0) {
-      setError('请输入大于 0 的核销金额（整数元）')
+    const amt = parseOfflineVerifyAmountInput(offlineVerifyAmount)
+    if (amt === null) {
+      setError('请填写收款金额：正数，保留 2 位小数，不可为 0')
+      return
+    }
+    if (!OFFLINE_VERIFY_CHANNELS.some((c) => c.value === offlineVerifyChannel)) {
+      setError('请选择收款渠道')
+      return
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(offlineVerifyDate.trim())) {
+      setError('请填写收款日期（格式 YYYY-MM-DD）')
       return
     }
     setOfflineVerifySubmitting(true)
     setError('')
     setMsg('')
     const fd = new FormData()
-    fd.append('amount', String(amt))
+    fd.append('amount', offlineVerifyAmount.trim())
+    fd.append('collectionChannel', offlineVerifyChannel)
+    fd.append('collectionDate', offlineVerifyDate.trim())
+    fd.append('assetName', offlineVerifyAssetName.trim())
     fd.append('remark', offlineVerifyRemark.trim())
     offlineVerifyFiles.forEach((f) => fd.append('files', f))
     const token = getAdminToken()
@@ -756,7 +838,7 @@ export function BillsPage() {
     })
     const data = await res.json().catch(() => ({}))
     setOfflineVerifySubmitting(false)
-    if (!res.ok) return setError(data.error || '线下核销失败')
+    if (!res.ok) return setError(offlineVerifyErrorText(data.error))
     const prepaid = Number(data.prepaidCredited ?? 0)
     const st = String(data.status ?? '')
     const received = Number(data.amountReceived ?? 0)
@@ -1170,6 +1252,19 @@ export function BillsPage() {
                           暂停计费
                         </span>
                       ) : null}
+                      {b.billPushToTenant && b.tenantPushStatus && b.tenantPushStatus !== 'SKIPPED' ? (
+                        <span
+                          className={
+                            b.tenantPushStatus === 'PUSHED'
+                              ? 'a-badge status-active'
+                              : 'a-badge status-wait-sign'
+                          }
+                          style={{ marginLeft: 6, fontSize: 11 }}
+                          title="南宁市房屋租赁合同 · 账单推送状态"
+                        >
+                          {b.tenantPushStatusLabel ?? b.tenantPushStatus}
+                        </span>
+                      ) : null}
                     </td>
                     <td className="a-op-cell">
                       <div className="a-op-actions">
@@ -1253,12 +1348,16 @@ export function BillsPage() {
                   <div className="a-kv-v">
                     <input
                       className="a-filter-input"
-                      type="month"
+                      type="date"
                       value={manualPeriod}
-                      onChange={(e) => setManualPeriod(e.target.value)}
+                      onChange={(e) => {
+                        const v = e.target.value
+                        setManualPeriod(v)
+                        if (v) setManualStatStartDate(v)
+                      }}
                       disabled={createPeriodSubmitting}
                     />
-                    <span className="a-muted" style={{ marginLeft: 8 }}>格式：2027-02</span>
+                    <span className="a-muted" style={{ marginLeft: 8 }}>格式：2027-02-01</span>
                   </div>
                 </div>
                 <div className="a-kv-row">
@@ -1283,7 +1382,7 @@ export function BillsPage() {
                       onChange={(e) => setManualDueDate(e.target.value)}
                       disabled={createPeriodSubmitting}
                     />
-                    <span className="a-muted" style={{ marginLeft: 8 }}>不填则默认该月 1 号</span>
+                    <span className="a-muted" style={{ marginLeft: 8 }}>不填则默认账期当日</span>
                   </div>
                 </div>
               </div>
@@ -1523,8 +1622,8 @@ export function BillsPage() {
                 <div className="a-kv-row">
                   <div className="a-kv-k">账期</div>
                   <div className="a-kv-v">
-                    <input className="a-filter-input" type="month" value={importPeriod} onChange={(e) => setImportPeriod(e.target.value)} />
-                    <span className="a-muted" style={{ marginLeft: 8 }}>格式：2026-04</span>
+                    <input className="a-filter-input" type="date" value={importPeriod} onChange={(e) => setImportPeriod(e.target.value)} />
+                    <span className="a-muted" style={{ marginLeft: 8 }}>格式：2026-04-01</span>
                   </div>
                 </div>
                 <div className="a-kv-row">
@@ -1587,50 +1686,109 @@ export function BillsPage() {
       {/* 线下核销弹窗 */}
       {offlineVerifyBill && (
         <div className="a-modal-backdrop" role="dialog" aria-modal="true" onClick={(e) => e.target === e.currentTarget && setOfflineVerifyBill(null)}>
-          <div className="a-modal" style={{ maxWidth: 520 }} onClick={(e) => e.stopPropagation()}>
+          <div className="a-modal" style={{ maxWidth: 560 }} onClick={(e) => e.stopPropagation()}>
             <div className="a-modal-header">
               <div className="a-modal-title">线下核销 · {formatContractNo(offlineVerifyBill.contractNo)} {offlineVerifyBill.period}</div>
               <button className="a-modal-close" onClick={() => setOfflineVerifyBill(null)}>关闭</button>
             </div>
             <div className="a-modal-body" style={{ display: 'block' }}>
-              <div className="a-muted" style={{ marginBottom: 10 }}>
-                可填写「本次实收金额」：小于剩余应付时账单仍待支付；等于或大于时结清本期，超出部分记入「合同预收款」余额（侧栏可查看流水）。
+              <div className="a-muted" style={{ marginBottom: 12, fontSize: 13 }}>
+                应收 ¥{offlineVerifyBill.totalAmount} · 已入账 ¥{offlineVerifyBill.amountReceived ?? 0} · 尚欠 ¥
+                {offlineVerifyBill.amountRemaining ?? Math.max(0, offlineVerifyBill.totalAmount - (offlineVerifyBill.amountReceived ?? 0))}
+                。收款小于尚欠时账单仍待支付；等于或大于时结清本期，超出部分记入「合同预收款」。
               </div>
               <div className="a-kv">
                 <div className="a-kv-row">
-                  <div className="a-kv-k">应收</div>
-                  <div className="a-kv-v">¥{offlineVerifyBill.totalAmount}</div>
+                  <div className="a-kv-k">
+                    {offlineVerifyFieldLabel('单元编号', true, '上级资产经营单元唯一编码')}
+                  </div>
+                  <div className="a-kv-v">{offlineVerifyBill.houseBizId || '—'}</div>
                 </div>
                 <div className="a-kv-row">
-                  <div className="a-kv-k">已入账</div>
-                  <div className="a-kv-v">¥{offlineVerifyBill.amountReceived ?? 0}</div>
-                </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">尚欠</div>
-                  <div className="a-kv-v" style={{ fontWeight: 800 }}>¥{offlineVerifyBill.amountRemaining ?? Math.max(0, offlineVerifyBill.totalAmount - (offlineVerifyBill.amountReceived ?? 0))}</div>
-                </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">本次核销金额</div>
+                  <div className="a-kv-k">{offlineVerifyFieldLabel('资产名称')}</div>
                   <div className="a-kv-v">
                     <input
-                      type="number"
-                      min={1}
+                      className="a-filter-input"
+                      style={{ width: '100%' }}
+                      value={offlineVerifyAssetName}
+                      onChange={(e) => setOfflineVerifyAssetName(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className="a-kv-row">
+                  <div className="a-kv-k">
+                    {offlineVerifyFieldLabel('合同编号', true, '系统内已生效的租赁合同编号')}
+                  </div>
+                  <div className="a-kv-v">{formatContractNo(offlineVerifyBill.contractNo)}</div>
+                </div>
+                <div className="a-kv-row">
+                  <div className="a-kv-k">
+                    {offlineVerifyFieldLabel('租户名称', true, '合同对应的租户全称')}
+                  </div>
+                  <div className="a-kv-v">{offlineVerifyBill.tenantName || '—'}</div>
+                </div>
+                <div className="a-kv-row">
+                  <div className="a-kv-k">
+                    {offlineVerifyFieldLabel('收款金额（元）', true, '正数，保留 2 位小数，不可为 0')}
+                  </div>
+                  <div className="a-kv-v">
+                    <input
+                      type="text"
+                      inputMode="decimal"
                       className="a-filter-input"
                       style={{ width: 160 }}
                       value={offlineVerifyAmount}
                       onChange={(e) => setOfflineVerifyAmount(e.target.value)}
                     />
-                    <span className="a-muted" style={{ marginLeft: 8 }}>元（整数）</span>
                   </div>
                 </div>
                 <div className="a-kv-row">
-                  <div className="a-kv-k">备注</div>
+                  <div className="a-kv-k">
+                    {offlineVerifyFieldLabel('收款渠道', true, '线下扫码 / 转账 / 现金')}
+                  </div>
                   <div className="a-kv-v">
-                    <textarea className="a-filter-input" value={offlineVerifyRemark} onChange={(e) => setOfflineVerifyRemark(e.target.value)} placeholder="可选：收款方式/流水号/说明" style={{ width: '100%', minHeight: 72, resize: 'vertical' }} />
+                    <select className="a-filter-input" style={{ width: '100%' }} value={offlineVerifyChannel} onChange={(e) => setOfflineVerifyChannel(e.target.value)}>
+                      {OFFLINE_VERIFY_CHANNELS.map((c) => (
+                        <option key={c.value} value={c.value}>{c.label}</option>
+                      ))}
+                    </select>
                   </div>
                 </div>
                 <div className="a-kv-row">
-                  <div className="a-kv-k">凭证附件</div>
+                  <div className="a-kv-k">
+                    {offlineVerifyFieldLabel('收款日期', true, '格式 YYYY-MM-DD，款项实际到账日期')}
+                  </div>
+                  <div className="a-kv-v">
+                    <input
+                      type="date"
+                      className="a-filter-input"
+                      style={{ width: 180 }}
+                      value={offlineVerifyDate}
+                      onChange={(e) => setOfflineVerifyDate(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className="a-kv-row">
+                  <div className="a-kv-k">
+                    {offlineVerifyFieldLabel('对应账单编号', false, '不填则系统自动匹配该合同下最早的待核销账单')}
+                  </div>
+                  <div className="a-kv-v">{formatBillNo(offlineVerifyBill.id)}</div>
+                </div>
+                <div className="a-kv-row">
+                  <div className="a-kv-k">
+                    {offlineVerifyFieldLabel('备注', false, '付款人与租户不一致、核销说明、其他补充信息')}
+                  </div>
+                  <div className="a-kv-v">
+                    <textarea
+                      className="a-filter-input"
+                      value={offlineVerifyRemark}
+                      onChange={(e) => setOfflineVerifyRemark(e.target.value)}
+                      style={{ width: '100%', minHeight: 72, resize: 'vertical' }}
+                    />
+                  </div>
+                </div>
+                <div className="a-kv-row">
+                  <div className="a-kv-k">{offlineVerifyFieldLabel('凭证附件')}</div>
                   <div className="a-kv-v">
                     <input
                       ref={offlineVerifyFileInputRef}
@@ -1663,7 +1821,7 @@ export function BillsPage() {
                         {offlineVerifyFiles.map((f, i) => <div key={`${f.name}-${i}`}>{f.name}</div>)}
                       </div>
                     ) : (
-                      <div className="a-muted" style={{ marginTop: 8, fontSize: 13 }}>可不上传，但建议上传转账截图/收据等作为佐证。</div>
+                      <div className="a-muted" style={{ marginTop: 8, fontSize: 13 }}>可不上传，建议上传转账截图等作为佐证。</div>
                     )}
                   </div>
                 </div>

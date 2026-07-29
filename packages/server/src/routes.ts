@@ -51,9 +51,29 @@ import {
 } from './contractExpiry.js'
 import { buildBillImportTemplateBuffer, parseAndImportBills, parseMeterNoListJson } from './services/billImport.js'
 import { buildOfflineVerifyBatchTemplateBuffer, parseAndBatchOfflineVerify } from './services/billOfflineVerifyBatch.js'
+import {
+  applyBillPushForContract,
+  billPushStatusLabel,
+  mobileBillsWhere,
+  normalizeIdNumber,
+  retryBillPushForIdNumber,
+  tenantCanAccessBill,
+  tenantPushStatusLabel,
+} from './billPush.js'
+import {
+  isOfflineCollectionChannel,
+  parseCollectionDateYmd,
+  parseOfflineCollectionAmount,
+} from './offlineVerify.js'
 import { buildHouseImportTemplateBuffer, parseAndImportHouses } from './services/houseImport.js'
+import { buildBusinessBillsReport } from './services/businessBillsReport.js'
+import { buildCollectionTransactionReport } from './services/collectionTransactionReport.js'
+import { buildMonthlyReceivableReport } from './services/monthlyReceivableReport.js'
+import { buildMonthlyRentCollectedReport } from './services/monthlyRentCollectedReport.js'
+import { buildOfflineVerifyStatusReport } from './services/offlineVerifyStatusReport.js'
 import { buildCollectedReport, buildReceivableReport } from './services/financeReports.js'
 import { insertHouseChangeLogs, jsonArrayCount, truncateLogValue } from './services/houseChangeLog.js'
+import { insertTenantProfileLog, mergeTenantProfileLogs } from './services/tenantProfileLog.js'
 import { houseBizId, numericCodeFromId } from './houseBizId.js'
 import {
   buildReceiptDto,
@@ -95,13 +115,22 @@ import {
 } from './orderBundle.js'
 import { syncBaseRentBillItemsForContract } from './billRentItems.js'
 import { buildDepositRefundOptions, resolveDepositRefundAmount } from './depositRefund.js'
+import { contractTemplateTerminationData } from './contractTemplate.js'
 import { maskIdNumber, maskMobilePhone, maskPersonName } from './piiMask.js'
+import { isMainland18Id, isUscc18 } from './orderIdDoc.js'
 
 const MS_HOUR = 3600_000
 
-const zRentCycle = z.enum(['MONTHLY', 'BIMONTHLY', 'QUARTERLY', 'YEARLY'])
+const zRentCycle = z.enum(['MONTHLY', 'BIMONTHLY', 'QUARTERLY', 'SEMIANNUAL', 'YEARLY'])
 const zRentDueDay = z.number().int().min(1).max(31)
-const zContractTemplate = z.enum(['TRIPARTITE', 'APARTMENT'])
+const zContractTemplate = z.enum([
+  'RESIDENTIAL_ASSET',
+  'JIANGNAN_FACTORY',
+  'NON_RESIDENTIAL',
+  'NANNING_HOUSING',
+  'TRIPARTITE',
+  'APARTMENT',
+])
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } })
 const houseImportUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } })
@@ -109,6 +138,61 @@ const contractFileUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 15 * 1024 * 1024 },
 })
+
+type TenantProfileDbRow = {
+  id: string
+  name: string
+  phone: string
+  wechat: string | null
+  idDocType: string
+  idNumber: string
+  creditTier: string
+  createdAt: Date
+  mobileVerifiedAt: Date | null
+  tenantKind: string
+  createdSource: string
+  createdByAdmin?: { name: string } | null
+  _count: { orders: number; contracts: number }
+}
+
+function mapTenantProfileRow(t: TenantProfileDbRow, forContractSelect: boolean) {
+  return {
+    id: t.id,
+    name: forContractSelect ? t.name : maskPersonName(t.name),
+    phone: forContractSelect ? t.phone : maskMobilePhone(t.phone),
+    wechat: t.wechat,
+    idDocType: t.idDocType,
+    idNumber: forContractSelect ? t.idNumber : undefined,
+    idNumberMasked: maskIdNumber(t.idNumber),
+    creditTier: t.creditTier,
+    tenantKind: t.tenantKind,
+    tenantKindLabel: t.tenantKind === 'ENTERPRISE' ? '企业' : '个人',
+    mobileVerified: Boolean(t.mobileVerifiedAt),
+    mobileVerifiedLabel: t.mobileVerifiedAt ? '已实名' : '未实名',
+    createdSource: t.createdSource,
+    createdByLabel:
+      t.createdSource === 'ADMIN'
+        ? t.createdByAdmin?.name
+          ? `后台·${t.createdByAdmin.name}`
+          : '后台创建'
+        : '租客自主',
+    enteredAt: t.createdAt.toISOString(),
+    orderCount: t._count.orders,
+    contractCount: t._count.contracts,
+  }
+}
+
+function tenantProfilesWhere(auth: ReturnType<typeof getAdminAuth>): Prisma.TenantWhereInput {
+  if (auth.admin.roleCode === 'SYSTEM_ADMIN') return {}
+  if (auth.storeIds.length === 0) return { id: '__none__' }
+  return {
+    OR: [
+      { orders: { some: { house: { apartment: { storeId: { in: auth.storeIds } } } } } },
+      { contracts: { some: { house: { apartment: { storeId: { in: auth.storeIds } } } } } },
+      { createdSource: 'ADMIN', createdByAdminId: auth.admin.id },
+    ],
+  }
+}
 
 /** 退押金打印/归档模板（占位，后续可换真实文书） */
 const DEPOSIT_REFUND_TEMPLATE_LABEL: Record<string, string> = {
@@ -284,12 +368,27 @@ function parseBillVerifyAttachmentsJson(s: string | null | undefined): { id: str
 }
 
 async function isBillPeriodLocked(prisma: PrismaClient, storeId: string, period: string) {
-  const bp = await prisma.billPeriod.findUnique({ where: { storeId_period: { storeId, period } } })
-  return Boolean(bp?.lockedAt)
+  // 精确到日的账期也受对应年月账期锁定约束
+  const candidates = /^\d{4}-\d{2}-\d{2}$/.test(period) ? [period, period.slice(0, 7)] : [period]
+  for (const p of candidates) {
+    const bp = await prisma.billPeriod.findUnique({ where: { storeId_period: { storeId, period: p } } })
+    if (bp?.lockedAt) return true
+  }
+  return false
 }
 
-/** 账期 YYYY-MM 是否与合同租期存在交集（与建合同时按月生成 BASE 账单的口径一致） */
+/** 账期 YYYY-MM / YYYY-MM-DD 是否与合同租期存在交集（与建合同时按月生成 BASE 账单的口径一致） */
 function periodOverlapsLease(startDate: Date, endDate: Date, period: string) {
+  const day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(period)
+  if (day) {
+    const y = Number(day[1])
+    const mo = Number(day[2])
+    const d = Number(day[3])
+    if (!y || mo < 1 || mo > 12 || d < 1 || d > 31) return false
+    const dayStart = new Date(Date.UTC(y, mo - 1, d))
+    const dayEndEx = new Date(Date.UTC(y, mo - 1, d + 1))
+    return startDate < dayEndEx && endDate > dayStart
+  }
   const m = /^(\d{4})-(\d{2})$/.exec(period)
   if (!m) return false
   const y = Number(m[1])
@@ -358,19 +457,6 @@ function mustBeFinance(auth: AdminAuth) {
 
 function mustBeSystemAdmin(auth: AdminAuth) {
   return auth.admin.roleCode === 'SYSTEM_ADMIN'
-}
-
-function contractTemplateTerminationData(body: {
-  contractTemplate?: 'TRIPARTITE' | 'APARTMENT'
-  terminationRentMultiple?: number | null
-  terminationDaysPastDue?: number | null
-}) {
-  const tmpl = body.contractTemplate ?? 'APARTMENT'
-  return {
-    contractTemplate: tmpl,
-    terminationRentMultiple: tmpl === 'TRIPARTITE' ? body.terminationRentMultiple ?? null : null,
-    terminationDaysPastDue: tmpl === 'APARTMENT' ? body.terminationDaysPastDue ?? null : null,
-  }
 }
 
 type BillWriteClient = Pick<PrismaClient, 'bill'>
@@ -592,6 +678,8 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       idNumber: z.string().min(1),
       phone: z.string().min(6),
       wechat: z.string().optional(),
+      emergencyContactName: z.string().max(80).optional(),
+      emergencyContactPhone: z.string().max(40).optional(),
       idDocType: z.enum(['IDCARD', 'PASSPORT', 'HKM_TW_PERMIT', 'USCC']).optional(),
       idCardLongTerm: z.boolean().optional(),
       idCardValidUntil: z.string().optional(),
@@ -667,16 +755,29 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         ? body.idNumber.trim()
         : body.idNumber.trim().toUpperCase()
 
+    const emergencyName = (body.emergencyContactName ?? '').trim() || null
+    const emergencyPhone = (body.emergencyContactPhone ?? '').trim() || null
+
     const tenant = await ctx.prisma.tenant.create({
       data: {
         name: body.name.trim(),
         idNumber: idStored,
         phone: body.phone.trim(),
         wechat: body.wechat,
+        emergencyContactName: emergencyName,
+        emergencyContactPhone: emergencyPhone,
         idDocType,
         idCardLongTerm: idDocType === 'IDCARD' ? longTerm : false,
         idCardValidUntil: idDocType === 'IDCARD' && longTerm ? null : idCardValidUntilDate,
+        tenantKind: idDocType === 'USCC' ? 'ENTERPRISE' : 'INDIVIDUAL',
+        createdSource: 'MOBILE_SELF',
       },
+    })
+    await insertTenantProfileLog(ctx.prisma, {
+      tenantId: tenant.id,
+      actionLabel: '档案入档',
+      detail: `租客自主（移动端下单，${idDocType === 'USCC' ? '企业' : '个人'}）`,
+      operatorKind: 'TENANT',
     })
 
     const order = await ctx.prisma.order.create({
@@ -728,6 +829,8 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       idNumber: z.string().min(1),
       phone: z.string().min(6),
       wechat: z.string().optional(),
+      emergencyContactName: z.string().max(80).optional(),
+      emergencyContactPhone: z.string().max(40).optional(),
       idDocType: z.enum(['IDCARD', 'PASSPORT', 'HKM_TW_PERMIT', 'USCC']).optional(),
       idCardLongTerm: z.boolean().optional(),
       idCardValidUntil: z.string().optional(),
@@ -830,16 +933,29 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       return res.status(400).json({ error: 'CART_MIXED_ASSET_LANE' })
     }
 
+    const emergencyName = (body.emergencyContactName ?? '').trim() || null
+    const emergencyPhone = (body.emergencyContactPhone ?? '').trim() || null
+
     const tenant = await ctx.prisma.tenant.create({
       data: {
         name: body.name.trim(),
         idNumber: idStored,
         phone: body.phone.trim(),
         wechat: body.wechat,
+        emergencyContactName: emergencyName,
+        emergencyContactPhone: emergencyPhone,
         idDocType,
         idCardLongTerm: idDocType === 'IDCARD' ? longTerm : false,
         idCardValidUntil: idDocType === 'IDCARD' && longTerm ? null : idCardValidUntilDate,
+        tenantKind: idDocType === 'USCC' ? 'ENTERPRISE' : 'INDIVIDUAL',
+        createdSource: 'MOBILE_SELF',
       },
+    })
+    await insertTenantProfileLog(ctx.prisma, {
+      tenantId: tenant.id,
+      actionLabel: '档案入档',
+      detail: `租客自主（移动端下单，${idDocType === 'USCC' ? '企业' : '个人'}）`,
+      operatorKind: 'TENANT',
     })
 
     if (body.contractMode === 'ONE_PER_ASSET') {
@@ -1394,12 +1510,70 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
   })
 
   // Tenant bills (H5)
+  app.post('/api/tenant/realname-verify', async (req, res) => {
+    const Body = z.object({
+      phone: z.string().min(6),
+      name: z.string().min(1),
+      idNumber: z.string().min(6),
+    })
+    const body = Body.parse(req.body)
+    const normId = normalizeIdNumber(body.idNumber)
+    const phone = body.phone.trim()
+    const now = new Date()
+
+    let tenant = await ctx.prisma.tenant.findFirst({ where: { phone } })
+    const wasVerified = Boolean(tenant?.mobileVerifiedAt)
+    if (tenant) {
+      tenant = await ctx.prisma.tenant.update({
+        where: { id: tenant.id },
+        data: { name: body.name.trim(), idNumber: normId, mobileVerifiedAt: now },
+      })
+      if (!wasVerified) {
+        await insertTenantProfileLog(ctx.prisma, {
+          tenantId: tenant.id,
+          actionLabel: '完成实名认证',
+          detail: '移动端实名认证通过',
+          operatorKind: 'TENANT',
+          occurredAt: now,
+        })
+      }
+    } else {
+      tenant = await ctx.prisma.tenant.create({
+        data: {
+          name: body.name.trim(),
+          phone,
+          idNumber: normId,
+          mobileVerifiedAt: now,
+          tenantKind: 'INDIVIDUAL',
+          createdSource: 'MOBILE_SELF',
+        },
+      })
+      await insertTenantProfileLog(ctx.prisma, {
+        tenantId: tenant.id,
+        actionLabel: '档案入档',
+        detail: '租客自主（移动端实名注册）',
+        operatorKind: 'TENANT',
+        occurredAt: now,
+      })
+      await insertTenantProfileLog(ctx.prisma, {
+        tenantId: tenant.id,
+        actionLabel: '完成实名认证',
+        detail: '移动端实名认证通过',
+        operatorKind: 'TENANT',
+        occurredAt: now,
+      })
+    }
+
+    await retryBillPushForIdNumber(ctx.prisma, normId)
+    res.json({ ok: true, tenantId: tenant.id, mobileVerifiedAt: now.toISOString() })
+  })
+
   app.get('/api/bills', async (req, res) => {
     const phone = req.header('x-tenant-phone')
     if (!phone) return res.status(401).json({ error: 'NEED_TENANT_PHONE' })
 
     const bills = await ctx.prisma.bill.findMany({
-      where: { contract: { tenant: { phone } } },
+      where: await mobileBillsWhere(ctx.prisma, phone),
       include: {
         contract: {
           include: {
@@ -1496,7 +1670,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       },
     })
     if (!bill) return res.status(404).json({ error: 'NOT_FOUND' })
-    if (bill.contract.tenant.phone !== phone) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (!(await tenantCanAccessBill(ctx.prisma, phone, bill))) return res.status(403).json({ error: 'FORBIDDEN' })
 
     const mergedUnits = mergedUnitsFromContract(bill.contract)
     const unpaidOnContract = await ctx.prisma.bill.findMany({
@@ -1568,7 +1742,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       },
     })
     if (!bill) return res.status(404).json({ error: 'NOT_FOUND' })
-    if (bill.contract.tenant.phone !== phone) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (!(await tenantCanAccessBill(ctx.prisma, phone, bill))) return res.status(403).json({ error: 'FORBIDDEN' })
     if (bill.status !== 'UNPAID' && bill.status !== 'OVERDUE') {
       return res.status(409).json({ error: 'INVALID_STATUS' })
     }
@@ -1633,7 +1807,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     if (bills.length !== uniq.length) return res.status(400).json({ error: 'NOT_FOUND' })
 
     for (const b of bills) {
-      if (b.contract.tenant.phone !== phone) return res.status(403).json({ error: 'FORBIDDEN' })
+      if (!(await tenantCanAccessBill(ctx.prisma, phone, b))) return res.status(403).json({ error: 'FORBIDDEN' })
       if (b.status !== 'UNPAID' && b.status !== 'OVERDUE') {
         return res.status(409).json({ error: 'INVALID_STATUS', billId: b.id })
       }
@@ -1717,50 +1891,102 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     })
   })
 
-  // ---------- Admin: 租客档案（产生过订单或合同的租客；信誉度为人工维护的等级标记）----------
+  // ---------- Admin: 租客档案（产生过订单/合同的租客，或后台代建档案）----------
   app.get('/api/admin/tenants', adminAuth(ctx.prisma), async (req, res) => {
     const auth = getAdminAuth(req)
-    if (auth.admin.roleCode !== 'SYSTEM_ADMIN' && auth.storeIds.length === 0) {
-      return res.json({ items: [] })
-    }
-    const entered: Prisma.TenantWhereInput = {
-      OR: [{ orders: { some: {} } }, { contracts: { some: {} } }],
-    }
-    const where: Prisma.TenantWhereInput =
-      auth.admin.roleCode === 'SYSTEM_ADMIN'
-        ? entered
-        : {
-            AND: [
-              entered,
-              {
-                OR: [
-                  { orders: { some: { house: { apartment: { storeId: { in: auth.storeIds } } } } } },
-                  { contracts: { some: { house: { apartment: { storeId: { in: auth.storeIds } } } } } },
-                ],
-              },
-            ],
-          }
+    const forContractSelect = req.query.forContractSelect === '1'
+    const where = tenantProfilesWhere(auth)
+    if ('id' in where && where.id === '__none__') return res.json({ items: [] })
 
     const rows = await ctx.prisma.tenant.findMany({
       where,
       orderBy: { createdAt: 'desc' },
       take: 500,
-      include: { _count: { select: { orders: true, contracts: true } } },
+      include: {
+        _count: { select: { orders: true, contracts: true } },
+        createdByAdmin: { select: { name: true } },
+      },
     })
 
     res.json({
-      items: rows.map((t) => ({
-        id: t.id,
-        name: maskPersonName(t.name),
-        phone: maskMobilePhone(t.phone),
-        wechat: t.wechat,
-        idDocType: t.idDocType,
-        idNumberMasked: maskIdNumber(t.idNumber),
-        creditTier: t.creditTier,
-        enteredAt: t.createdAt.toISOString(),
-        orderCount: t._count.orders,
-        contractCount: t._count.contracts,
-      })),
+      items: rows.map((t) => mapTenantProfileRow(t, forContractSelect)),
+    })
+  })
+
+  app.post('/api/admin/tenants', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const Body = z.object({
+      tenantKind: z.enum(['INDIVIDUAL', 'ENTERPRISE']),
+      name: z.string().min(1),
+      phone: z.string().min(6),
+      idNumber: z.string().min(6),
+      wechat: z.union([z.string(), z.null()]).optional(),
+    })
+    const body = Body.parse(req.body)
+
+    const idDocType = body.tenantKind === 'ENTERPRISE' ? 'USCC' : 'IDCARD'
+    const idStored =
+      body.tenantKind === 'ENTERPRISE'
+        ? body.idNumber.trim().toUpperCase()
+        : normalizeIdNumber(body.idNumber)
+
+    if (body.tenantKind === 'ENTERPRISE' && !isUscc18(idStored)) {
+      return res.status(400).json({ error: 'INVALID_USCC' })
+    }
+    if (body.tenantKind === 'INDIVIDUAL' && !isMainland18Id(idStored)) {
+      return res.status(400).json({ error: 'INVALID_ID_NUMBER' })
+    }
+
+    const dup = await ctx.prisma.tenant.findFirst({ where: { phone: body.phone.trim() } })
+    if (dup) return res.status(409).json({ error: 'PHONE_ALREADY_EXISTS' })
+
+    const created = await ctx.prisma.tenant.create({
+      data: {
+        name: body.name.trim(),
+        phone: body.phone.trim(),
+        idNumber: idStored,
+        idDocType,
+        wechat: body.wechat?.trim() ? body.wechat.trim() : null,
+        tenantKind: body.tenantKind,
+        createdSource: 'ADMIN',
+        createdByAdminId: auth.admin.id,
+      },
+      include: {
+        _count: { select: { orders: true, contracts: true } },
+        createdByAdmin: { select: { name: true } },
+      },
+    })
+
+    await insertTenantProfileLog(ctx.prisma, {
+      tenantId: created.id,
+      actionLabel: '档案入档',
+      detail: `后台代建${body.tenantKind === 'ENTERPRISE' ? '企业' : '个人'}档案`,
+      operatorKind: 'ADMIN',
+      admin: auth.admin,
+    })
+
+    res.json({ ok: true, item: mapTenantProfileRow(created, false) })
+  })
+
+  app.get('/api/admin/tenants/:id/operation-logs', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const id = String(req.params.id ?? '')
+    const scoped: Prisma.TenantWhereInput = { AND: [{ id }, tenantProfilesWhere(auth)] }
+    const tenant = await ctx.prisma.tenant.findFirst({
+      where: scoped,
+      include: { createdByAdmin: { select: { name: true, email: true } } },
+    })
+    if (!tenant) return res.status(404).json({ error: 'NOT_FOUND' })
+
+    const dbLogs = await ctx.prisma.tenantProfileLog.findMany({
+      where: { tenantId: tenant.id },
+      orderBy: { occurredAt: 'desc' },
+      take: 100,
+    })
+
+    res.json({
+      tenantName: maskPersonName(tenant.name),
+      items: mergeTenantProfileLogs(tenant, dbLogs),
     })
   })
 
@@ -1774,48 +2000,34 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       return res.status(403).json({ error: 'FORBIDDEN' })
     }
 
-    const entered: Prisma.TenantWhereInput = {
-      OR: [{ orders: { some: {} } }, { contracts: { some: {} } }],
-    }
-    const scoped: Prisma.TenantWhereInput =
-      auth.admin.roleCode === 'SYSTEM_ADMIN'
-        ? { AND: [{ id }, entered] }
-        : {
-            AND: [
-              { id },
-              entered,
-              {
-                OR: [
-                  { orders: { some: { house: { apartment: { storeId: { in: auth.storeIds } } } } } },
-                  { contracts: { some: { house: { apartment: { storeId: { in: auth.storeIds } } } } } },
-                ],
-              },
-            ],
-          }
+    const scoped: Prisma.TenantWhereInput = { AND: [{ id }, tenantProfilesWhere(auth)] }
 
     const found = await ctx.prisma.tenant.findFirst({ where: scoped })
     if (!found) return res.status(404).json({ error: 'NOT_FOUND' })
 
+    const prevTier = found.creditTier
     const updated = await ctx.prisma.tenant.update({
       where: { id: found.id },
       data: { creditTier: body.creditTier as TenantCreditTier },
-      include: { _count: { select: { orders: true, contracts: true } } },
+      include: {
+        _count: { select: { orders: true, contracts: true } },
+        createdByAdmin: { select: { name: true } },
+      },
     })
+
+    if (prevTier !== body.creditTier) {
+      await insertTenantProfileLog(ctx.prisma, {
+        tenantId: updated.id,
+        actionLabel: '信誉度调整',
+        detail: `${prevTier} → ${body.creditTier}`,
+        operatorKind: 'ADMIN',
+        admin: auth.admin,
+      })
+    }
 
     res.json({
       ok: true,
-      item: {
-        id: updated.id,
-        name: maskPersonName(updated.name),
-        phone: maskMobilePhone(updated.phone),
-        wechat: updated.wechat,
-        idDocType: updated.idDocType,
-        idNumberMasked: maskIdNumber(updated.idNumber),
-        creditTier: updated.creditTier,
-        enteredAt: updated.createdAt.toISOString(),
-        orderCount: updated._count.orders,
-        contractCount: updated._count.contracts,
-      },
+      item: mapTenantProfileRow(updated, false),
     })
   })
 
@@ -2082,6 +2294,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         projectName: h.projectName,
         rentCollectionUnit: h.rentCollectionUnit,
         managerName: h.managerName,
+        mgmtDepartment: h.mgmtDepartment,
         houseNo: h.houseNo,
         houseType: h.houseType,
         area: h.area,
@@ -2194,6 +2407,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       assetType: z.string().min(1).max(80).optional(),
       rentCollectionUnit: z.union([z.string().max(120), z.literal('')]).optional(),
       managerName: z.union([z.string().max(120), z.literal('')]).optional(),
+      mgmtDepartment: z.union([z.string().max(120), z.literal('')]).optional(),
       waterMeterNos: z.array(z.string()).optional(),
       electricMeterNos: z.array(z.string()).optional(),
     })
@@ -2282,6 +2496,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         ...(body.projectName !== undefined ? { projectName: normOptStr(body.projectName) } : {}),
         ...(body.rentCollectionUnit !== undefined ? { rentCollectionUnit: normOptStr(body.rentCollectionUnit) } : {}),
         ...(body.managerName !== undefined ? { managerName: normOptStr(body.managerName) } : {}),
+        ...(body.mgmtDepartment !== undefined ? { mgmtDepartment: normOptStr(body.mgmtDepartment) } : {}),
         ...(nextWaterMeters !== undefined ? { waterMeterNosJson: JSON.stringify(nextWaterMeters) } : {}),
         ...(nextElectricMeters !== undefined ? { electricMeterNosJson: JSON.stringify(nextElectricMeters) } : {}),
       },
@@ -2322,6 +2537,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     pushDiff('项目名称', house.projectName ?? '', updated.projectName ?? '')
     pushDiff('收租单位', house.rentCollectionUnit ?? '', updated.rentCollectionUnit ?? '')
     pushDiff('管理人', house.managerName ?? '', updated.managerName ?? '')
+    pushDiff('管理部门', house.mgmtDepartment ?? '', updated.mgmtDepartment ?? '')
     if (nextWaterMeters !== undefined) {
       pushDiff('水表号', truncateLogValue(house.waterMeterNosJson), truncateLogValue(updated.waterMeterNosJson))
     }
@@ -2701,6 +2917,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       tenantId: z.string().min(1),
       leaseMonths: z.number().int().min(1).max(36),
       moveInDate: z.string().min(8),
+      endDate: z.string().min(8).optional(),
       rentMonthly: z.number().int().positive(),
       depositMultiple: z.number().positive(),
       rentCycle: zRentCycle,
@@ -2713,9 +2930,13 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       contractTemplate: zContractTemplate.optional(),
       terminationRentMultiple: z.union([z.number().positive().max(999), z.null()]).optional(),
       terminationDaysPastDue: z.union([z.number().int().min(0).max(999), z.null()]).optional(),
+      contractTemplateDataJson: z.string().optional(),
+      billPushToTenant: z.boolean().optional(),
     })
     const body = Body.parse(req.body)
     const tmplFields = contractTemplateTerminationData(body)
+    const billPushToTenant =
+      tmplFields.contractTemplate === 'NANNING_HOUSING' && Boolean(body.billPushToTenant)
 
     const order = await ctx.prisma.order.findUnique({
       where: { id: body.orderId },
@@ -2767,7 +2988,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       })
       const deposit = Math.round(body.rentMonthly * body.depositMultiple)
       const startDate2 = new Date(body.moveInDate)
-      const endDate2 = addMonths(startDate2, body.leaseMonths)
+      const endDate2 = body.endDate ? new Date(body.endDate) : addMonths(startDate2, body.leaseMonths)
       const rentDueDay2 = normalizeRentDueDay(body.rentDueDay, startDate2)
       const updated = await ctx.prisma.contract.update({
         where: { id: order.contract.id },
@@ -2799,6 +3020,11 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
           ...(body.agreementSignDate !== undefined
             ? { agreementSignDate: body.agreementSignDate ? new Date(body.agreementSignDate) : null }
             : {}),
+          ...(body.contractTemplateDataJson !== undefined
+            ? { contractTemplateDataJson: body.contractTemplateDataJson || null }
+            : {}),
+          billPushToTenant,
+          billPushStatus: billPushToTenant ? 'PENDING_TENANT' : 'NOT_ENABLED',
           ...tmplFields,
         },
       })
@@ -2806,7 +3032,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     }
 
     const startDate = new Date(body.moveInDate)
-    const endDate = addMonths(startDate, body.leaseMonths)
+    const endDate = body.endDate ? new Date(body.endDate) : addMonths(startDate, body.leaseMonths)
     const contractNo = `C${new Date().getFullYear()}${String(Date.now()).slice(-8)}`
     const deposit = Math.round(body.rentMonthly * body.depositMultiple)
     const rentDueDay = normalizeRentDueDay(body.rentDueDay, startDate)
@@ -2833,6 +3059,9 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         attachmentsJson: body.attachmentsJson ?? '[]',
         tenantSignDeadlineAt: computeTenantSignDeadline(),
         agreementSignDate: body.agreementSignDate ? new Date(body.agreementSignDate) : null,
+        contractTemplateDataJson: body.contractTemplateDataJson ?? null,
+        billPushToTenant,
+        billPushStatus: billPushToTenant ? 'PENDING_TENANT' : 'NOT_ENABLED',
         ...tmplFields,
       },
     })
@@ -2878,14 +3107,20 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
   app.post('/api/admin/contracts/manual', adminAuth(ctx.prisma), async (req, res) => {
     const auth = getAdminAuth(req)
     const Body = z.object({
-      houseId: z.string().min(1),
-      tenant: z.object({
-        name: z.string().min(1),
-        phone: z.string().min(6),
-        idNumber: z.string().min(6),
-      }),
+      houseId: z.string().min(1).optional(),
+      houseIds: z.array(z.string().min(1)).optional(),
+      tenantId: z.string().min(1).optional(),
+      tenantIds: z.array(z.string().min(1)).optional(),
+      tenant: z
+        .object({
+          name: z.string().min(1),
+          phone: z.string().min(6),
+          idNumber: z.string().min(6),
+        })
+        .optional(),
       leaseMonths: z.number().int().min(1).max(36),
-      startDate: z.string().min(8), // YYYY-MM-DD
+      startDate: z.string().min(8),
+      endDate: z.string().min(8).optional(),
       rentMonthly: z.number().int().positive(),
       depositMultiple: z.number().positive(),
       rentCycle: zRentCycle,
@@ -2897,47 +3132,92 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       contractTemplate: zContractTemplate.optional(),
       terminationRentMultiple: z.union([z.number().positive().max(999), z.null()]).optional(),
       terminationDaysPastDue: z.union([z.number().int().min(0).max(999), z.null()]).optional(),
+      contractTemplateDataJson: z.string().optional(),
+      billPushToTenant: z.boolean().optional(),
     })
     const body = Body.parse(req.body)
     const tmplFields = contractTemplateTerminationData(body)
     const deposit = Math.round(body.rentMonthly * body.depositMultiple)
+    const billPushToTenant = tmplFields.contractTemplate === 'NANNING_HOUSING' && Boolean(body.billPushToTenant)
 
-    const house = await ctx.prisma.house.findUnique({
-      where: { id: body.houseId },
+    const resolvedHouseIds =
+      body.houseIds && body.houseIds.length > 0 ? body.houseIds : body.houseId ? [body.houseId] : []
+    if (!resolvedHouseIds.length) return res.status(400).json({ error: 'HOUSE_REQUIRED' })
+
+    const houses = await ctx.prisma.house.findMany({
+      where: { id: { in: resolvedHouseIds } },
       include: { apartment: true },
     })
-    if (!house) return res.status(404).json({ error: 'TARGET_NOT_FOUND' })
-    if (!canAccessStore(auth, house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
-    if (house.status !== 'VACANT') return res.status(409).json({ error: 'TARGET_NOT_VACANT' })
+    if (houses.length !== resolvedHouseIds.length) return res.status(404).json({ error: 'TARGET_NOT_FOUND' })
+    for (const h of houses) {
+      if (!canAccessStore(auth, h.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+      if (h.status !== 'VACANT') return res.status(409).json({ error: 'TARGET_NOT_VACANT' })
+    }
+    const primaryHouse = houses[0]!
+
+    let primaryTenantId = body.tenantId ?? body.tenantIds?.[0] ?? null
+    let tenantCreateData = body.tenant
+
+    if (!primaryTenantId && tenantCreateData) {
+      // legacy inline tenant
+    } else if (primaryTenantId) {
+      const existing = await ctx.prisma.tenant.findUnique({ where: { id: primaryTenantId } })
+      if (!existing) return res.status(404).json({ error: 'TENANT_NOT_FOUND' })
+    } else {
+      return res.status(400).json({ error: 'TENANT_REQUIRED' })
+    }
 
     const start = new Date(body.startDate)
-    const end = addMonths(start, body.leaseMonths)
+    const end = body.endDate ? new Date(body.endDate) : addMonths(start, body.leaseMonths)
     const contractNo = `C${new Date().getFullYear()}M${String(Date.now()).slice(-8)}`
     const rentDueDay = normalizeRentDueDay(body.rentDueDay, start)
 
     const out = await ctx.prisma.$transaction(async (tx) => {
-      const tenant = await tx.tenant.create({
-        data: {
-          name: body.tenant.name,
-          phone: body.tenant.phone,
-          idNumber: body.tenant.idNumber,
-        },
-      })
+      let tenantId = primaryTenantId!
+      let inlineTenantCreated = false
+      if (!primaryTenantId && tenantCreateData) {
+        const tenant = await tx.tenant.create({
+          data: {
+            name: tenantCreateData.name,
+            phone: tenantCreateData.phone,
+            idNumber: normalizeIdNumber(tenantCreateData.idNumber),
+            tenantKind: 'INDIVIDUAL',
+            createdSource: 'ADMIN',
+            createdByAdminId: auth.admin.id,
+          },
+        })
+        tenantId = tenant.id
+        inlineTenantCreated = true
+      }
+      const isMerged = resolvedHouseIds.length > 1
       const order = await tx.order.create({
         data: {
-          houseId: house.id,
-          tenantId: tenant.id,
+          houseId: primaryHouse.id,
+          tenantId,
           leaseMonths: body.leaseMonths,
           moveInDate: start,
+          isMergedBundle: isMerged,
           status: 'APPROVED',
           reviewReason: '管理员手动创建合同',
+          ...(isMerged
+            ? {
+                lines: {
+                  create: houses.map((h, idx) => ({
+                    houseId: h.id,
+                    rentMonthlySnapshot: h.rentMonthly,
+                    depositSnapshot: h.deposit,
+                    sortOrder: idx,
+                  })),
+                },
+              }
+            : {}),
         },
       })
       const contract = await tx.contract.create({
         data: {
           contractNo,
-          houseId: house.id,
-          tenantId: tenant.id,
+          houseId: primaryHouse.id,
+          tenantId,
           orderId: order.id,
           status: 'ACTIVE',
           source: 'MANUAL_IMPORT',
@@ -2953,6 +3233,9 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
           latestRentDueDate: null,
           configRemarkHtml: body.configRemarkHtml === undefined ? null : body.configRemarkHtml,
           agreementSignDate: body.agreementSignDate ? new Date(body.agreementSignDate) : null,
+          contractTemplateDataJson: body.contractTemplateDataJson ?? null,
+          billPushToTenant,
+          billPushStatus: billPushToTenant ? 'PENDING_TENANT' : 'NOT_ENABLED',
           ...tmplFields,
           confirmedAt: new Date(),
           signedAt: new Date(),
@@ -2971,9 +3254,23 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         },
         'create',
       )
-      await tx.house.update({ where: { id: house.id }, data: { status: 'RESERVED' } })
-      return { contractId: contract.id, contractNo: contract.contractNo }
+      for (const h of houses) {
+        await tx.house.update({ where: { id: h.id }, data: { status: 'RESERVED' } })
+      }
+      return { contractId: contract.id, contractNo: contract.contractNo, inlineTenantId: inlineTenantCreated ? tenantId : null }
     })
+
+    if (out.inlineTenantId) {
+      await insertTenantProfileLog(ctx.prisma, {
+        tenantId: out.inlineTenantId,
+        actionLabel: '档案入档',
+        detail: '后台代建个人档案（手动创建合同时）',
+        operatorKind: 'ADMIN',
+        admin: auth.admin,
+      })
+    }
+
+    await applyBillPushForContract(ctx.prisma, out.contractId)
 
     res.json({ ok: true, ...out })
   })
@@ -3105,6 +3402,9 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
           houseStatus: c.house.status,
           leaseDaysLeft: contractExpiryDaysLeft(c.endDate),
           leaseExpired: isContractLeaseExpired(c),
+          contractTemplate: c.contractTemplate,
+          billPushToTenant: c.billPushToTenant,
+          billPushStatus: c.billPushToTenant ? c.billPushStatus : null,
         }
       }),
     })
@@ -3276,6 +3576,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       rentCycle: contract.rentCycle,
       rentDueDay: contract.rentDueDay,
       contractTemplate: contract.contractTemplate,
+      contractTemplateDataJson: contract.contractTemplateDataJson ?? null,
       terminationRentMultiple: contract.terminationRentMultiple ?? null,
       terminationDaysPastDue: contract.terminationDaysPastDue ?? null,
       penaltyFormula: contract.penaltyFormula,
@@ -3319,6 +3620,9 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       houseStatus: contract.house.status,
       leaseDaysLeft: contractExpiryDaysLeft(contract.endDate),
       leaseExpired: isContractLeaseExpired(contract),
+      billPushToTenant: contract.billPushToTenant,
+      billPushStatus: contract.billPushToTenant ? contract.billPushStatus : null,
+      billPushStatusLabel: contract.billPushToTenant ? billPushStatusLabel(contract.billPushStatus) : null,
     })
   })
 
@@ -3400,6 +3704,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       contractTemplate: zContractTemplate.optional(),
       terminationRentMultiple: z.union([z.number().positive().max(999), z.null()]).optional(),
       terminationDaysPastDue: z.union([z.number().int().min(0).max(999), z.null()]).optional(),
+      contractTemplateDataJson: z.string().optional(),
     })
     const body = Body.safeParse(req.body)
     if (!body.success) return res.status(400).json({ error: 'INVALID_BODY', details: body.error.flatten() })
@@ -3445,7 +3750,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       body.data.terminationRentMultiple !== undefined ||
       body.data.terminationDaysPastDue !== undefined
     ) {
-      const tmpl = (body.data.contractTemplate ?? contract.contractTemplate) as 'TRIPARTITE' | 'APARTMENT'
+      const tmpl = body.data.contractTemplate ?? contract.contractTemplate
       const trm =
         body.data.terminationRentMultiple !== undefined
           ? body.data.terminationRentMultiple
@@ -4583,8 +4888,8 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       take: 600,
     })
     const visible = bills.filter((b) => {
-      // 过滤掉用于演示的「换房补差」账期，不在一级汇总中展示
-      if (!/^\d{4}-\d{2}$/.test(b.period)) return false
+      // 过滤掉用于演示的「换房补差」等非标准账期；标准账期为 YYYY-MM 或 YYYY-MM-DD
+      if (!/^\d{4}-\d{2}(-\d{2})?$/.test(b.period)) return false
       if (!canAccessStore(auth, b.contract.house.apartment.storeId)) return false
       if (isContractBillingPaused(b.contract)) return false
       return true
@@ -4796,6 +5101,9 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         status: b.status,
         billingRemark: b.billingRemark ?? null,
         contractBillingPaused: isContractBillingPaused(b.contract),
+        tenantPushStatus: b.tenantPushStatus,
+        tenantPushStatusLabel: tenantPushStatusLabel(b.tenantPushStatus),
+        billPushToTenant: b.contract.billPushToTenant,
         items: b.items.map((i) => ({ name: i.name, amount: i.amount })),
       })),
       locked: Boolean(periodLock?.lockedAt),
@@ -4865,7 +5173,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     const Body = z.object({
       mode: z.literal('manual'),
       storeId: z.string().min(1),
-      period: z.string().regex(/^\d{4}-\d{2}$/),
+      period: z.string().regex(/^\d{4}-\d{2}(-\d{2})?$/),
       statStartDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
     })
@@ -4878,8 +5186,11 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       return res.status(409).json({ error: 'PERIOD_LOCKED' })
     }
 
-    const [py, pm] = period.split('-').map(Number)
-    const defaultDue = new Date(Date.UTC(py, pm - 1, 1))
+    const parts = period.split('-').map(Number)
+    const defaultDue =
+      parts.length === 3
+        ? new Date(Date.UTC(parts[0]!, parts[1]! - 1, parts[2]!))
+        : new Date(Date.UTC(parts[0]!, parts[1]! - 1, 1))
     const due = dueDate ? new Date(`${dueDate}T12:00:00.000Z`) : defaultDue
     const statFrom = new Date(`${statStartDate}T12:00:00.000Z`)
 
@@ -4966,6 +5277,9 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         amountRemaining: Math.max(0, b.totalAmount - b.amountReceived),
         status: b.status,
         billingRemark: b.billingRemark ?? null,
+        tenantPushStatus: b.tenantPushStatus,
+        tenantPushStatusLabel: tenantPushStatusLabel(b.tenantPushStatus),
+        billPushToTenant: b.contract.billPushToTenant,
       })),
     })
   })
@@ -5268,14 +5582,26 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
 
       const remark = String((req.body as any)?.remark ?? '').trim()
       const amountRaw = (req.body as any)?.amount
+      const collectionChannel = String((req.body as any)?.collectionChannel ?? '').trim()
+      const collectionDateRaw = (req.body as any)?.collectionDate
+      const assetName = String((req.body as any)?.assetName ?? '').trim().slice(0, 200)
+
+      if (!isOfflineCollectionChannel(collectionChannel)) {
+        return res.status(400).json({ error: 'INVALID_COLLECTION_CHANNEL' })
+      }
+      const collectionDate = parseCollectionDateYmd(collectionDateRaw)
+      if (!collectionDate) return res.status(400).json({ error: 'INVALID_COLLECTION_DATE' })
+
       const billReceived = bill.amountReceived
       const remaining = Math.max(0, bill.totalAmount - billReceived)
 
       let verifyAmount = remaining > 0 ? remaining : bill.totalAmount
       if (amountRaw !== undefined && amountRaw !== null && String(amountRaw).trim() !== '') {
-        const n = parseInt(String(amountRaw).trim(), 10)
-        if (!Number.isFinite(n) || n <= 0) return res.status(400).json({ error: 'INVALID_AMOUNT' })
+        const n = parseOfflineCollectionAmount(amountRaw)
+        if (n === null) return res.status(400).json({ error: 'INVALID_AMOUNT' })
         verifyAmount = n
+      } else {
+        return res.status(400).json({ error: 'INVALID_AMOUNT' })
       }
 
       const applyToBill = Math.min(verifyAmount, remaining)
@@ -5311,6 +5637,9 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
           data: {
             billId: bill.id,
             amount: verifyAmount,
+            collectionChannel,
+            collectionDate,
+            assetName: assetName || null,
             remark: remark || null,
             attachmentsJson: JSON.stringify(newMeta),
             adminId: auth.admin.id,
@@ -5925,7 +6254,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     const auth = getAdminAuth(req)
     const Body = z.object({
       contractId: z.string().min(1),
-      period: z.string().regex(/^\d{4}-\d{2}$/),
+      period: z.string().regex(/^\d{4}-\d{2}(-\d{2})?$/),
       dueDate: z.string().min(8),
       items: z.array(z.object({ name: z.string().min(1), amount: z.number().int().min(0) })),
       billingRemark: z.union([z.string().max(500), z.literal('')]).optional(),
@@ -6070,6 +6399,87 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
 
     const result = await performHousingReportNow(ctx.prisma, contract.id)
     res.json({ ok: true, ...result })
+  })
+
+  /** 报表管理：月度实收租金明细表 */
+  app.get('/api/admin/reports/monthly-rent-collected', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const storeId = String(req.query.storeId ?? '').trim() || undefined
+    const periodFrom = String(req.query.periodFrom ?? '').trim() || undefined
+    const periodTo = String(req.query.periodTo ?? '').trim() || undefined
+    const collectedFrom = String(req.query.collectedFrom ?? '').trim() || undefined
+    const collectedTo = String(req.query.collectedTo ?? '').trim() || undefined
+    if (storeId && !canAccessStore(auth, storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    const data = await buildMonthlyRentCollectedReport(
+      ctx.prisma,
+      { storeId, periodFrom, periodTo, collectedFrom, collectedTo },
+      (id) => canAccessStore(auth, id),
+    )
+    res.json(data)
+  })
+
+  /** 报表管理：核销情况表 */
+  app.get('/api/admin/reports/offline-verify-status', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const storeId = String(req.query.storeId ?? '').trim() || undefined
+    const periodFrom = String(req.query.periodFrom ?? '').trim() || undefined
+    const periodTo = String(req.query.periodTo ?? '').trim() || undefined
+    const collectedFrom = String(req.query.collectedFrom ?? '').trim() || undefined
+    const collectedTo = String(req.query.collectedTo ?? '').trim() || undefined
+    if (storeId && !canAccessStore(auth, storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    const data = await buildOfflineVerifyStatusReport(
+      ctx.prisma,
+      { storeId, periodFrom, periodTo, collectedFrom, collectedTo },
+      (id) => canAccessStore(auth, id),
+    )
+    res.json(data)
+  })
+
+  /** 报表管理：系统收款交易流水表 */
+  app.get('/api/admin/reports/collection-transactions', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const storeId = String(req.query.storeId ?? '').trim() || undefined
+    const periodFrom = String(req.query.periodFrom ?? '').trim() || undefined
+    const periodTo = String(req.query.periodTo ?? '').trim() || undefined
+    const collectedFrom = String(req.query.collectedFrom ?? '').trim() || undefined
+    const collectedTo = String(req.query.collectedTo ?? '').trim() || undefined
+    if (storeId && !canAccessStore(auth, storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    const data = await buildCollectionTransactionReport(
+      ctx.prisma,
+      { storeId, periodFrom, periodTo, collectedFrom, collectedTo },
+      (id) => canAccessStore(auth, id),
+    )
+    res.json(data)
+  })
+
+  /** 报表管理：月度应收明细表 */
+  app.get('/api/admin/reports/monthly-receivable', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const storeId = String(req.query.storeId ?? '').trim() || undefined
+    const periodFrom = String(req.query.periodFrom ?? '').trim() || undefined
+    const periodTo = String(req.query.periodTo ?? '').trim() || undefined
+    if (storeId && !canAccessStore(auth, storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    const data = await buildMonthlyReceivableReport(
+      ctx.prisma,
+      { storeId, periodFrom, periodTo },
+      (id) => canAccessStore(auth, id),
+    )
+    res.json(data)
+  })
+
+  /** 报表管理：业务账单表（实时） */
+  app.get('/api/admin/reports/business-bills', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const storeId = String(req.query.storeId ?? '').trim() || undefined
+    const periodFrom = String(req.query.periodFrom ?? '').trim() || undefined
+    const periodTo = String(req.query.periodTo ?? '').trim() || undefined
+    if (storeId && !canAccessStore(auth, storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    const data = await buildBusinessBillsReport(
+      ctx.prisma,
+      { storeId, periodFrom, periodTo },
+      (id) => canAccessStore(auth, id),
+    )
+    res.json(data)
   })
 
   /** 报表管理：应收报表（按账期汇总各账单应收/已收/待收） */

@@ -9,6 +9,7 @@
     "start": "node dist/index.js",
     "db:migrate": "prisma db push && prisma generate",
     "db:seed": "tsx prisma/seed.ts",
+    "db:seed-reports": "tsx src/scripts/seedReportDemo.ts",
     "db:reset-seed": "prisma db push --force-reset && prisma generate && tsx prisma/seed.ts",
     "prisma:generate": "prisma generate"
   },

@@ -12,11 +12,7 @@ import {
   type CartCheckoutLane,
   type CartLine,
 } from '../cartStorage'
-import {
-  IdDocumentFields,
-  validateIdDocumentForm,
-  type IdDocType,
-} from '../components/IdDocumentFields'
+import { IdDocumentFields, useIdDocumentForm } from '../components/IdDocumentFields'
 
 export function RentCheckoutPage() {
   const [searchParams] = useSearchParams()
@@ -29,21 +25,14 @@ export function RentCheckoutPage() {
   const [contractMode, setContractMode] = useState<'ONE_PER_ASSET' | 'MERGED'>('MERGED')
   const [leaseMonths, setLeaseMonths] = useState(12)
   const [moveInDate, setMoveInDate] = useState(() => new Date().toISOString().slice(0, 10))
-  const [docType, setDocType] = useState<IdDocType>('IDCARD')
-  const [name, setName] = useState('')
-  const [idNumber, setIdNumber] = useState('')
-  const [phone, setPhone] = useState('13800000000')
-  const [wechat, setWechat] = useState('wx_demo')
+  const idDoc = useIdDocumentForm({ phone: '13800000000', wechat: 'wx_demo' })
+  const { values: docValues, validate: validateDocForm } = idDoc
   const [error, setError] = useState('')
   const [okMsg, setOkMsg] = useState('')
   const [successWecom, setSuccessWecom] = useState<{ storeName: string; qrUrl: string | null } | null>(null)
   const [showFaceModal, setShowFaceModal] = useState(false)
   const [faceSubmitting, setFaceSubmitting] = useState(false)
   const disabled = useMemo(() => cartLines.length === 0, [cartLines.length])
-
-  const [idLongTerm, setIdLongTerm] = useState(false)
-  const [idValidUntil, setIdValidUntil] = useState('')
-  const [extraDocValidUntil, setExtraDocValidUntil] = useState('')
 
   useEffect(() => {
     const all = getCart()
@@ -119,16 +108,6 @@ export function RentCheckoutPage() {
     [cartLines],
   )
 
-  function onDocTypeChange(next: IdDocType) {
-    if (next === docType) return
-    setDocType(next)
-    setIdNumber('')
-    setIdLongTerm(false)
-    setIdValidUntil('')
-    setExtraDocValidUntil('')
-    setError('')
-  }
-
     async function submitOrderToBackend() {
     if (!cartLines.length) return
     setError('')
@@ -151,6 +130,7 @@ export function RentCheckoutPage() {
     setOkMsg('')
     setSuccessWecom(null)
     const createdAt = new Date().toISOString()
+    const { docType, name, idNumber, phone, wechat, emergencyContactName, emergencyContactPhone, idLongTerm, idValidUntil, extraDocValidUntil } = docValues
     const idNorm =
       docType === 'IDCARD' || docType === 'USCC' ? idNumber.trim().toUpperCase() : idNumber.trim()
 
@@ -174,6 +154,8 @@ export function RentCheckoutPage() {
       idNumber: idNorm,
       phone: phone.trim(),
       wechat,
+      ...(emergencyContactName.trim() ? { emergencyContactName: emergencyContactName.trim() } : {}),
+      ...(emergencyContactPhone.trim() ? { emergencyContactPhone: emergencyContactPhone.trim() } : {}),
       idDocType: docType,
     }
     if (docType === 'IDCARD') {
@@ -224,15 +206,8 @@ export function RentCheckoutPage() {
 
   function onTapDirectOrder() {
     setError('')
-    const formErr = validateIdDocumentForm({
-      docType,
-      name,
-      idNumber,
-      phone,
-      idLongTerm,
-      idValidUntil,
-      extraDocValidUntil,
-    })
+    idDoc.setOcrError('')
+    const formErr = validateDocForm()
     if (formErr) {
       setError(formErr)
       return
@@ -249,26 +224,7 @@ export function RentCheckoutPage() {
 
   const orderPlaced = Boolean(okMsg)
 
-  const documentBlock = !orderPlaced ? (
-    <IdDocumentFields
-      docType={docType}
-      name={name}
-      idNumber={idNumber}
-      phone={phone}
-      wechat={wechat}
-      idLongTerm={idLongTerm}
-      idValidUntil={idValidUntil}
-      extraDocValidUntil={extraDocValidUntil}
-      onDocTypeChange={onDocTypeChange}
-      onNameChange={setName}
-      onIdNumberChange={setIdNumber}
-      onPhoneChange={setPhone}
-      onWechatChange={setWechat}
-      onIdLongTermChange={setIdLongTerm}
-      onIdValidUntilChange={setIdValidUntil}
-      onExtraDocValidUntilChange={setExtraDocValidUntil}
-    />
-  ) : null
+  const documentBlock = !orderPlaced ? <IdDocumentFields {...idDoc.fieldsProps} /> : null
 
   if (loadErr) {
     return (

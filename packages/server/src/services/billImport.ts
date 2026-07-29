@@ -40,8 +40,8 @@ export function buildBillImportTemplateBuffer(): Buffer {
   const wb = XLSX.utils.book_new()
   const wsData = [
     BILL_IMPORT_TEMPLATE_HEADERS,
-    ['C202619751738', '', '', '2026-05', '2026-05-01', 5000, 50, 120, 80, 20, 30, 0, 0, 0, 15, '示例：可填公摊维修等'],
-    ['', 'WS-DEMO-001', '', '2026-05', '2026-05-01', 0, 50, 120, 0, 0, 0, 0, 0, 0, 0, '用水表号关联合同（合同号可留空）'],
+    ['C202619751738', '', '', '2026-05-01', '2026-05-01', 5000, 50, 120, 80, 20, 30, 0, 0, 0, 15, '示例：可填公摊维修等'],
+    ['', 'WS-DEMO-001', '', '2026-05-01', '2026-05-01', 0, 50, 120, 0, 0, 0, 0, 0, 0, 0, '用水表号关联合同（合同号可留空）'],
   ]
   const ws = XLSX.utils.aoa_to_sheet(wsData)
   XLSX.utils.book_append_sheet(wb, ws, '账单导入')
@@ -78,6 +78,7 @@ function parseRow(row: unknown[]): ImportRow | null {
   const billingRemarkRaw = String(row[remarkCol] ?? '').trim()
   const billingRemark = billingRemarkRaw ? billingRemarkRaw.slice(0, 500) : null
   if (!period || !dueDate) return null
+  if (!/^\d{4}-\d{2}(-\d{2})?$/.test(period)) return null
   if (!contractNo && !waterMeterNo && !electricMeterNo) return null
   const items: { name: string; amount: number }[] = []
   for (let i = 0; i < BILL_IMPORT_FEE_KEYS.length; i++) {
@@ -216,10 +217,20 @@ export async function parseAndImportBills(
       continue
     }
 
-    const locked = await prisma.billPeriod.findUnique({
-      where: { storeId_period: { storeId: contract.house.apartment.storeId, period: row.period } },
-    })
-    if (locked?.lockedAt) {
+    const periodLockCandidates = /^\d{4}-\d{2}-\d{2}$/.test(row.period)
+      ? [row.period, row.period.slice(0, 7)]
+      : [row.period]
+    let periodLocked = false
+    for (const p of periodLockCandidates) {
+      const locked = await prisma.billPeriod.findUnique({
+        where: { storeId_period: { storeId: contract.house.apartment.storeId, period: p } },
+      })
+      if (locked?.lockedAt) {
+        periodLocked = true
+        break
+      }
+    }
+    if (periodLocked) {
       errors.push(`第 ${i + 2} 行：账期 ${row.period} 已锁定，无法导入该门店账单`)
       continue
     }

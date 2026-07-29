@@ -1,7 +1,64 @@
 import { useEffect, useMemo, useState } from 'react'
 import { apiGet, apiPatch, apiPost, apiUploadContractAttachment, apiDeleteContractAttachment } from '../api'
+import { JiangnanFactoryContractForm } from '../components/JiangnanFactoryContractForm'
+import { NonResidentialContractForm } from '../components/NonResidentialContractForm'
+import { NanningHousingContractForm } from '../components/NanningHousingContractForm'
+import { ResidentialAssetContractForm } from '../components/ResidentialAssetContractForm'
 import { ContractRemarkEditor } from '../components/ContractRemarkEditor'
+import { ContractTemplateSelect } from '../components/ContractTemplateSelect'
 import { contractAttachmentsLockedUntilPaid } from '../contractAttachmentPolicy'
+import {
+  contractTemplateUsesRentMultipleTermination,
+  contractTemplateZh,
+  normalizeContractTemplate,
+  type ContractTemplateKind,
+} from '../contractTemplate'
+import {
+  defaultJiangnanFactoryForm,
+  leaseEndFromStartMonths,
+  leaseMonthsFromRange,
+  parseJiangnanFactoryForm,
+  performanceBondAmount,
+  serializeJiangnanFactoryForm,
+  sumHouseRentMonthly,
+  syncJiangnanDerivedFields,
+  validateJiangnanFactoryForm,
+  type JiangnanFactoryFormData,
+  type JiangnanHousePick,
+} from '../jiangnanFactoryContract'
+import {
+  defaultNonResidentialForm,
+  nonResidentialPerformanceBondAmount,
+  parseNonResidentialForm,
+  serializeNonResidentialForm,
+  sumHouseRentMonthly as nrSumHouseRentMonthly,
+  syncNonResidentialDerivedFields,
+  validateNonResidentialForm,
+  type NonResidentialFormData,
+} from '../nonResidentialContract'
+import {
+  defaultResidentialAssetForm,
+  parseResidentialAssetForm,
+  residentialHousingBondAmount,
+  serializeResidentialAssetForm,
+  sumHouseRentMonthly as raSumHouseRentMonthly,
+  syncResidentialDerivedFields,
+  validateResidentialAssetForm,
+  type ResidentialAssetFormData,
+} from '../residentialAssetContract'
+import {
+  bowanMonthlyRentNumber,
+  bowanPenaltyFormula,
+  bowanPerformanceBondAmount,
+  defaultNanningHousingForm,
+  parseNanningHousingForm,
+  serializeNanningHousingForm,
+  syncNanningHousingDerivedFields,
+  toBowanHousePick,
+  validateNanningHousingForm,
+  type NanningHousingFormData,
+} from '../nanningHousingContract'
+import type { ContractHousePick } from '../contractFormShared'
 import { downloadFileWithAuth, previewFileWithAuth } from '../fileAuth'
 import { Pagination, paginate } from '../components/Pagination'
 import { rentCycleLabel, normalizeRentCycle, type RentCycle } from '../rentCycle'
@@ -55,16 +112,6 @@ type OrderItem = {
   contractModificationRejectedAt: string | null
   /** 租客在 H5 确认合同后非空，此时禁止改订单 */
   contractConfirmedAt: string | null
-}
-
-type ContractTemplateKind = 'TRIPARTITE' | 'APARTMENT'
-
-function normalizeContractTemplate(v: string | undefined | null): ContractTemplateKind {
-  return v === 'TRIPARTITE' ? 'TRIPARTITE' : 'APARTMENT'
-}
-
-function contractTemplateZh(t: ContractTemplateKind) {
-  return t === 'TRIPARTITE' ? '三方合同' : '公寓合同'
 }
 
 /** 合同已进入履行或结束态、或租客已确认合同时，不允许再改订单 */
@@ -331,15 +378,297 @@ export function OrdersPage() {
   const [cfgAttachments, setCfgAttachments] = useState<CfgAtt[]>([])
   /** 与列表同步；打开弹窗后由合同详情接口刷新 */
   const [cfgContractStatus, setCfgContractStatus] = useState<string | null>(null)
-  const [cfgContractTemplate, setCfgContractTemplate] = useState<ContractTemplateKind>('APARTMENT')
+  const [cfgContractTemplate, setCfgContractTemplate] = useState<ContractTemplateKind>('RESIDENTIAL_ASSET')
   const [cfgTerminationRentMulti, setCfgTerminationRentMulti] = useState('2')
   const [cfgTerminationDaysPastDue, setCfgTerminationDaysPastDue] = useState('7')
+  const [jiangnanForm, setJiangnanForm] = useState<JiangnanFactoryFormData>(() => defaultJiangnanFactoryForm())
+  const [nonResidentialForm, setNonResidentialForm] = useState<NonResidentialFormData>(() => defaultNonResidentialForm())
+  const [residentialForm, setResidentialForm] = useState<ResidentialAssetFormData>(() => defaultResidentialAssetForm())
+  const [nanningHousingForm, setNanningHousingForm] = useState<NanningHousingFormData>(() => defaultNanningHousingForm())
+  const [cfgPendingFiles, setCfgPendingFiles] = useState<File[]>([])
+
+  function prefillJiangnanFromOrder(o: OrderItem): JiangnanFactoryFormData {
+    const leaseStart = o.moveInDate || new Date().toISOString().slice(0, 10)
+    const leaseEnd = leaseEndFromStartMonths(leaseStart, o.leaseMonths || 12)
+    const tenants = [
+      {
+        id: o.tenantId,
+        name: o.tenant.name,
+        phone: o.tenant.phone,
+        idNumber: o.tenant.idNumber,
+      },
+    ]
+    let houses: JiangnanHousePick[] = []
+    if (o.isMergedBundle && o.bundleLines?.length) {
+      houses = o.bundleLines.map((l) => ({
+        id: l.houseId,
+        apartmentName: l.apartmentName,
+        houseNo: l.houseNo,
+        storeName: o.house.storeName,
+        address: '',
+        area: 0,
+        rentMonthly: l.rentMonthlySnapshot,
+      }))
+    } else {
+      houses = [
+        {
+          id: o.house.id,
+          apartmentName: o.house.apartmentName,
+          houseNo: o.house.houseNo,
+          storeName: o.house.storeName,
+          address: '',
+          area: 0,
+          rentMonthly: o.bundleRentMonthlySum ?? o.house.rentMonthly,
+        },
+      ]
+    }
+    return syncJiangnanDerivedFields({
+      ...defaultJiangnanFactoryForm(),
+      tenantIds: [o.tenantId],
+      tenants,
+      houseIds: houses.map((h) => h.id),
+      houses,
+      leaseStart,
+      leaseEnd,
+      rentDueDay: String(rentDueDayFromYmd(leaseStart)),
+    })
+  }
+
+  async function enrichJiangnanHousesFromApi(form: JiangnanFactoryFormData): Promise<JiangnanFactoryFormData> {
+    if (!form.houseIds.length) return form
+    const r = await apiGet<{ items: JiangnanHousePick[] }>('/api/admin/houses')
+    if (!r.ok) return form
+    const map = new Map(r.data.items.map((h) => [h.id, h]))
+    const houses = form.houseIds
+      .map((id) => map.get(id))
+      .filter(Boolean)
+      .map((h) => ({
+        id: h!.id,
+        apartmentName: h!.apartmentName,
+        houseNo: h!.houseNo,
+        storeName: h!.storeName,
+        address: h!.address ?? '',
+        area: h!.area,
+        rentMonthly: h!.rentMonthly,
+        status: h!.status,
+      }))
+    return syncJiangnanDerivedFields(form, { houses, houseIds: houses.map((x) => x.id) })
+  }
+
+  function prefillNonResidentialFromOrder(o: OrderItem): NonResidentialFormData {
+    const leaseStart = o.moveInDate || new Date().toISOString().slice(0, 10)
+    const leaseEnd = leaseEndFromStartMonths(leaseStart, o.leaseMonths || 12)
+    const tenants = [
+      {
+        id: o.tenantId,
+        name: o.tenant.name,
+        phone: o.tenant.phone,
+        idNumber: o.tenant.idNumber,
+      },
+    ]
+    let houses: ContractHousePick[] = []
+    if (o.isMergedBundle && o.bundleLines?.length) {
+      houses = o.bundleLines.map((l) => ({
+        id: l.houseId,
+        apartmentName: l.apartmentName,
+        houseNo: l.houseNo,
+        storeName: o.house.storeName,
+        address: '',
+        area: 0,
+        rentMonthly: l.rentMonthlySnapshot,
+      }))
+    } else {
+      houses = [
+        {
+          id: o.house.id,
+          apartmentName: o.house.apartmentName,
+          houseNo: o.house.houseNo,
+          storeName: o.house.storeName,
+          address: '',
+          area: 0,
+          rentMonthly: o.bundleRentMonthlySum ?? o.house.rentMonthly,
+        },
+      ]
+    }
+    return syncNonResidentialDerivedFields({
+      ...defaultNonResidentialForm(),
+      tenantIds: [o.tenantId],
+      tenants,
+      houseIds: houses.map((h) => h.id),
+      houses,
+      leaseStart,
+      leaseEnd,
+      rentDueDay: '20',
+    })
+  }
+
+  async function enrichNonResidentialHousesFromApi(form: NonResidentialFormData): Promise<NonResidentialFormData> {
+    if (!form.houseIds.length) return form
+    const r = await apiGet<{ items: ContractHousePick[] }>('/api/admin/houses')
+    if (!r.ok) return form
+    const map = new Map(r.data.items.map((h) => [h.id, h]))
+    const houses = form.houseIds
+      .map((id) => map.get(id))
+      .filter(Boolean)
+      .map((h) => ({
+        id: h!.id,
+        apartmentName: h!.apartmentName,
+        houseNo: h!.houseNo,
+        storeName: h!.storeName,
+        address: h!.address ?? '',
+        area: h!.area,
+        rentMonthly: h!.rentMonthly,
+        status: h!.status,
+      }))
+    return syncNonResidentialDerivedFields(form, { houses, houseIds: houses.map((x) => x.id) })
+  }
+
+  function prefillResidentialFromOrder(o: OrderItem): ResidentialAssetFormData {
+    const leaseStart = o.moveInDate || new Date().toISOString().slice(0, 10)
+    const leaseEnd = leaseEndFromStartMonths(leaseStart, o.leaseMonths || 12)
+    const tenants = [
+      {
+        id: o.tenantId,
+        name: o.tenant.name,
+        phone: o.tenant.phone,
+        idNumber: o.tenant.idNumber,
+      },
+    ]
+    let houses: ContractHousePick[] = []
+    if (o.isMergedBundle && o.bundleLines?.length) {
+      houses = o.bundleLines.map((l) => ({
+        id: l.houseId,
+        apartmentName: l.apartmentName,
+        houseNo: l.houseNo,
+        storeName: o.house.storeName,
+        address: '',
+        area: 0,
+        rentMonthly: l.rentMonthlySnapshot,
+      }))
+    } else {
+      houses = [
+        {
+          id: o.house.id,
+          apartmentName: o.house.apartmentName,
+          houseNo: o.house.houseNo,
+          storeName: o.house.storeName,
+          address: '',
+          area: 0,
+          rentMonthly: o.bundleRentMonthlySum ?? o.house.rentMonthly,
+        },
+      ]
+    }
+    return syncResidentialDerivedFields({
+      ...defaultResidentialAssetForm(),
+      tenantIds: [o.tenantId],
+      tenants,
+      houseIds: houses.map((h) => h.id),
+      houses,
+      leaseStart,
+      leaseEnd,
+      rentDueDay: String(rentDueDayFromYmd(leaseStart)),
+    })
+  }
+
+  async function enrichResidentialHousesFromApi(form: ResidentialAssetFormData): Promise<ResidentialAssetFormData> {
+    if (!form.houseIds.length) return form
+    const r = await apiGet<{ items: ContractHousePick[] }>('/api/admin/houses')
+    if (!r.ok) return form
+    const map = new Map(r.data.items.map((h) => [h.id, h]))
+    const houses = form.houseIds
+      .map((id) => map.get(id))
+      .filter(Boolean)
+      .map((h) => ({
+        id: h!.id,
+        apartmentName: h!.apartmentName,
+        houseNo: h!.houseNo,
+        storeName: h!.storeName,
+        address: h!.address ?? '',
+        area: h!.area,
+        rentMonthly: h!.rentMonthly,
+        status: h!.status,
+      }))
+    return syncResidentialDerivedFields(form, { houses, houseIds: houses.map((x) => x.id) })
+  }
+
+  function prefillNanningHousingFromOrder(o: OrderItem): NanningHousingFormData {
+    const leaseStart = o.moveInDate || new Date().toISOString().slice(0, 10)
+    const leaseEnd = leaseEndFromStartMonths(leaseStart, o.leaseMonths || 12)
+    const tenants = [
+      {
+        id: o.tenantId,
+        name: o.tenant.name,
+        phone: o.tenant.phone,
+        idNumber: o.tenant.idNumber,
+      },
+    ]
+    let houses: ContractHousePick[] = []
+    if (o.isMergedBundle && o.bundleLines?.length) {
+      houses = o.bundleLines.map((l) => ({
+        id: l.houseId,
+        apartmentName: l.apartmentName,
+        houseNo: l.houseNo,
+        storeName: o.house.storeName,
+        address: '',
+        area: 0,
+        rentMonthly: l.rentMonthlySnapshot,
+      }))
+    } else {
+      houses = [
+        {
+          id: o.house.id,
+          apartmentName: o.house.apartmentName,
+          houseNo: o.house.houseNo,
+          storeName: o.house.storeName,
+          address: '',
+          area: 0,
+          rentMonthly: o.bundleRentMonthlySum ?? o.house.rentMonthly,
+        },
+      ]
+    }
+    return syncNanningHousingDerivedFields({
+      ...defaultNanningHousingForm(),
+      tenantIds: [o.tenantId],
+      tenants,
+      houseIds: houses.map((h) => h.id),
+      houses: houses.map((h) => toBowanHousePick(h)),
+      leaseStart,
+      leaseEnd,
+      rentDueDay: String(rentDueDayFromYmd(leaseStart)),
+      monthlyRentTouched: false,
+    })
+  }
+
+  async function enrichNanningHousingHousesFromApi(form: NanningHousingFormData): Promise<NanningHousingFormData> {
+    if (!form.houseIds.length) return form
+    const r = await apiGet<{ items: (ContractHousePick & { houseType?: string })[] }>('/api/admin/houses')
+    if (!r.ok) return form
+    const map = new Map(r.data.items.map((h) => [h.id, h]))
+    const houses = form.houseIds
+      .map((id) => map.get(id))
+      .filter(Boolean)
+      .map((h) =>
+        toBowanHousePick({
+          id: h!.id,
+          apartmentName: h!.apartmentName,
+          houseNo: h!.houseNo,
+          storeName: h!.storeName,
+          address: h!.address ?? '',
+          area: h!.area,
+          rentMonthly: h!.rentMonthly,
+          status: h!.status,
+          houseType: h!.houseType,
+        }),
+      )
+    return syncNanningHousingDerivedFields(form, { houses, houseIds: houses.map((x) => x.id), monthlyRentTouched: false })
+  }
 
   type ContractCfgResp = {
     status?: string
     rentCycle?: string
     rentDueDay?: number | null
     contractTemplate?: string
+    contractTemplateDataJson?: string | null
     terminationRentMultiple?: number | null
     terminationDaysPastDue?: number | null
     configRemarkHtml?: string
@@ -362,9 +691,18 @@ export function OrdersPage() {
     setCfgAgreementSignDate('')
     setCfgAttachments([])
     setCfgContractStatus(o.contractStatus)
-    setCfgContractTemplate('APARTMENT')
+    setCfgContractTemplate('RESIDENTIAL_ASSET')
     setCfgTerminationRentMulti('2')
     setCfgTerminationDaysPastDue('7')
+    setCfgPendingFiles([])
+    setJiangnanForm(prefillJiangnanFromOrder(o))
+    void enrichJiangnanHousesFromApi(prefillJiangnanFromOrder(o)).then(setJiangnanForm)
+    setNonResidentialForm(prefillNonResidentialFromOrder(o))
+    void enrichNonResidentialHousesFromApi(prefillNonResidentialFromOrder(o)).then(setNonResidentialForm)
+    setResidentialForm(prefillResidentialFromOrder(o))
+    void enrichResidentialHousesFromApi(prefillResidentialFromOrder(o)).then(setResidentialForm)
+    setNanningHousingForm(prefillNanningHousingFromOrder(o))
+    void enrichNanningHousingHousesFromApi(prefillNanningHousingFromOrder(o)).then(setNanningHousingForm)
     // 租客来自订单，dropdown 先只有这一个选项（后续可扩展为租客库）
     setCfgTenantId(o.tenantId)
     setConfigOpen(true)
@@ -383,6 +721,14 @@ export function OrdersPage() {
         r.data.rentDueDay != null ? String(r.data.rentDueDay) : String(rentDueDayFromYmd(cfgMoveInDate)),
       )
       setCfgContractTemplate(normalizeContractTemplate(r.data.contractTemplate))
+      const parsedJn = parseJiangnanFactoryForm(r.data.contractTemplateDataJson)
+      if (parsedJn) setJiangnanForm(parsedJn)
+      const parsedNr = parseNonResidentialForm(r.data.contractTemplateDataJson)
+      if (parsedNr) setNonResidentialForm(parsedNr)
+      const parsedRa = parseResidentialAssetForm(r.data.contractTemplateDataJson)
+      if (parsedRa) setResidentialForm(parsedRa)
+      const parsedNh = parseNanningHousingForm(r.data.contractTemplateDataJson)
+      if (parsedNh) setNanningHousingForm(parsedNh)
       setCfgTerminationRentMulti(
         r.data.terminationRentMultiple != null && !Number.isNaN(r.data.terminationRentMultiple)
           ? String(r.data.terminationRentMultiple)
@@ -407,6 +753,19 @@ export function OrdersPage() {
     if (!configOrder) return
     if (!confirm(sendToTenant ? '确认保存合同并发送给租客？' : '确认保存合同配置？')) return
 
+    if (cfgContractTemplate === 'JIANGNAN_FACTORY') {
+      return saveConfigJiangnan(sendToTenant)
+    }
+    if (cfgContractTemplate === 'NON_RESIDENTIAL') {
+      return saveConfigNonResidential(sendToTenant)
+    }
+    if (cfgContractTemplate === 'RESIDENTIAL_ASSET') {
+      return saveConfigResidential(sendToTenant)
+    }
+    if (cfgContractTemplate === 'NANNING_HOUSING') {
+      return saveConfigNanningHousing(sendToTenant)
+    }
+
     setError('')
     setMsg('')
     const rentDueParsed = parseRentDueDayInput(cfgRentDueDay)
@@ -424,17 +783,17 @@ export function OrdersPage() {
 
     let terminationRentMultiple: number | null = null
     let terminationDaysPastDue: number | null = null
-    if (cfgContractTemplate === 'TRIPARTITE') {
+    if (contractTemplateUsesRentMultipleTermination(cfgContractTemplate)) {
       const x = parseFloat(cfgTerminationRentMulti.trim())
       if (Number.isNaN(x) || x <= 0) {
-        setError('三方合同：请填写大于 0 的月租倍数')
+        setError(`${contractTemplateZh(cfgContractTemplate)}：请填写大于 0 的月租倍数`)
         return
       }
       terminationRentMultiple = x
     } else {
       const d = parseInt(cfgTerminationDaysPastDue.trim(), 10)
       if (Number.isNaN(d) || d < 0) {
-        setError('公寓合同：请填写不小于 0 的逾期天数（整数）')
+        setError(`${contractTemplateZh(cfgContractTemplate)}：请填写不小于 0 的逾期天数（整数）`)
         return
       }
       terminationDaysPastDue = d
@@ -461,6 +820,256 @@ export function OrdersPage() {
       },
     )
     if (!r.ok) return setError(r.error)
+    setMsg(`合同已配置：${r.data.contractNo}`)
+    setConfigOpen(false)
+    await load()
+
+    if (sendToTenant) {
+      const url = `${window.location.origin.replace('5174', '5173')}/contracts/${r.data.id}?phone=${encodeURIComponent(
+        r.data.tenantPhone,
+      )}`
+      prompt('复制给租客的合同链接（打开 H5 进行确认/签字）', url)
+    }
+  }
+
+  async function saveConfigResidential(sendToTenant: boolean) {
+    if (!configOrder) return
+    setError('')
+    setMsg('')
+    const formErr = validateResidentialAssetForm(residentialForm)
+    if (formErr) return setError(formErr)
+
+    const rentMonthly = raSumHouseRentMonthly(residentialForm.houses)
+    if (rentMonthly <= 0) return setError('所选资产月租须大于 0')
+    const bondAmount = residentialHousingBondAmount(residentialForm)
+    const depositMultiple = rentMonthly > 0 ? bondAmount / rentMonthly : 1
+    const leaseMonths = leaseMonthsFromRange(residentialForm.leaseStart, residentialForm.leaseEnd)
+    const rentDueParsed = parseRentDueDayInput(
+      residentialForm.rentCycle === 'MONTHLY' ? residentialForm.rentDueDay : '1',
+    )
+    if (!rentDueParsed.ok) return setError(rentDueParsed.message)
+
+    let latestRentGraceDays: number | null = null
+    if (residentialForm.latestRentGraceDays.trim()) {
+      latestRentGraceDays = parseInt(residentialForm.latestRentGraceDays.trim(), 10)
+    }
+    const terminationDaysPastDue = parseInt(residentialForm.terminationDaysPastDue.trim() || '0', 10)
+    const primaryTenantId = residentialForm.tenantIds[0] ?? configOrder.tenantId
+
+    const r = await apiPost<{ id: string; contractNo: string; tenantPhone: string }>('/api/admin/contracts', {
+      orderId: configOrder.id,
+      tenantId: primaryTenantId,
+      leaseMonths,
+      moveInDate: residentialForm.leaseStart,
+      endDate: residentialForm.leaseEnd,
+      rentMonthly,
+      depositMultiple,
+      rentCycle: residentialForm.rentCycle,
+      penaltyFormula: 'amount*0.1%*days',
+      rentDueDay: rentDueParsed.value,
+      latestRentGraceDays,
+      configRemarkHtml: residentialForm.remarkHtml.trim() ? residentialForm.remarkHtml : undefined,
+      agreementSignDate: residentialForm.agreementSignDate.trim() === '' ? null : residentialForm.agreementSignDate,
+      contractTemplate: 'RESIDENTIAL_ASSET',
+      contractTemplateDataJson: serializeResidentialAssetForm(residentialForm),
+      terminationDaysPastDue,
+    })
+    if (!r.ok) return setError(r.error)
+
+    const contractId = r.data.id
+    for (const f of cfgPendingFiles) {
+      const up = await apiUploadContractAttachment(contractId, f)
+      if (!up.ok) return setError(`合同已保存，但附件「${f.name}」上传失败：${up.error}`)
+    }
+
+    setMsg(`合同已配置：${r.data.contractNo}`)
+    setConfigOpen(false)
+    await load()
+
+    if (sendToTenant) {
+      const url = `${window.location.origin.replace('5174', '5173')}/contracts/${r.data.id}?phone=${encodeURIComponent(
+        r.data.tenantPhone,
+      )}`
+      prompt('复制给租客的合同链接（打开 H5 进行确认/签字）', url)
+    }
+  }
+
+  async function saveConfigNanningHousing(sendToTenant: boolean) {
+    if (!configOrder) return
+    setError('')
+    setMsg('')
+    const formErr = validateNanningHousingForm(nanningHousingForm)
+    if (formErr) return setError(formErr)
+
+    const rentMonthly = bowanMonthlyRentNumber(nanningHousingForm)
+    if (rentMonthly <= 0) return setError('所选资产月租须大于 0')
+    const bondAmount = bowanPerformanceBondAmount(nanningHousingForm)
+    const depositMultiple = rentMonthly > 0 ? bondAmount / rentMonthly : 1
+    const leaseMonths = leaseMonthsFromRange(nanningHousingForm.leaseStart, nanningHousingForm.leaseEnd)
+    const rentDueParsed = parseRentDueDayInput(
+      nanningHousingForm.rentCycle === 'MONTHLY' ? nanningHousingForm.rentDueDay : '1',
+    )
+    if (!rentDueParsed.ok) return setError(rentDueParsed.message)
+
+    let latestRentGraceDays: number | null = null
+    if (nanningHousingForm.latestRentGraceDays.trim()) {
+      latestRentGraceDays = parseInt(nanningHousingForm.latestRentGraceDays.trim(), 10)
+    }
+    const terminationDaysPastDue = parseInt(nanningHousingForm.terminationDaysPastDue.trim() || '0', 10)
+    const primaryTenantId = nanningHousingForm.tenantIds[0] ?? configOrder.tenantId
+
+    const r = await apiPost<{ id: string; contractNo: string; tenantPhone: string }>('/api/admin/contracts', {
+      orderId: configOrder.id,
+      tenantId: primaryTenantId,
+      leaseMonths,
+      moveInDate: nanningHousingForm.leaseStart,
+      endDate: nanningHousingForm.leaseEnd,
+      rentMonthly,
+      depositMultiple,
+      rentCycle: nanningHousingForm.rentCycle,
+      penaltyFormula: bowanPenaltyFormula(nanningHousingForm),
+      rentDueDay: rentDueParsed.value,
+      latestRentGraceDays,
+      configRemarkHtml: nanningHousingForm.remarkHtml.trim() ? nanningHousingForm.remarkHtml : undefined,
+      agreementSignDate:
+        nanningHousingForm.agreementSignDate.trim() === '' ? null : nanningHousingForm.agreementSignDate,
+      contractTemplate: 'NANNING_HOUSING',
+      contractTemplateDataJson: serializeNanningHousingForm(nanningHousingForm),
+      terminationDaysPastDue,
+      billPushToTenant: nanningHousingForm.billPushToTenant === 'yes',
+    })
+    if (!r.ok) return setError(r.error)
+
+    const contractId = r.data.id
+    for (const f of cfgPendingFiles) {
+      const up = await apiUploadContractAttachment(contractId, f)
+      if (!up.ok) return setError(`合同已保存，但附件「${f.name}」上传失败：${up.error}`)
+    }
+
+    setMsg(`合同已配置：${r.data.contractNo}`)
+    setConfigOpen(false)
+    await load()
+
+    if (sendToTenant) {
+      const url = `${window.location.origin.replace('5174', '5173')}/contracts/${r.data.id}?phone=${encodeURIComponent(
+        r.data.tenantPhone,
+      )}`
+      prompt('复制给租客的合同链接（打开 H5 进行确认/签字）', url)
+    }
+  }
+
+  async function saveConfigNonResidential(sendToTenant: boolean) {
+    if (!configOrder) return
+    setError('')
+    setMsg('')
+    const formErr = validateNonResidentialForm(nonResidentialForm)
+    if (formErr) return setError(formErr)
+
+    const rentMonthly = nrSumHouseRentMonthly(nonResidentialForm.houses)
+    if (rentMonthly <= 0) return setError('所选资产月租须大于 0')
+    const bondAmount = nonResidentialPerformanceBondAmount(nonResidentialForm)
+    const depositMultiple = rentMonthly > 0 ? bondAmount / rentMonthly : 1
+    const leaseMonths = leaseMonthsFromRange(nonResidentialForm.leaseStart, nonResidentialForm.leaseEnd)
+    const rentDueParsed = parseRentDueDayInput(
+      nonResidentialForm.rentCycle === 'MONTHLY' ? nonResidentialForm.rentDueDay : '1',
+    )
+    if (!rentDueParsed.ok) return setError(rentDueParsed.message)
+
+    let latestRentGraceDays: number | null = null
+    if (nonResidentialForm.latestRentGraceDays.trim()) {
+      latestRentGraceDays = parseInt(nonResidentialForm.latestRentGraceDays.trim(), 10)
+    }
+    const terminationRentMultiple = parseFloat(nonResidentialForm.terminationRentMultiple.trim() || '0')
+    const primaryTenantId = nonResidentialForm.tenantIds[0] ?? configOrder.tenantId
+
+    const r = await apiPost<{ id: string; contractNo: string; tenantPhone: string }>('/api/admin/contracts', {
+      orderId: configOrder.id,
+      tenantId: primaryTenantId,
+      leaseMonths,
+      moveInDate: nonResidentialForm.leaseStart,
+      endDate: nonResidentialForm.leaseEnd,
+      rentMonthly,
+      depositMultiple,
+      rentCycle: nonResidentialForm.rentCycle,
+      penaltyFormula: 'amount*0.1%*days',
+      rentDueDay: rentDueParsed.value,
+      latestRentGraceDays,
+      configRemarkHtml: nonResidentialForm.remarkHtml.trim() ? nonResidentialForm.remarkHtml : undefined,
+      agreementSignDate: nonResidentialForm.agreementSignDate.trim() === '' ? null : nonResidentialForm.agreementSignDate,
+      contractTemplate: 'NON_RESIDENTIAL',
+      contractTemplateDataJson: serializeNonResidentialForm(nonResidentialForm),
+      terminationRentMultiple,
+    })
+    if (!r.ok) return setError(r.error)
+
+    const contractId = r.data.id
+    for (const f of cfgPendingFiles) {
+      const up = await apiUploadContractAttachment(contractId, f)
+      if (!up.ok) return setError(`合同已保存，但附件「${f.name}」上传失败：${up.error}`)
+    }
+
+    setMsg(`合同已配置：${r.data.contractNo}`)
+    setConfigOpen(false)
+    await load()
+
+    if (sendToTenant) {
+      const url = `${window.location.origin.replace('5174', '5173')}/contracts/${r.data.id}?phone=${encodeURIComponent(
+        r.data.tenantPhone,
+      )}`
+      prompt('复制给租客的合同链接（打开 H5 进行确认/签字）', url)
+    }
+  }
+
+  async function saveConfigJiangnan(sendToTenant: boolean) {
+    if (!configOrder) return
+    setError('')
+    setMsg('')
+    const formErr = validateJiangnanFactoryForm(jiangnanForm)
+    if (formErr) return setError(formErr)
+
+    const rentMonthly = sumHouseRentMonthly(jiangnanForm.houses)
+    if (rentMonthly <= 0) return setError('所选资产月租须大于 0')
+    const bondAmount = performanceBondAmount(jiangnanForm)
+    const depositMultiple = rentMonthly > 0 ? bondAmount / rentMonthly : 1
+    const leaseMonths = leaseMonthsFromRange(jiangnanForm.leaseStart, jiangnanForm.leaseEnd)
+    const rentDueParsed = parseRentDueDayInput(
+      jiangnanForm.rentCycle === 'MONTHLY' ? jiangnanForm.rentDueDay : '1',
+    )
+    if (!rentDueParsed.ok) return setError(rentDueParsed.message)
+
+    let latestRentGraceDays: number | null = null
+    if (jiangnanForm.latestRentGraceDays.trim()) {
+      latestRentGraceDays = parseInt(jiangnanForm.latestRentGraceDays.trim(), 10)
+    }
+    const terminationDaysPastDue = parseInt(jiangnanForm.terminationDaysPastDue.trim() || '0', 10)
+    const primaryTenantId = jiangnanForm.tenantIds[0] ?? configOrder.tenantId
+
+    const r = await apiPost<{ id: string; contractNo: string; tenantPhone: string }>('/api/admin/contracts', {
+      orderId: configOrder.id,
+      tenantId: primaryTenantId,
+      leaseMonths,
+      moveInDate: jiangnanForm.leaseStart,
+      endDate: jiangnanForm.leaseEnd,
+      rentMonthly,
+      depositMultiple,
+      rentCycle: jiangnanForm.rentCycle,
+      penaltyFormula: 'amount*0.1%*days',
+      rentDueDay: rentDueParsed.value,
+      latestRentGraceDays,
+      configRemarkHtml: jiangnanForm.remarkHtml.trim() ? jiangnanForm.remarkHtml : undefined,
+      agreementSignDate: jiangnanForm.agreementSignDate.trim() === '' ? null : jiangnanForm.agreementSignDate,
+      contractTemplate: 'JIANGNAN_FACTORY',
+      contractTemplateDataJson: serializeJiangnanFactoryForm(jiangnanForm),
+      terminationDaysPastDue,
+    })
+    if (!r.ok) return setError(r.error)
+
+    const contractId = r.data.id
+    for (const f of cfgPendingFiles) {
+      const up = await apiUploadContractAttachment(contractId, f)
+      if (!up.ok) return setError(`合同已保存，但附件「${f.name}」上传失败：${up.error}`)
+    }
+
     setMsg(`合同已配置：${r.data.contractNo}`)
     setConfigOpen(false)
     await load()
@@ -1009,283 +1618,133 @@ export function OrdersPage() {
                 <div className="a-kv-row">
                   <div className="a-kv-k">合同模板</div>
                   <div className="a-kv-v">
-                    <select
-                      className="a-filter-select"
+                    <ContractTemplateSelect
                       value={cfgContractTemplate}
-                      onChange={(e) => setCfgContractTemplate(e.target.value as ContractTemplateKind)}
-                    >
-                      <option value="TRIPARTITE">三方合同</option>
-                      <option value="APARTMENT">公寓合同</option>
-                    </select>
-                  </div>
-                </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">租客</div>
-                  <div className="a-kv-v">
-                    <select className="a-filter-select" value={cfgTenantId} onChange={(e) => setCfgTenantId(e.target.value)}>
-                      <option value={configOrder.tenantId}>
-                        {configOrder.tenant.name}（{configOrder.tenant.phone}）
-                      </option>
-                    </select>
-                  </div>
-                </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">租期（月）</div>
-                  <div className="a-kv-v">
-                    <input
-                      className="a-filter-input"
-                      style={{ minWidth: 160 }}
-                      type="number"
-                      value={cfgLeaseMonths}
-                      onChange={(e) => setCfgLeaseMonths(Number(e.target.value))}
-                    />
-                  </div>
-                </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">入住日期</div>
-                  <div className="a-kv-v">
-                    <input
-                      className="a-filter-input"
-                      style={{ minWidth: 160 }}
-                      type="date"
-                      value={cfgMoveInDate}
-                      onChange={(e) => setCfgMoveInDate(e.target.value)}
-                    />
-                  </div>
-                </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">签订日期</div>
-                  <div className="a-kv-v">
-                    <input
-                      className="a-filter-input"
-                      style={{ minWidth: 160 }}
-                      type="date"
-                      value={cfgAgreementSignDate}
-                      onChange={(e) => setCfgAgreementSignDate(e.target.value)}
-                    />
-                    <div className="a-muted" style={{ marginTop: 4, fontSize: 12, maxWidth: 420 }}>
-                      可选；书面合同落款用「签订日期」，可与实际电子签字时间不同。留空则清空该字段。
-                    </div>
-                  </div>
-                </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">月租（元）</div>
-                  <div className="a-kv-v">
-                    <input
-                      className="a-filter-input"
-                      style={{ minWidth: 160 }}
-                      type="number"
-                      value={cfgRentMonthly}
-                      onChange={(e) => setCfgRentMonthly(Number(e.target.value))}
-                    />
-                    {configOrder?.isMergedBundle ? (
-                      <div className="a-muted" style={{ marginTop: 6, maxWidth: 420, lineHeight: 1.5 }}>
-                        本单为<strong>多资产合并合同</strong>：月租须等于各子资产月租之和（当前订单合计 ¥
-                        {configOrder.bundleRentMonthlySum ?? '—'}），保存后将写入每期账单「房租」明细及子资产展开项。
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">押金倍数</div>
-                  <div className="a-kv-v">
-                    <input
-                      className="a-filter-input"
-                      style={{ minWidth: 160 }}
-                      type="number"
-                      step="0.5"
-                      value={cfgDepositMultiple}
-                      onChange={(e) => setCfgDepositMultiple(Number(e.target.value))}
-                    />
-                  </div>
-                </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">缴费周期</div>
-                  <div className="a-kv-v">
-                    <select
-                      className="a-filter-select"
-                      value={cfgRentCycle}
-                      onChange={(e) => setCfgRentCycle(e.target.value as RentCycle)}
-                    >
-                      <option value="MONTHLY">月付</option>
-                      <option value="BIMONTHLY">双月</option>
-                      <option value="QUARTERLY">季付</option>
-                      <option value="YEARLY">年付</option>
-                    </select>
-                  </div>
-                </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">滞纳金公式</div>
-                  <div className="a-kv-v">
-                    <input
-                      className="a-filter-input"
-                      style={{ minWidth: 220 }}
-                      value={cfgPenaltyFormula}
-                      onChange={(e) => setCfgPenaltyFormula(e.target.value)}
-                      placeholder="例如 amount*0.1%*days"
-                    />
-                  </div>
-                </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">交租日</div>
-                  <div className="a-kv-v">
-                    <input
-                      className="a-filter-input"
-                      style={{ minWidth: 160 }}
-                      type="number"
-                      min={1}
-                      max={31}
-                      value={cfgRentDueDay}
-                      onChange={(e) => setCfgRentDueDay(e.target.value.replace(/\D/g, '').slice(0, 2))}
-                    />
-                    <div className="a-muted" style={{ marginTop: 4, fontSize: 12, maxWidth: 420 }}>
-                      {rentCycleDueDayHint(cfgRentCycle)}；当月无该日则取月末（如 2 月 30 日 → 2 月 28/29 日）。
-                    </div>
-                  </div>
-                </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">最晚交租宽限期（天）</div>
-                  <div className="a-kv-v">
-                    <input
-                      className="a-filter-input"
-                      style={{ minWidth: 160 }}
-                      type="text"
-                      inputMode="numeric"
-                      autoComplete="off"
-                      placeholder="例如 5"
-                      title="相对每期应付日的宽限天数（与月付/双月/季付/年付约定兼容）"
-                      value={cfgLatestRentGraceDays}
-                      onChange={(e) => setCfgLatestRentGraceDays(e.target.value.replace(/\D/g, ''))}
-                    />
-                  </div>
-                </div>
-                <div className="a-kv-row" style={{ alignItems: 'flex-start' }}>
-                  <div className="a-kv-k">备注</div>
-                  <div className="a-kv-v" style={{ maxWidth: '100%' }}>
-                    <ContractRemarkEditor value={cfgRemarkHtml} onChange={setCfgRemarkHtml} />
-                  </div>
-                </div>
-                {configOrder.contractId ? (
-                  <div className="a-kv-row" style={{ alignItems: 'flex-start' }}>
-                    <div className="a-kv-k">附件</div>
-                    <div className="a-kv-v">
-                      <input
-                        type="file"
-                        onChange={async (e) => {
-                          const f = e.target.files?.[0]
-                          e.target.value = ''
-                          if (!f || !configOrder.contractId) return
-                          const r = await apiUploadContractAttachment(configOrder.contractId, f)
-                          if (!r.ok) return setError(r.error)
-                          const cid = configOrder.contractId
-                          setCfgAttachments(
-                            r.data.attachments.map((a) => ({
-                              ...a,
-                              previewUrl: `/api/admin/contracts/${cid}/attachment/${encodeURIComponent(a.file)}`,
-                              downloadUrl: `/api/admin/contracts/${cid}/attachment/${encodeURIComponent(a.file)}?download=1`,
-                            })),
+                      onChange={(next) => {
+                        setCfgContractTemplate(next)
+                        if (next === 'JIANGNAN_FACTORY' && configOrder) {
+                          void enrichJiangnanHousesFromApi(prefillJiangnanFromOrder(configOrder)).then(setJiangnanForm)
+                        }
+                        if (next === 'NON_RESIDENTIAL' && configOrder) {
+                          void enrichNonResidentialHousesFromApi(prefillNonResidentialFromOrder(configOrder)).then(
+                            setNonResidentialForm,
                           )
-                        }}
-                      />
-                      <div className="a-muted" style={{ fontSize: 12, marginTop: 4 }}>
-                        需先保存生成合同后再上传；单文件 ≤15MB
-                      </div>
-                      <ul style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 13 }}>
-                        {cfgAttachments.map((a) => (
-                          <li key={a.id} style={{ marginBottom: 4 }}>
-                            {a.name}{' '}
-                            <button
-                              type="button"
-                              className="a-btn ghost"
-                              style={{ padding: '2px 8px', fontSize: 12 }}
-                              onClick={() =>
-                                previewFileWithAuth(a.previewUrl).catch((e) =>
-                                  setError(e instanceof Error ? e.message : '预览失败'),
-                                )
-                              }
-                            >
-                              预览
-                            </button>{' '}
-                            <button
-                              type="button"
-                              className="a-btn ghost"
-                              style={{ padding: '2px 8px', fontSize: 12 }}
-                              onClick={() =>
-                                downloadFileWithAuth(a.downloadUrl, a.name).catch((e) =>
-                                  setError(e instanceof Error ? e.message : '下载失败'),
-                                )
-                              }
-                              disabled={contractAttachmentsLockedUntilPaid(cfgContractStatus)}
-                              title={
-                                contractAttachmentsLockedUntilPaid(cfgContractStatus)
-                                  ? '租客完成首笔缴费后方可下载'
-                                  : undefined
-                              }
-                            >
-                              下载
-                            </button>{' '}
-                            <button
-                              type="button"
-                              className="a-btn ghost"
-                              style={{ padding: '2px 8px', fontSize: 12 }}
-                              onClick={async () => {
-                                if (!configOrder.contractId) return
-                                const r = await apiDeleteContractAttachment(configOrder.contractId, a.file)
-                                if (!r.ok) return setError(r.error)
-                                const cid = configOrder.contractId
-                                setCfgAttachments(
-                                  r.data.attachments.map((x) => ({
-                                    ...x,
-                                    previewUrl: `/api/admin/contracts/${cid}/attachment/${encodeURIComponent(x.file)}`,
-                                    downloadUrl: `/api/admin/contracts/${cid}/attachment/${encodeURIComponent(x.file)}?download=1`,
-                                  })),
-                                )
-                              }}
-                            >
-                              删除
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  </div>
-                ) : null}
-                <div className="a-kv-row" style={{ alignItems: 'flex-start' }}>
-                  <div className="a-kv-k">解除合同短信发送时间</div>
-                  <div className="a-kv-v" style={{ maxWidth: 560, fontSize: 13, lineHeight: 1.65 }}>
-                    {cfgContractTemplate === 'TRIPARTITE' ? (
-                      <>
-                        当<strong>逾期金额</strong>超过<strong>月租</strong>的{' '}
-                        <input
-                          className="a-filter-input"
-                          type="number"
-                          step="0.1"
-                          min={0.1}
-                          style={{ width: 86 }}
-                          value={cfgTerminationRentMulti}
-                          onChange={(e) => setCfgTerminationRentMulti(e.target.value)}
-                        />{' '}
-                        倍时触发（规则配置存档；实际短信以业务接通为准）。
-                      </>
-                    ) : (
-                      <>
-                        当<strong>逾期天数</strong>超过<strong>最晚缴费日</strong>（含宽限期后的应付口径）后满{' '}
-                        <input
-                          className="a-filter-input"
-                          type="text"
-                          inputMode="numeric"
-                          style={{ width: 86 }}
-                          value={cfgTerminationDaysPastDue}
-                          onChange={(e) => setCfgTerminationDaysPastDue(e.target.value.replace(/\D/g, ''))}
-                        />{' '}
-                        天时触发（规则配置存档；实际短信以业务接通为准）。
-                      </>
-                    )}
+                        }
+                        if (next === 'RESIDENTIAL_ASSET' && configOrder) {
+                          void enrichResidentialHousesFromApi(prefillResidentialFromOrder(configOrder)).then(
+                            setResidentialForm,
+                          )
+                        }
+                        if (next === 'NANNING_HOUSING' && configOrder) {
+                          void enrichNanningHousingHousesFromApi(prefillNanningHousingFromOrder(configOrder)).then(
+                            setNanningHousingForm,
+                          )
+                        }
+                      }}
+                    />
                   </div>
                 </div>
+                {cfgContractTemplate === 'JIANGNAN_FACTORY' ? (
+                  <JiangnanFactoryContractForm
+                    value={jiangnanForm}
+                    onChange={setJiangnanForm}
+                    vacantHouseOnly={false}
+                    pendingFiles={cfgPendingFiles}
+                    onPendingFilesChange={setCfgPendingFiles}
+                    attachments={cfgAttachments}
+                    contractId={configOrder.contractId}
+                    onDeleteAttachment={async (fileKey) => {
+                      if (!configOrder.contractId) return
+                      const r = await apiDeleteContractAttachment(configOrder.contractId, fileKey)
+                      if (!r.ok) return setError(r.error)
+                      const cid = configOrder.contractId
+                      setCfgAttachments(
+                        r.data.attachments.map((a) => ({
+                          ...a,
+                          previewUrl: `/api/admin/contracts/${cid}/attachment/${encodeURIComponent(a.file)}`,
+                          downloadUrl: `/api/admin/contracts/${cid}/attachment/${encodeURIComponent(a.file)}?download=1`,
+                        })),
+                      )
+                    }}
+                  />
+                ) : cfgContractTemplate === 'NON_RESIDENTIAL' ? (
+                  <NonResidentialContractForm
+                    value={nonResidentialForm}
+                    onChange={setNonResidentialForm}
+                    vacantHouseOnly={false}
+                    leaseDatesEditable={false}
+                    pendingFiles={cfgPendingFiles}
+                    onPendingFilesChange={setCfgPendingFiles}
+                    attachments={cfgAttachments}
+                    contractId={configOrder.contractId}
+                    onDeleteAttachment={async (fileKey) => {
+                      if (!configOrder.contractId) return
+                      const r = await apiDeleteContractAttachment(configOrder.contractId, fileKey)
+                      if (!r.ok) return setError(r.error)
+                      const cid = configOrder.contractId
+                      setCfgAttachments(
+                        r.data.attachments.map((a) => ({
+                          ...a,
+                          previewUrl: `/api/admin/contracts/${cid}/attachment/${encodeURIComponent(a.file)}`,
+                          downloadUrl: `/api/admin/contracts/${cid}/attachment/${encodeURIComponent(a.file)}?download=1`,
+                        })),
+                      )
+                    }}
+                  />
+                ) : cfgContractTemplate === 'RESIDENTIAL_ASSET' ? (
+                  <ResidentialAssetContractForm
+                    value={residentialForm}
+                    onChange={setResidentialForm}
+                    vacantHouseOnly={false}
+                    pendingFiles={cfgPendingFiles}
+                    onPendingFilesChange={setCfgPendingFiles}
+                    attachments={cfgAttachments}
+                    contractId={configOrder.contractId}
+                    onDeleteAttachment={async (fileKey) => {
+                      if (!configOrder.contractId) return
+                      const r = await apiDeleteContractAttachment(configOrder.contractId, fileKey)
+                      if (!r.ok) return setError(r.error)
+                      const cid = configOrder.contractId
+                      setCfgAttachments(
+                        r.data.attachments.map((a) => ({
+                          ...a,
+                          previewUrl: `/api/admin/contracts/${cid}/attachment/${encodeURIComponent(a.file)}`,
+                          downloadUrl: `/api/admin/contracts/${cid}/attachment/${encodeURIComponent(a.file)}?download=1`,
+                        })),
+                      )
+                    }}
+                  />
+                ) : cfgContractTemplate === 'NANNING_HOUSING' ? (
+                  <NanningHousingContractForm
+                    value={nanningHousingForm}
+                    onChange={setNanningHousingForm}
+                    vacantHouseOnly={false}
+                    pendingFiles={cfgPendingFiles}
+                    onPendingFilesChange={setCfgPendingFiles}
+                    attachments={cfgAttachments}
+                    contractId={configOrder.contractId}
+                    onDeleteAttachment={async (fileKey) => {
+                      if (!configOrder.contractId) return
+                      const r = await apiDeleteContractAttachment(configOrder.contractId, fileKey)
+                      if (!r.ok) return setError(r.error)
+                      const cid = configOrder.contractId
+                      setCfgAttachments(
+                        r.data.attachments.map((a) => ({
+                          ...a,
+                          previewUrl: `/api/admin/contracts/${cid}/attachment/${encodeURIComponent(a.file)}`,
+                          downloadUrl: `/api/admin/contracts/${cid}/attachment/${encodeURIComponent(a.file)}?download=1`,
+                        })),
+                      )
+                    }}
+                  />
+                ) : null}
               </div>
 
               <div className="a-kv">
+                {cfgContractTemplate !== 'JIANGNAN_FACTORY' &&
+                cfgContractTemplate !== 'NON_RESIDENTIAL' &&
+                cfgContractTemplate !== 'RESIDENTIAL_ASSET' &&
+                cfgContractTemplate !== 'NANNING_HOUSING' ? (
                 <div className="a-kv-row">
                   <div className="a-kv-k">合同预览</div>
                   <div className="a-kv-v">
@@ -1308,7 +1767,7 @@ export function OrdersPage() {
                       <br />
                       合同模板：{contractTemplateZh(cfgContractTemplate)}
                       <br />
-                      {cfgContractTemplate === 'TRIPARTITE' ? (
+                      {contractTemplateUsesRentMultipleTermination(cfgContractTemplate) ? (
                         <>
                           解除类短信：逾期金额超过月租的 {cfgTerminationRentMulti.trim() || '—'} 倍时触发
                         </>
@@ -1320,6 +1779,7 @@ export function OrdersPage() {
                     </div>
                   </div>
                 </div>
+                ) : null}
                 <div className="a-kv-row">
                   <div className="a-kv-k">操作</div>
                   <div className="a-kv-v">
