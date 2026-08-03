@@ -6513,5 +6513,322 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     )
     res.json(data)
   })
+
+  // ---------- 记账本（付款二维码 + 流水） ----------
+
+  function ledgerFeeTypeLabel(feeType: string) {
+    const map: Record<string, string> = {
+      RENT: '租金',
+      PROPERTY: '物业费',
+      UTILITY: '水电费',
+      DEPOSIT: '押金',
+      OTHER: '其他',
+    }
+    return map[feeType] || feeType || '其他'
+  }
+
+  function serializeLedgerPayment(
+    row: {
+      id: string
+      displayNo: string
+      contractNo: string
+      billNo: string | null
+      tenantName: string
+      tenantPhone: string | null
+      amount: number
+      feeType: string
+      remark: string | null
+      status: string
+      payChannel: string | null
+      paidAt: Date | null
+      createdByAdminId: string | null
+      createdByName: string | null
+      cancelledAt: Date | null
+      cancelReason: string | null
+      createdAt: Date
+      updatedAt: Date
+    },
+    opts?: { mobileOrigin?: string },
+  ) {
+    const origin = (opts?.mobileOrigin || 'http://localhost:5173').replace(/\/$/, '')
+    const payUrl = `${origin}/ledger-pay/${encodeURIComponent(row.id)}`
+    const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(payUrl)}`
+    return {
+      id: row.id,
+      displayNo: row.displayNo,
+      contractNo: row.contractNo,
+      billNo: row.billNo,
+      tenantName: row.tenantName,
+      tenantPhone: row.tenantPhone,
+      amount: row.amount,
+      feeType: row.feeType,
+      feeTypeLabel: ledgerFeeTypeLabel(row.feeType),
+      remark: row.remark,
+      status: row.status,
+      payChannel: row.payChannel,
+      paidAt: row.paidAt ? row.paidAt.toISOString() : null,
+      createdByAdminId: row.createdByAdminId,
+      createdByName: row.createdByName,
+      cancelledAt: row.cancelledAt ? row.cancelledAt.toISOString() : null,
+      cancelReason: row.cancelReason,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+      payUrl,
+      qrImageUrl,
+    }
+  }
+
+  async function nextLedgerDisplayNo(prisma: PrismaClient) {
+    const now = new Date()
+    const y = now.getFullYear()
+    const m = String(now.getMonth() + 1).padStart(2, '0')
+    const d = String(now.getDate()).padStart(2, '0')
+    const prefix = `JZB${y}${m}${d}`
+    const latest = await prisma.ledgerPayment.findFirst({
+      where: { displayNo: { startsWith: prefix } },
+      orderBy: { displayNo: 'desc' },
+      select: { displayNo: true },
+    })
+    let seq = 1
+    if (latest?.displayNo) {
+      const tail = latest.displayNo.slice(prefix.length)
+      const n = Number(tail)
+      if (Number.isFinite(n) && n > 0) seq = n + 1
+    }
+    return `${prefix}${String(seq).padStart(3, '0')}`
+  }
+
+  /** 记账本：列表 */
+  app.get('/api/admin/ledger-payments', adminAuth(ctx.prisma), async (req, res) => {
+    const statusRaw = String(req.query.status ?? '').trim().toUpperCase()
+    const q = String(req.query.q ?? '').trim()
+    const dateFieldRaw = String(req.query.dateField ?? 'createdAt').trim()
+    const dateField = dateFieldRaw === 'paidAt' ? 'paidAt' : 'createdAt'
+    const dateFrom = String(req.query.dateFrom ?? '').trim()
+    const dateTo = String(req.query.dateTo ?? '').trim()
+
+    const where: any = {}
+    if (statusRaw === 'PENDING' || statusRaw === 'PAID' || statusRaw === 'CANCELLED') {
+      where.status = statusRaw
+    }
+    if (q) {
+      where.OR = [
+        { displayNo: { contains: q } },
+        { contractNo: { contains: q } },
+        { billNo: { contains: q } },
+        { tenantName: { contains: q } },
+        { tenantPhone: { contains: q } },
+        { remark: { contains: q } },
+      ]
+    }
+
+    const range: { gte?: Date; lte?: Date } = {}
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateFrom)) {
+      range.gte = new Date(`${dateFrom}T00:00:00.000`)
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateTo)) {
+      range.lte = new Date(`${dateTo}T23:59:59.999`)
+    }
+    if (range.gte || range.lte) {
+      where[dateField] = range
+    }
+
+    const [rows, allForSummary] = await Promise.all([
+      ctx.prisma.ledgerPayment.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        take: 2000,
+      }),
+      ctx.prisma.ledgerPayment.findMany({
+        select: { status: true, amount: true },
+        take: 5000,
+      }),
+    ])
+    const mobileOrigin = String(req.query.mobileOrigin ?? '').trim() || undefined
+    res.json({
+      items: rows.map((r) => serializeLedgerPayment(r, { mobileOrigin })),
+      summary: {
+        pending: allForSummary.filter((r) => r.status === 'PENDING').length,
+        paid: allForSummary.filter((r) => r.status === 'PAID').length,
+        cancelled: allForSummary.filter((r) => r.status === 'CANCELLED').length,
+        paidAmount: allForSummary.filter((r) => r.status === 'PAID').reduce((s, r) => s + r.amount, 0),
+        pendingAmount: allForSummary.filter((r) => r.status === 'PENDING').reduce((s, r) => s + r.amount, 0),
+      },
+    })
+  })
+
+  /** 记账本：创建并生成付款二维码 */
+  app.post('/api/admin/ledger-payments', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const Body = z.object({
+      contractNo: z.string().min(1).max(80),
+      billNo: z.string().max(80).optional().nullable(),
+      tenantName: z.string().min(1).max(80),
+      tenantPhone: z.string().max(30).optional().nullable(),
+      amount: z.number().positive().max(99999999),
+      feeType: z.enum(['RENT', 'PROPERTY', 'UTILITY', 'DEPOSIT', 'OTHER']).optional(),
+      remark: z.string().max(500).optional().nullable(),
+      mobileOrigin: z.string().min(1).optional(),
+    })
+    const parsed = Body.safeParse(req.body ?? {})
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID_BODY' })
+
+    const amount = Math.round(parsed.data.amount)
+    if (amount < 1) return res.status(400).json({ error: 'AMOUNT_TOO_SMALL' })
+
+    const displayNo = await nextLedgerDisplayNo(ctx.prisma)
+    const row = await ctx.prisma.ledgerPayment.create({
+      data: {
+        displayNo,
+        contractNo: parsed.data.contractNo.trim(),
+        billNo: (parsed.data.billNo || '').trim() || null,
+        tenantName: parsed.data.tenantName.trim(),
+        tenantPhone: (parsed.data.tenantPhone || '').trim() || null,
+        amount,
+        feeType: parsed.data.feeType || 'RENT',
+        remark: (parsed.data.remark || '').trim() || null,
+        status: 'PENDING',
+        createdByAdminId: auth.admin.id,
+        createdByName: auth.admin.name,
+      },
+    })
+
+    res.json(serializeLedgerPayment(row, { mobileOrigin: parsed.data.mobileOrigin }))
+  })
+
+  /** 记账本：详情 */
+  app.get('/api/admin/ledger-payments/:id', adminAuth(ctx.prisma), async (req, res) => {
+    const row = await ctx.prisma.ledgerPayment.findUnique({ where: { id: String(req.params.id) } })
+    if (!row) return res.status(404).json({ error: 'NOT_FOUND' })
+    const mobileOrigin = String(req.query.mobileOrigin ?? '').trim() || undefined
+    res.json(serializeLedgerPayment(row, { mobileOrigin }))
+  })
+
+  /** 记账本：下载付款二维码图片（同源代理，避免浏览器跨域无法保存） */
+  app.get('/api/admin/ledger-payments/:id/qr-image', adminAuth(ctx.prisma), async (req, res) => {
+    const row = await ctx.prisma.ledgerPayment.findUnique({ where: { id: String(req.params.id) } })
+    if (!row) return res.status(404).json({ error: 'NOT_FOUND' })
+    const mobileOrigin = String(req.query.mobileOrigin ?? '').trim() || 'http://localhost:5173'
+    const serialized = serializeLedgerPayment(row, { mobileOrigin })
+    try {
+      const upstream = await fetch(serialized.qrImageUrl)
+      if (!upstream.ok) return res.status(502).json({ error: 'QR_FETCH_FAILED' })
+      const buf = Buffer.from(await upstream.arrayBuffer())
+      const ctype = upstream.headers.get('content-type') || 'image/png'
+      res.setHeader('Content-Type', ctype)
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${encodeURIComponent(`收款码_${row.displayNo}.png`)}"; filename*=UTF-8''${encodeURIComponent(`收款码_${row.displayNo}.png`)}`,
+      )
+      res.send(buf)
+    } catch {
+      return res.status(502).json({ error: 'QR_FETCH_FAILED' })
+    }
+  })
+
+  /** 记账本：取消待付款 */
+  app.post('/api/admin/ledger-payments/:id/cancel', adminAuth(ctx.prisma), async (req, res) => {
+    const Body = z.object({ reason: z.string().max(200).optional().nullable() })
+    const parsed = Body.safeParse(req.body ?? {})
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID_BODY' })
+
+    const row = await ctx.prisma.ledgerPayment.findUnique({ where: { id: String(req.params.id) } })
+    if (!row) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (row.status !== 'PENDING') return res.status(409).json({ error: 'NOT_PENDING' })
+
+    const updated = await ctx.prisma.ledgerPayment.update({
+      where: { id: row.id },
+      data: {
+        status: 'CANCELLED',
+        cancelledAt: new Date(),
+        cancelReason: (parsed.data.reason || '').trim() || '管理员取消',
+      },
+    })
+    res.json(serializeLedgerPayment(updated))
+  })
+
+  /** 记账本：后台模拟收款（演示用，不经过扫码） */
+  app.post('/api/admin/ledger-payments/:id/simulate-pay', adminAuth(ctx.prisma), async (req, res) => {
+    const Body = z.object({
+      payChannel: z.enum(['WECHAT', 'ALIPAY']).optional(),
+    })
+    const parsed = Body.safeParse(req.body ?? {})
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID_BODY' })
+
+    const row = await ctx.prisma.ledgerPayment.findUnique({ where: { id: String(req.params.id) } })
+    if (!row) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (row.status !== 'PENDING') return res.status(409).json({ error: 'NOT_PENDING' })
+
+    const updated = await ctx.prisma.ledgerPayment.update({
+      where: { id: row.id },
+      data: {
+        status: 'PAID',
+        paidAt: new Date(),
+        payChannel: parsed.data.payChannel || 'WECHAT',
+      },
+    })
+    res.json(serializeLedgerPayment(updated))
+  })
+
+  /** 记账本：H5 公开详情（扫码打开，无需登录） */
+  app.get('/api/public/ledger-payments/:id', async (req, res) => {
+    const row = await ctx.prisma.ledgerPayment.findUnique({ where: { id: String(req.params.id) } })
+    if (!row) return res.status(404).json({ error: 'NOT_FOUND' })
+    res.json({
+      id: row.id,
+      displayNo: row.displayNo,
+      contractNo: row.contractNo,
+      billNo: row.billNo,
+      tenantName: row.tenantName,
+      amount: row.amount,
+      feeType: row.feeType,
+      feeTypeLabel: ledgerFeeTypeLabel(row.feeType),
+      remark: row.remark,
+      status: row.status,
+      payChannel: row.payChannel,
+      paidAt: row.paidAt ? row.paidAt.toISOString() : null,
+      createdAt: row.createdAt.toISOString(),
+    })
+  })
+
+  /** 记账本：H5 模拟微信支付 / 支付宝支付 */
+  app.post('/api/public/ledger-payments/:id/pay', async (req, res) => {
+    const Body = z.object({
+      payChannel: z.enum(['WECHAT', 'ALIPAY']),
+    })
+    const parsed = Body.safeParse(req.body ?? {})
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID_BODY' })
+
+    const row = await ctx.prisma.ledgerPayment.findUnique({ where: { id: String(req.params.id) } })
+    if (!row) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (row.status === 'CANCELLED') return res.status(409).json({ error: 'CANCELLED' })
+    if (row.status === 'PAID') {
+      return res.json({
+        ok: true,
+        alreadyPaid: true,
+        status: 'PAID',
+        payChannel: row.payChannel,
+        paidAt: row.paidAt ? row.paidAt.toISOString() : null,
+      })
+    }
+
+    const updated = await ctx.prisma.ledgerPayment.update({
+      where: { id: row.id },
+      data: {
+        status: 'PAID',
+        paidAt: new Date(),
+        payChannel: parsed.data.payChannel,
+      },
+    })
+    res.json({
+      ok: true,
+      alreadyPaid: false,
+      status: 'PAID',
+      payChannel: updated.payChannel,
+      paidAt: updated.paidAt ? updated.paidAt.toISOString() : null,
+      amount: updated.amount,
+      displayNo: updated.displayNo,
+    })
+  })
 }
 

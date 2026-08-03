@@ -17,6 +17,7 @@ import { BillDetailPage } from './pages/BillDetailPage'
 import { MyOrderDetailPage } from './pages/MyOrderDetailPage'
 import { RealNameVerifyPage } from './pages/RealNameVerifyPage'
 import { ProfilePage } from './pages/ProfilePage'
+import { LedgerPayPage } from './pages/LedgerPayPage'
 
 function App() {
   return (
@@ -38,6 +39,7 @@ function App() {
         <Route path="/contracts/:id" element={<ContractPage />} />
         <Route path="/pay/:contractId" element={<PaymentPage />} />
         <Route path="/remind-pay/:contractId" element={<PayReminderPage />} />
+        <Route path="/ledger-pay/:id" element={<LedgerPayPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </MobileLayout>

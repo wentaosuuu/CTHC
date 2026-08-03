@@ -23,6 +23,7 @@ const MENU_OPTIONS: { id: string; label: string; path: string }[] = [
   { id: 'overdue', label: '欠费预警', path: '/overdue' },
   { id: 'rent_reminders', label: '催租记录', path: '/rent-reminders' },
   { id: 'reports', label: '报表管理', path: '/reports' },
+  { id: 'ledger_book', label: '记账本', path: '/ledger-book' },
   { id: 'system_departments', label: '部门管理', path: '/system/departments' },
   { id: 'system_roles', label: '角色管理', path: '/system/roles' },
   { id: 'system_users', label: '用户管理', path: '/system/users' },
@@ -41,14 +42,14 @@ const initialRoles: Role[] = [
     name: '店长',
     code: 'STORE_MANAGER',
     description: '只能查看和操作自己门店的数据',
-    menuIds: ['home', 'houses', 'orders', 'contracts', 'tenant_profiles', 'transactions', 'contract_prepayments', 'bills', 'overdue', 'rent_reminders', 'reports'],
+    menuIds: ['home', 'houses', 'orders', 'contracts', 'tenant_profiles', 'transactions', 'contract_prepayments', 'bills', 'overdue', 'rent_reminders', 'reports', 'ledger_book'],
   },
   {
     id: 'role_finance',
     name: '财务',
     code: 'FINANCE',
     description: '可审批收据重打、作废收据，查看全部门店交易与账单',
-    menuIds: ['home', 'transactions', 'contract_prepayments', 'bills', 'overdue', 'rent_reminders', 'reports'],
+    menuIds: ['home', 'transactions', 'contract_prepayments', 'bills', 'overdue', 'rent_reminders', 'reports', 'ledger_book'],
   },
 ]
 

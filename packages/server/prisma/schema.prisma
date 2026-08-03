@@ -700,3 +700,40 @@ model TransactionReceiptPrintLog {
   @@index([transactionReceiptId, printedAt])
 }
 
+/// 记账本收款状态
+enum LedgerPaymentStatus {
+  PENDING
+  PAID
+  CANCELLED
+}
+
+/// 记账本：后台录入信息生成付款二维码，租户微信/支付宝扫码付款后形成流水
+model LedgerPayment {
+  id               String              @id @default(cuid())
+  /// 展示用流水号，如 JZB20260803001
+  displayNo        String              @unique
+  contractNo       String
+  billNo           String?
+  tenantName       String
+  tenantPhone      String?
+  /// 收款金额（元）
+  amount           Int
+  /// RENT | PROPERTY | UTILITY | DEPOSIT | OTHER
+  feeType          String              @default("RENT")
+  remark           String?
+  status           LedgerPaymentStatus @default(PENDING)
+  /// 租户实际付款渠道：WECHAT | ALIPAY
+  payChannel       String?
+  paidAt           DateTime?
+  createdByAdminId String?
+  createdByName    String?
+  cancelledAt      DateTime?
+  cancelReason     String?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  @@index([status, createdAt])
+  @@index([contractNo])
+  @@index([tenantName])
+}
+

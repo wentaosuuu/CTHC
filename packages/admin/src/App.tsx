@@ -14,6 +14,7 @@ import { TransactionsPage } from './pages/TransactionsPage'
 import { ContractPrepaymentsPage } from './pages/ContractPrepaymentsPage'
 import { RentRemindersPage } from './pages/RentRemindersPage'
 import { ReportsPage } from './pages/ReportsPage'
+import { LedgerBookPage } from './pages/LedgerBookPage'
 import { SystemDepartmentsPage } from './pages/SystemDepartmentsPage'
 import { SystemRolesPage } from './pages/SystemRolesPage'
 import { SystemUsersPage } from './pages/SystemUsersPage'
@@ -55,6 +56,7 @@ function App() {
         <Route path="/overdue" element={authed ? <OverduePage /> : <Navigate to="/login" replace />} />
         <Route path="/rent-reminders" element={authed ? <RentRemindersPage /> : <Navigate to="/login" replace />} />
         <Route path="/reports" element={authed ? <ReportsPage /> : <Navigate to="/login" replace />} />
+        <Route path="/ledger-book" element={authed ? <LedgerBookPage /> : <Navigate to="/login" replace />} />
 
         <Route path="/system/departments" element={authed ? <SystemDepartmentsPage /> : <Navigate to="/login" replace />} />
         <Route path="/system/roles" element={authed ? <SystemRolesPage /> : <Navigate to="/login" replace />} />

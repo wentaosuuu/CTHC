@@ -188,6 +188,15 @@ export function AdminLayout({ children }: { children: ReactNode }) {
               </nav>
             </div>
           </div>
+
+          <nav className="a-menu" style={{ marginTop: 4 }}>
+            <Link
+              className={loc.pathname.startsWith('/ledger-book') ? 'a-menu-item active' : 'a-menu-item'}
+              to="/ledger-book"
+            >
+              记账本
+            </Link>
+          </nav>
         </aside>
 
         <main className="a-content">{children}</main>
