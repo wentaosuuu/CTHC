@@ -50,6 +50,8 @@ import {
   syncExpiredActiveContractHouses,
 } from './contractExpiry.js'
 import { buildBillImportTemplateBuffer, parseAndImportBills, parseMeterNoListJson } from './services/billImport.js'
+import { buildLedgerImportTemplateBuffer, importLedgerPayments } from './services/ledgerImport.js'
+import { listLedgerReceivingAccounts, resolveReceivingAccount } from './services/ledgerReceivingAccounts.js'
 import { buildOfflineVerifyBatchTemplateBuffer, parseAndBatchOfflineVerify } from './services/billOfflineVerifyBatch.js'
 import {
   applyBillPushForContract,
@@ -6516,6 +6518,21 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
 
   // ---------- 记账本（付款二维码 + 流水） ----------
 
+  /** 记账本：收款账户下拉选项 */
+  app.get('/api/admin/ledger-receiving-accounts', adminAuth(ctx.prisma), async (_req, res) => {
+    const items = await listLedgerReceivingAccounts(ctx.prisma)
+    res.json({
+      items: items.map((a) => ({
+        id: a.id,
+        name: a.name,
+        bankName: a.bankName,
+        accountNo: a.accountNo,
+        accountName: a.accountName,
+        label: a.accountNo ? `${a.name}（${a.bankName} ${a.accountNo}）` : a.name,
+      })),
+    })
+  })
+
   function ledgerFeeTypeLabel(feeType: string) {
     const map: Record<string, string> = {
       RENT: '租金',
@@ -6527,15 +6544,36 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     return map[feeType] || feeType || '其他'
   }
 
+  function parseOptionalMoney(v: unknown) {
+    if (v == null || v === '') return 0
+    const n = typeof v === 'number' ? v : Number(v)
+    if (!Number.isFinite(n) || n < 0) return 0
+    return Math.round(n)
+  }
+
   function serializeLedgerPayment(
     row: {
       id: string
       displayNo: string
       contractNo: string
       billNo: string | null
+      houseNo?: string | null
       tenantName: string
+      idCardNo?: string | null
       tenantPhone: string | null
       amount: number
+      rentAmount?: number
+      performanceDeposit?: number
+      utilityDeposit?: number
+      cleaningDeposit?: number
+      propertyFee?: number
+      electricityFee?: number
+      waterFee?: number
+      lateFee?: number
+      receivingAccountId?: string | null
+      receivingAccountName?: string | null
+      receivingBankName?: string | null
+      receivingAccountNo?: string | null
       feeType: string
       remark: string | null
       status: string
@@ -6556,11 +6594,25 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     return {
       id: row.id,
       displayNo: row.displayNo,
-      contractNo: row.contractNo,
+      contractNo: row.contractNo || '',
       billNo: row.billNo,
-      tenantName: row.tenantName,
+      houseNo: row.houseNo ?? null,
+      tenantName: row.tenantName || '',
+      idCardNo: row.idCardNo ?? null,
       tenantPhone: row.tenantPhone,
       amount: row.amount,
+      rentAmount: row.rentAmount ?? 0,
+      performanceDeposit: row.performanceDeposit ?? 0,
+      utilityDeposit: row.utilityDeposit ?? 0,
+      cleaningDeposit: row.cleaningDeposit ?? 0,
+      propertyFee: row.propertyFee ?? 0,
+      electricityFee: row.electricityFee ?? 0,
+      waterFee: row.waterFee ?? 0,
+      lateFee: row.lateFee ?? 0,
+      receivingAccountId: row.receivingAccountId ?? null,
+      receivingAccountName: row.receivingAccountName ?? null,
+      receivingBankName: row.receivingBankName ?? null,
+      receivingAccountNo: row.receivingAccountNo ?? null,
       feeType: row.feeType,
       feeTypeLabel: ledgerFeeTypeLabel(row.feeType),
       remark: row.remark,
@@ -6616,7 +6668,9 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         { displayNo: { contains: q } },
         { contractNo: { contains: q } },
         { billNo: { contains: q } },
+        { houseNo: { contains: q } },
         { tenantName: { contains: q } },
+        { idCardNo: { contains: q } },
         { tenantPhone: { contains: q } },
         { remark: { contains: q } },
       ]
@@ -6657,35 +6711,117 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     })
   })
 
+  /** 记账本：下载批量导入模板 */
+  app.get('/api/admin/ledger-payments/import-template', adminAuth(ctx.prisma), (_req, res) => {
+    const buf = buildLedgerImportTemplateBuffer()
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent('记账本批量导入模板.xlsx')}`)
+    res.send(buf)
+  })
+
+  /** 记账本：批量导入并逐条生成待付款二维码记录 */
+  app.post('/api/admin/ledger-payments/import', adminAuth(ctx.prisma), upload.single('file'), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const file = (req as any).file
+    if (!file || !file.buffer) return res.status(400).json({ error: '请上传 Excel 文件', created: 0, items: [], errors: ['请上传 Excel 文件'] })
+
+    const Body = z.object({
+      mobileOrigin: z.string().min(1).optional(),
+    })
+    // multipart: mobileOrigin 可能在 fields 里
+    const mobileOrigin =
+      String((req.body && req.body.mobileOrigin) || '').trim() ||
+      undefined
+    const parsed = Body.safeParse({ mobileOrigin })
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID_BODY', created: 0, items: [], errors: [] })
+
+    const result = await importLedgerPayments(ctx.prisma, file.buffer, {
+      id: auth.admin.id,
+      name: auth.admin.name,
+    })
+    res.json({
+      ok: true,
+      created: result.created,
+      errors: result.errors,
+      items: result.items.map((r) => serializeLedgerPayment(r, { mobileOrigin: parsed.data.mobileOrigin })),
+    })
+  })
+
   /** 记账本：创建并生成付款二维码 */
   app.post('/api/admin/ledger-payments', adminAuth(ctx.prisma), async (req, res) => {
     const auth = getAdminAuth(req)
     const Body = z.object({
-      contractNo: z.string().min(1).max(80),
+      contractNo: z.string().max(80).optional().nullable(),
       billNo: z.string().max(80).optional().nullable(),
-      tenantName: z.string().min(1).max(80),
+      houseNo: z.string().max(80).optional().nullable(),
+      tenantName: z.string().max(80).optional().nullable(),
+      idCardNo: z.string().max(40).optional().nullable(),
       tenantPhone: z.string().max(30).optional().nullable(),
-      amount: z.number().positive().max(99999999),
-      feeType: z.enum(['RENT', 'PROPERTY', 'UTILITY', 'DEPOSIT', 'OTHER']).optional(),
+      receivingAccountId: z.string().max(80).optional().nullable(),
+      rentAmount: z.union([z.number(), z.string()]).optional().nullable(),
+      performanceDeposit: z.union([z.number(), z.string()]).optional().nullable(),
+      utilityDeposit: z.union([z.number(), z.string()]).optional().nullable(),
+      cleaningDeposit: z.union([z.number(), z.string()]).optional().nullable(),
+      propertyFee: z.union([z.number(), z.string()]).optional().nullable(),
+      electricityFee: z.union([z.number(), z.string()]).optional().nullable(),
+      waterFee: z.union([z.number(), z.string()]).optional().nullable(),
+      lateFee: z.union([z.number(), z.string()]).optional().nullable(),
+      /// 若传入则优先作为合计；否则按各项费用自动汇总
+      amount: z.union([z.number(), z.string()]).optional().nullable(),
       remark: z.string().max(500).optional().nullable(),
       mobileOrigin: z.string().min(1).optional(),
     })
     const parsed = Body.safeParse(req.body ?? {})
     if (!parsed.success) return res.status(400).json({ error: 'INVALID_BODY' })
 
-    const amount = Math.round(parsed.data.amount)
-    if (amount < 1) return res.status(400).json({ error: 'AMOUNT_TOO_SMALL' })
+    const rentAmount = parseOptionalMoney(parsed.data.rentAmount)
+    const performanceDeposit = parseOptionalMoney(parsed.data.performanceDeposit)
+    const utilityDeposit = parseOptionalMoney(parsed.data.utilityDeposit)
+    const cleaningDeposit = parseOptionalMoney(parsed.data.cleaningDeposit)
+    const propertyFee = parseOptionalMoney(parsed.data.propertyFee)
+    const electricityFee = parseOptionalMoney(parsed.data.electricityFee)
+    const waterFee = parseOptionalMoney(parsed.data.waterFee)
+    const lateFee = parseOptionalMoney(parsed.data.lateFee)
+    const feeSum =
+      rentAmount +
+      performanceDeposit +
+      utilityDeposit +
+      cleaningDeposit +
+      propertyFee +
+      electricityFee +
+      waterFee +
+      lateFee
+    const amountRaw = parseOptionalMoney(parsed.data.amount)
+    const amount = amountRaw > 0 ? amountRaw : feeSum
+
+    const account = await resolveReceivingAccount(ctx.prisma, {
+      id: parsed.data.receivingAccountId,
+    })
 
     const displayNo = await nextLedgerDisplayNo(ctx.prisma)
     const row = await ctx.prisma.ledgerPayment.create({
       data: {
         displayNo,
-        contractNo: parsed.data.contractNo.trim(),
+        contractNo: (parsed.data.contractNo || '').trim(),
         billNo: (parsed.data.billNo || '').trim() || null,
-        tenantName: parsed.data.tenantName.trim(),
+        houseNo: (parsed.data.houseNo || '').trim() || null,
+        tenantName: (parsed.data.tenantName || '').trim(),
+        idCardNo: (parsed.data.idCardNo || '').trim() || null,
         tenantPhone: (parsed.data.tenantPhone || '').trim() || null,
         amount,
-        feeType: parsed.data.feeType || 'RENT',
+        rentAmount,
+        performanceDeposit,
+        utilityDeposit,
+        cleaningDeposit,
+        propertyFee,
+        electricityFee,
+        waterFee,
+        lateFee,
+        receivingAccountId: account.receivingAccountId,
+        receivingAccountName: account.receivingAccountName,
+        receivingBankName: account.receivingBankName,
+        receivingAccountNo: account.receivingAccountNo,
+        feeType: 'OTHER',
         remark: (parsed.data.remark || '').trim() || null,
         status: 'PENDING',
         createdByAdminId: auth.admin.id,
@@ -6774,21 +6910,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
   app.get('/api/public/ledger-payments/:id', async (req, res) => {
     const row = await ctx.prisma.ledgerPayment.findUnique({ where: { id: String(req.params.id) } })
     if (!row) return res.status(404).json({ error: 'NOT_FOUND' })
-    res.json({
-      id: row.id,
-      displayNo: row.displayNo,
-      contractNo: row.contractNo,
-      billNo: row.billNo,
-      tenantName: row.tenantName,
-      amount: row.amount,
-      feeType: row.feeType,
-      feeTypeLabel: ledgerFeeTypeLabel(row.feeType),
-      remark: row.remark,
-      status: row.status,
-      payChannel: row.payChannel,
-      paidAt: row.paidAt ? row.paidAt.toISOString() : null,
-      createdAt: row.createdAt.toISOString(),
-    })
+    res.json(serializeLedgerPayment(row))
   })
 
   /** 记账本：H5 模拟微信支付 / 支付宝支付 */

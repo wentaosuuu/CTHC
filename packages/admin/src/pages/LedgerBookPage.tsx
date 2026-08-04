@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { apiGet, apiPost } from '../api'
 import { getAdminToken } from '../auth'
 import { Pagination, paginate } from '../components/Pagination'
@@ -10,9 +10,23 @@ type LedgerPayment = {
   displayNo: string
   contractNo: string
   billNo: string | null
+  houseNo: string | null
   tenantName: string
+  idCardNo: string | null
   tenantPhone: string | null
   amount: number
+  rentAmount: number
+  performanceDeposit: number
+  utilityDeposit: number
+  cleaningDeposit: number
+  propertyFee: number
+  electricityFee: number
+  waterFee: number
+  lateFee: number
+  receivingAccountId: string | null
+  receivingAccountName: string | null
+  receivingBankName: string | null
+  receivingAccountNo: string | null
   feeType: string
   feeTypeLabel: string
   remark: string | null
@@ -27,6 +41,15 @@ type LedgerPayment = {
   qrImageUrl: string
 }
 
+type ReceivingAccountOpt = {
+  id: string
+  name: string
+  bankName: string
+  accountNo: string
+  accountName: string
+  label: string
+}
+
 type ListResponse = {
   items: LedgerPayment[]
   summary: {
@@ -39,27 +62,39 @@ type ListResponse = {
 }
 
 type CreateForm = {
+  receivingAccountId: string
   contractNo: string
   billNo: string
+  houseNo: string
   tenantName: string
+  idCardNo: string
   tenantPhone: string
-  amount: string
-  feeType: 'RENT' | 'PROPERTY' | 'UTILITY' | 'DEPOSIT' | 'OTHER'
+  rentAmount: string
+  performanceDeposit: string
+  utilityDeposit: string
+  cleaningDeposit: string
+  propertyFee: string
+  electricityFee: string
+  waterFee: string
+  lateFee: string
   remark: string
 }
 
-const FEE_OPTIONS: { value: CreateForm['feeType']; label: string }[] = [
-  { value: 'RENT', label: '租金' },
-  { value: 'PROPERTY', label: '物业费' },
-  { value: 'UTILITY', label: '水电费' },
-  { value: 'DEPOSIT', label: '押金' },
-  { value: 'OTHER', label: '其他' },
+const MONEY_FIELDS: { key: keyof CreateForm; label: string }[] = [
+  { key: 'rentAmount', label: '租金' },
+  { key: 'performanceDeposit', label: '履约保证金' },
+  { key: 'utilityDeposit', label: '水电押金' },
+  { key: 'cleaningDeposit', label: '卫生保洁押金' },
+  { key: 'propertyFee', label: '物业费' },
+  { key: 'electricityFee', label: '电费' },
+  { key: 'waterFee', label: '水费' },
+  { key: 'lateFee', label: '滞纳金' },
 ]
 
 const TAB_META: Record<TabKey, { label: string; desc: string }> = {
   create: {
     label: '发起收款',
-    desc: '填写合同/账单等信息后生成付款二维码，发给租户用微信或支付宝扫码付款。',
+    desc: '按需填写房号、租户及各项费用（均可选填），或下载模板批量导入；每条记录生成独立付款二维码。',
   },
   pending: {
     label: '待付款',
@@ -196,13 +231,37 @@ async function downloadQrImage(item: LedgerPayment): Promise<void> {
   })
 }
 
+function moneyOrZero(v: string) {
+  const n = Number(v)
+  if (!Number.isFinite(n) || n < 0) return 0
+  return Math.round(n)
+}
+
+function formFeeSum(form: CreateForm) {
+  return MONEY_FIELDS.reduce((s, f) => s + moneyOrZero(String(form[f.key] ?? '')), 0)
+}
+
+function fmtMoney(n: number | null | undefined) {
+  if (n == null || n === 0) return '—'
+  return `¥${n.toLocaleString()}`
+}
+
 const emptyForm = (): CreateForm => ({
+  receivingAccountId: '',
   contractNo: '',
   billNo: '',
+  houseNo: '',
   tenantName: '',
+  idCardNo: '',
   tenantPhone: '',
-  amount: '',
-  feeType: 'RENT',
+  rentAmount: '',
+  performanceDeposit: '',
+  utilityDeposit: '',
+  cleaningDeposit: '',
+  propertyFee: '',
+  electricityFee: '',
+  waterFee: '',
+  lateFee: '',
   remark: '',
 })
 
@@ -211,6 +270,7 @@ export function LedgerBookPage() {
   const [form, setForm] = useState<CreateForm>(emptyForm)
   const [created, setCreated] = useState<LedgerPayment | null>(null)
   const [creating, setCreating] = useState(false)
+  const [accounts, setAccounts] = useState<ReceivingAccountOpt[]>([])
 
   const [items, setItems] = useState<LedgerPayment[]>([])
   const [summary, setSummary] = useState<ListResponse['summary']>({
@@ -232,6 +292,10 @@ export function LedgerBookPage() {
   const [pageSize, setPageSize] = useState(10)
   const [qrDetail, setQrDetail] = useState<LedgerPayment | null>(null)
   const [busyId, setBusyId] = useState('')
+  const [batchItems, setBatchItems] = useState<LedgerPayment[]>([])
+  const [batchErrors, setBatchErrors] = useState<string[]>([])
+  const [importing, setImporting] = useState(false)
+  const importInputRef = useRef<HTMLInputElement | null>(null)
 
   const loadList = useCallback(
     async (opts?: {
@@ -280,6 +344,17 @@ export function LedgerBookPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, loadList])
 
+  useEffect(() => {
+    let alive = true
+    void apiGet<{ items: ReceivingAccountOpt[] }>('/api/admin/ledger-receiving-accounts').then((r) => {
+      if (!alive || !r.ok) return
+      setAccounts(r.data.items ?? [])
+    })
+    return () => {
+      alive = false
+    }
+  }, [])
+
   const pageData = useMemo(() => paginate(items, page, pageSize), [items, page, pageSize])
 
   function updateField<K extends keyof CreateForm>(key: K, value: CreateForm[K]) {
@@ -290,19 +365,26 @@ export function LedgerBookPage() {
     e.preventDefault()
     setError('')
     setMsg('')
-    const amount = Number(form.amount)
-    if (!form.contractNo.trim()) return setError('请填写合同编号')
-    if (!form.tenantName.trim()) return setError('请填写租户姓名')
-    if (!Number.isFinite(amount) || amount <= 0) return setError('请填写有效的收款金额')
+    const amount = formFeeSum(form)
 
     setCreating(true)
     const r = await apiPost<LedgerPayment>('/api/admin/ledger-payments', {
-      contractNo: form.contractNo.trim(),
+      receivingAccountId: form.receivingAccountId.trim() || null,
+      contractNo: form.contractNo.trim() || null,
       billNo: form.billNo.trim() || null,
-      tenantName: form.tenantName.trim(),
+      houseNo: form.houseNo.trim() || null,
+      tenantName: form.tenantName.trim() || null,
+      idCardNo: form.idCardNo.trim() || null,
       tenantPhone: form.tenantPhone.trim() || null,
+      rentAmount: moneyOrZero(form.rentAmount),
+      performanceDeposit: moneyOrZero(form.performanceDeposit),
+      utilityDeposit: moneyOrZero(form.utilityDeposit),
+      cleaningDeposit: moneyOrZero(form.cleaningDeposit),
+      propertyFee: moneyOrZero(form.propertyFee),
+      electricityFee: moneyOrZero(form.electricityFee),
+      waterFee: moneyOrZero(form.waterFee),
+      lateFee: moneyOrZero(form.lateFee),
       amount,
-      feeType: form.feeType,
       remark: form.remark.trim() || null,
       mobileOrigin: guessMobilePayOrigin(),
     })
@@ -361,6 +443,71 @@ export function LedgerBookPage() {
     }
   }
 
+  async function downloadImportTemplate() {
+    setError('')
+    const token = getAdminToken()
+    const res = await fetch('/api/admin/ledger-payments/import-template', {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+    if (!res.ok) {
+      setError('下载导入模板失败')
+      return
+    }
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = '记账本批量导入模板.xlsx'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+    setMsg('已下载导入模板，填写后可批量导入生成二维码')
+  }
+
+  async function uploadImportFile(file: File) {
+    setImporting(true)
+    setError('')
+    setMsg('')
+    setBatchErrors([])
+    setBatchItems([])
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('mobileOrigin', guessMobilePayOrigin())
+    const token = getAdminToken()
+    const res = await fetch('/api/admin/ledger-payments/import', {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: formData,
+    })
+    const data = await res.json().catch(() => ({} as any))
+    setImporting(false)
+    if (importInputRef.current) importInputRef.current.value = ''
+    if (!res.ok) {
+      setError(data.error || '批量导入失败')
+      setBatchErrors(Array.isArray(data.errors) ? data.errors : [])
+      return
+    }
+    const createdItems = (data.items ?? []) as LedgerPayment[]
+    const errs = (data.errors ?? []) as string[]
+    setBatchItems(createdItems)
+    setBatchErrors(errs)
+    if (createdItems.length > 0) {
+      setCreated(createdItems[0])
+      setMsg(
+        `批量导入成功：已生成 ${createdItems.length} 条待付款记录（每条对应独立二维码）。可在「待付款」「全部流水」中查看。`,
+      )
+      // 刷新汇总角标
+      void apiGet<ListResponse>(`/api/admin/ledger-payments?mobileOrigin=${encodeURIComponent(guessMobilePayOrigin())}`).then(
+        (r) => {
+          if (r.ok && r.data.summary) setSummary(r.data.summary)
+        },
+      )
+    } else {
+      setError(errs[0] || '未导入任何记录')
+    }
+  }
+
   function applyDatePreset(preset: 'today' | 'week' | 'month' | 'clear') {
     const now = new Date()
     let from = ''
@@ -395,12 +542,24 @@ export function LedgerBookPage() {
     const header = [
       '流水号',
       '创建时间',
+      '收款账户',
+      '开户行',
+      '账号',
       '合同编号',
       '账单编号',
-      '租户姓名',
+      '房号',
+      '租户名称',
+      '身份证号',
       '租户手机',
-      '费用类型',
-      '金额',
+      '租金',
+      '履约保证金',
+      '水电押金',
+      '卫生保洁押金',
+      '物业费',
+      '电费',
+      '水费',
+      '滞纳金',
+      '合计金额',
       '状态',
       '付款渠道',
       '付款时间',
@@ -416,11 +575,23 @@ export function LedgerBookPage() {
         [
           x.displayNo,
           fmtDt(x.createdAt),
+          x.receivingAccountName ?? '',
+          x.receivingBankName ?? '',
+          x.receivingAccountNo ?? '',
           x.contractNo,
           x.billNo ?? '',
+          x.houseNo ?? '',
           x.tenantName,
+          x.idCardNo ?? '',
           x.tenantPhone ?? '',
-          x.feeTypeLabel,
+          x.rentAmount ?? 0,
+          x.performanceDeposit ?? 0,
+          x.utilityDeposit ?? 0,
+          x.cleaningDeposit ?? 0,
+          x.propertyFee ?? 0,
+          x.electricityFee ?? 0,
+          x.waterFee ?? 0,
+          x.lateFee ?? 0,
           x.amount,
           statusLabel(x.status),
           channelLabel(x.payChannel),
@@ -511,49 +682,170 @@ export function LedgerBookPage() {
       {msg ? <div className="a-card a-success">{msg}</div> : null}
 
       {tab === 'create' ? (
+        <div className="a-col" style={{ gap: 16 }}>
+          <div className="a-card">
+            <div className="a-row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+              <div>
+                <div className="a-h2">批量导入</div>
+                <div className="a-muted" style={{ marginTop: 4 }}>
+                  下载模板填写后上传：Excel 每一行生成一条待付款记录，并各自生成独立付款二维码。
+                </div>
+              </div>
+              <div className="a-row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                <button type="button" className="a-btn ghost" onClick={() => void downloadImportTemplate()}>
+                  下载导入模板
+                </button>
+                <button
+                  type="button"
+                  className="a-btn"
+                  disabled={importing}
+                  onClick={() => importInputRef.current?.click()}
+                >
+                  {importing ? '导入中…' : '上传 Excel 批量生成'}
+                </button>
+                <input
+                  ref={importInputRef}
+                  type="file"
+                  accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0]
+                    if (f) void uploadImportFile(f)
+                  }}
+                />
+              </div>
+            </div>
+            {batchErrors.length > 0 ? (
+              <div className="a-error" style={{ marginTop: 12, fontSize: 13, lineHeight: 1.5 }}>
+                {batchErrors.slice(0, 8).map((e, i) => (
+                  <div key={i}>{e}</div>
+                ))}
+                {batchErrors.length > 8 ? <div>…另有 {batchErrors.length - 8} 条提示</div> : null}
+              </div>
+            ) : null}
+            {batchItems.length > 0 ? (
+              <div style={{ marginTop: 14 }}>
+                <div className="a-muted" style={{ marginBottom: 8 }}>
+                  本次导入 {batchItems.length} 条（点击「二维码」可查看/保存；也可到「待付款」查看全部）
+                </div>
+                <div className="a-table-wrap">
+                  <table className="a-table" style={{ width: '100%', minWidth: 720 }}>
+                    <thead>
+                      <tr>
+                        <th>流水号</th>
+                        <th>收款账户</th>
+                        <th>房号</th>
+                        <th>租户</th>
+                        <th>合计</th>
+                        <th>状态</th>
+                        <th>操作</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {batchItems.map((row) => (
+                        <tr key={row.id}>
+                          <td style={{ fontWeight: 700 }}>{row.displayNo}</td>
+                          <td>{row.receivingAccountName || '—'}</td>
+                          <td>{row.houseNo || '—'}</td>
+                          <td>{row.tenantName || '—'}</td>
+                          <td style={{ fontWeight: 800 }}>¥{(row.amount ?? 0).toLocaleString()}</td>
+                          <td style={{ color: '#1d4ed8', fontWeight: 700 }}>{statusLabel(row.status)}</td>
+                          <td>
+                            <div className="a-row" style={{ gap: 6 }}>
+                              <button
+                                type="button"
+                                className="a-btn ghost"
+                                onClick={() => {
+                                  setCreated(row)
+                                  setQrDetail(row)
+                                }}
+                              >
+                                二维码
+                              </button>
+                              <button
+                                type="button"
+                                className="a-btn ghost"
+                                disabled={savingQr}
+                                onClick={() => void handleSaveQr(row)}
+                              >
+                                保存图片
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="a-row" style={{ marginTop: 10, gap: 8 }}>
+                  <button type="button" className="a-btn" onClick={() => setTab('pending')}>
+                    去待付款查看
+                  </button>
+                  <button type="button" className="a-btn ghost" onClick={() => setTab('all')}>
+                    去全部流水
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+
         <div className="a-row" style={{ alignItems: 'stretch', gap: 16, flexWrap: 'wrap' }}>
           <div className="a-card" style={{ flex: '1 1 420px', minWidth: 0 }}>
             <div className="a-h2" style={{ marginBottom: 12 }}>
-              收款信息
+              单笔收款信息
             </div>
             <form onSubmit={(e) => void handleCreate(e)}>
               <div
                 style={{
                   display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
                   gap: 14,
                 }}
               >
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 6, gridColumn: '1 / -1' }}>
+                  <span className="a-muted">收款账户</span>
+                  <select
+                    className="a-filter-select"
+                    style={{ width: '100%', minHeight: 42, maxWidth: 560 }}
+                    value={form.receivingAccountId}
+                    onChange={(e) => updateField('receivingAccountId', e.target.value)}
+                  >
+                    <option value="">请选择收款账户（选填）</option>
+                    {accounts.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  <span className="a-muted">合同编号 *</span>
+                  <span className="a-muted">房号</span>
                   <input
                     className="a-input"
                     style={{ minWidth: 0, width: '100%' }}
-                    value={form.contractNo}
-                    onChange={(e) => updateField('contractNo', e.target.value)}
-                    placeholder="如 HT2026-001"
-                    required
+                    value={form.houseNo}
+                    onChange={(e) => updateField('houseNo', e.target.value)}
+                    placeholder="如 A-1201"
                   />
                 </label>
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  <span className="a-muted">账单编号</span>
-                  <input
-                    className="a-input"
-                    style={{ minWidth: 0, width: '100%' }}
-                    value={form.billNo}
-                    onChange={(e) => updateField('billNo', e.target.value)}
-                    placeholder="选填，如 ZD0000123456"
-                  />
-                </label>
-                <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  <span className="a-muted">租户姓名 *</span>
+                  <span className="a-muted">租户名称</span>
                   <input
                     className="a-input"
                     style={{ minWidth: 0, width: '100%' }}
                     value={form.tenantName}
                     onChange={(e) => updateField('tenantName', e.target.value)}
                     placeholder="付款人姓名"
-                    required
+                  />
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <span className="a-muted">身份证号</span>
+                  <input
+                    className="a-input"
+                    style={{ minWidth: 0, width: '100%' }}
+                    value={form.idCardNo}
+                    onChange={(e) => updateField('idCardNo', e.target.value)}
+                    placeholder="选填"
                   />
                 </label>
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -567,34 +859,42 @@ export function LedgerBookPage() {
                   />
                 </label>
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  <span className="a-muted">收款金额（元）*</span>
+                  <span className="a-muted">合同编号</span>
                   <input
                     className="a-input"
                     style={{ minWidth: 0, width: '100%' }}
-                    type="number"
-                    min={1}
-                    step={1}
-                    value={form.amount}
-                    onChange={(e) => updateField('amount', e.target.value)}
-                    placeholder="如 3500"
-                    required
+                    value={form.contractNo}
+                    onChange={(e) => updateField('contractNo', e.target.value)}
+                    placeholder="选填"
                   />
                 </label>
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  <span className="a-muted">费用类型</span>
-                  <select
-                    className="a-filter-select"
-                    style={{ width: '100%', minHeight: 42 }}
-                    value={form.feeType}
-                    onChange={(e) => updateField('feeType', e.target.value as CreateForm['feeType'])}
-                  >
-                    {FEE_OPTIONS.map((o) => (
-                      <option key={o.value} value={o.value}>
-                        {o.label}
-                      </option>
-                    ))}
-                  </select>
+                  <span className="a-muted">账单编号</span>
+                  <input
+                    className="a-input"
+                    style={{ minWidth: 0, width: '100%' }}
+                    value={form.billNo}
+                    onChange={(e) => updateField('billNo', e.target.value)}
+                    placeholder="选填"
+                  />
                 </label>
+
+                {MONEY_FIELDS.map((f) => (
+                  <label key={f.key} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <span className="a-muted">{f.label}（元）</span>
+                    <input
+                      className="a-input"
+                      style={{ minWidth: 0, width: '100%' }}
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={form[f.key]}
+                      onChange={(e) => updateField(f.key, e.target.value)}
+                      placeholder="选填"
+                    />
+                  </label>
+                ))}
+
                 <label
                   style={{
                     display: 'flex',
@@ -609,26 +909,35 @@ export function LedgerBookPage() {
                     style={{ minWidth: 0, width: '100%' }}
                     value={form.remark}
                     onChange={(e) => updateField('remark', e.target.value)}
-                    placeholder="选填，如账期、房号说明等"
+                    placeholder="选填"
                   />
                 </label>
               </div>
-              <div className="a-row" style={{ marginTop: 16, gap: 10 }}>
-                <button type="submit" className="a-btn" disabled={creating}>
-                  {creating ? '生成中…' : '生成二维码'}
-                </button>
-                <button
-                  type="button"
-                  className="a-btn ghost"
-                  onClick={() => {
-                    setForm(emptyForm())
-                    setCreated(null)
-                    setError('')
-                    setMsg('')
-                  }}
-                >
-                  清空
-                </button>
+
+              <div
+                className="a-row"
+                style={{ marginTop: 14, justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}
+              >
+                <div style={{ fontWeight: 800, fontSize: 16, color: '#1d4ed8' }}>
+                  合计应收：¥{formFeeSum(form).toLocaleString()}
+                </div>
+                <div className="a-row" style={{ gap: 10 }}>
+                  <button type="submit" className="a-btn" disabled={creating}>
+                    {creating ? '生成中…' : '生成二维码'}
+                  </button>
+                  <button
+                    type="button"
+                    className="a-btn ghost"
+                    onClick={() => {
+                      setForm(emptyForm())
+                      setCreated(null)
+                      setError('')
+                      setMsg('')
+                    }}
+                  >
+                    清空
+                  </button>
+                </div>
               </div>
             </form>
           </div>
@@ -655,6 +964,7 @@ export function LedgerBookPage() {
             )}
           </div>
         </div>
+        </div>
       ) : (
         <>
           <div className="a-card a-row">
@@ -664,7 +974,7 @@ export function LedgerBookPage() {
                 className="a-filter-input"
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
-                placeholder="流水号 / 合同 / 账单 / 租户 / 手机"
+                placeholder="流水号 / 房号 / 合同 / 账单 / 租户 / 身份证 / 手机"
                 style={{ minWidth: 220 }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
@@ -761,19 +1071,26 @@ export function LedgerBookPage() {
 
           <div className="a-card">
             <div className="a-table-wrap">
-              <table className="a-table" style={{ width: '100%', minWidth: 960 }}>
+              <table className="a-table" style={{ width: '100%', minWidth: 1280 }}>
                 <thead>
                   <tr>
                     <th>流水号</th>
                     <th>创建时间</th>
-                    <th>合同编号</th>
-                    <th>账单编号</th>
-                    <th>租户</th>
-                    <th>费用类型</th>
-                    <th>金额</th>
+                    <th>收款账户</th>
+                    <th>房号</th>
+                    <th>租户名称</th>
+                    <th>身份证号</th>
+                    <th>租金</th>
+                    <th>履约保证金</th>
+                    <th>水电押金</th>
+                    <th>卫生保洁押金</th>
+                    <th>物业费</th>
+                    <th>电费</th>
+                    <th>水费</th>
+                    <th>滞纳金</th>
+                    <th>合计</th>
                     <th>状态</th>
                     <th>付款渠道</th>
-                    <th>付款时间</th>
                     <th>操作</th>
                   </tr>
                 </thead>
@@ -784,19 +1101,36 @@ export function LedgerBookPage() {
                       <td className="a-muted" style={{ whiteSpace: 'nowrap', fontSize: 12 }}>
                         {fmtDt(row.createdAt)}
                       </td>
-                      <td>{row.contractNo}</td>
-                      <td className="a-muted">{row.billNo || '—'}</td>
                       <td>
-                        <div>{row.tenantName}</div>
+                        <div>{row.receivingAccountName || '—'}</div>
+                        {row.receivingAccountNo ? (
+                          <div className="a-muted" style={{ fontSize: 12 }}>
+                            {row.receivingAccountNo}
+                          </div>
+                        ) : null}
+                      </td>
+                      <td>{row.houseNo || '—'}</td>
+                      <td>
+                        <div>{row.tenantName || '—'}</div>
                         {row.tenantPhone ? (
                           <div className="a-muted" style={{ fontSize: 12 }}>
                             {row.tenantPhone}
                           </div>
                         ) : null}
                       </td>
-                      <td>{row.feeTypeLabel}</td>
+                      <td className="a-muted" style={{ fontSize: 12 }}>
+                        {row.idCardNo || '—'}
+                      </td>
+                      <td style={{ fontVariantNumeric: 'tabular-nums' }}>{fmtMoney(row.rentAmount)}</td>
+                      <td style={{ fontVariantNumeric: 'tabular-nums' }}>{fmtMoney(row.performanceDeposit)}</td>
+                      <td style={{ fontVariantNumeric: 'tabular-nums' }}>{fmtMoney(row.utilityDeposit)}</td>
+                      <td style={{ fontVariantNumeric: 'tabular-nums' }}>{fmtMoney(row.cleaningDeposit)}</td>
+                      <td style={{ fontVariantNumeric: 'tabular-nums' }}>{fmtMoney(row.propertyFee)}</td>
+                      <td style={{ fontVariantNumeric: 'tabular-nums' }}>{fmtMoney(row.electricityFee)}</td>
+                      <td style={{ fontVariantNumeric: 'tabular-nums' }}>{fmtMoney(row.waterFee)}</td>
+                      <td style={{ fontVariantNumeric: 'tabular-nums' }}>{fmtMoney(row.lateFee)}</td>
                       <td style={{ fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>
-                        ¥{row.amount.toLocaleString()}
+                        ¥{(row.amount ?? 0).toLocaleString()}
                       </td>
                       <td>
                         <span
@@ -814,9 +1148,6 @@ export function LedgerBookPage() {
                         </span>
                       </td>
                       <td className="a-muted">{channelLabel(row.payChannel)}</td>
-                      <td className="a-muted" style={{ whiteSpace: 'nowrap', fontSize: 12 }}>
-                        {fmtDt(row.paidAt)}
-                      </td>
                       <td>
                         <div className="a-row" style={{ gap: 6, flexWrap: 'wrap' }}>
                           <button type="button" className="a-btn ghost" onClick={() => setQrDetail(row)}>
@@ -849,7 +1180,7 @@ export function LedgerBookPage() {
                   ))}
                   {pageData.items.length === 0 ? (
                     <tr>
-                      <td colSpan={11} className="a-muted">
+                      <td colSpan={18} className="a-muted">
                         {loading ? '加载中…' : '暂无记录'}
                       </td>
                     </tr>
@@ -919,28 +1250,75 @@ function QrPanel(props: {
           </div>
         </div>
         <div className="a-kv-row">
+          <div className="a-kv-k">收款账户</div>
+          <div className="a-kv-v">
+            {item.receivingAccountName || '—'}
+            {item.receivingBankName || item.receivingAccountNo ? (
+              <div className="a-muted" style={{ fontSize: 12, marginTop: 2 }}>
+                {[item.receivingBankName, item.receivingAccountNo].filter(Boolean).join(' · ')}
+              </div>
+            ) : null}
+          </div>
+        </div>
+        <div className="a-kv-row">
+          <div className="a-kv-k">房号</div>
+          <div className="a-kv-v">{item.houseNo || '—'}</div>
+        </div>
+        <div className="a-kv-row">
+          <div className="a-kv-k">租户名称</div>
+          <div className="a-kv-v">
+            {item.tenantName || '—'}
+            {item.tenantPhone ? ` · ${item.tenantPhone}` : ''}
+          </div>
+        </div>
+        <div className="a-kv-row">
+          <div className="a-kv-k">身份证号</div>
+          <div className="a-kv-v">{item.idCardNo || '—'}</div>
+        </div>
+        <div className="a-kv-row">
           <div className="a-kv-k">合同编号</div>
-          <div className="a-kv-v">{item.contractNo}</div>
+          <div className="a-kv-v">{item.contractNo || '—'}</div>
         </div>
         <div className="a-kv-row">
           <div className="a-kv-k">账单编号</div>
           <div className="a-kv-v">{item.billNo || '—'}</div>
         </div>
         <div className="a-kv-row">
-          <div className="a-kv-k">租户</div>
-          <div className="a-kv-v">
-            {item.tenantName}
-            {item.tenantPhone ? ` · ${item.tenantPhone}` : ''}
-          </div>
+          <div className="a-kv-k">租金</div>
+          <div className="a-kv-v">{fmtMoney(item.rentAmount)}</div>
         </div>
         <div className="a-kv-row">
-          <div className="a-kv-k">费用类型</div>
-          <div className="a-kv-v">{item.feeTypeLabel}</div>
+          <div className="a-kv-k">履约保证金</div>
+          <div className="a-kv-v">{fmtMoney(item.performanceDeposit)}</div>
         </div>
         <div className="a-kv-row">
-          <div className="a-kv-k">金额</div>
+          <div className="a-kv-k">水电押金</div>
+          <div className="a-kv-v">{fmtMoney(item.utilityDeposit)}</div>
+        </div>
+        <div className="a-kv-row">
+          <div className="a-kv-k">卫生保洁押金</div>
+          <div className="a-kv-v">{fmtMoney(item.cleaningDeposit)}</div>
+        </div>
+        <div className="a-kv-row">
+          <div className="a-kv-k">物业费</div>
+          <div className="a-kv-v">{fmtMoney(item.propertyFee)}</div>
+        </div>
+        <div className="a-kv-row">
+          <div className="a-kv-k">电费</div>
+          <div className="a-kv-v">{fmtMoney(item.electricityFee)}</div>
+        </div>
+        <div className="a-kv-row">
+          <div className="a-kv-k">水费</div>
+          <div className="a-kv-v">{fmtMoney(item.waterFee)}</div>
+        </div>
+        <div className="a-kv-row">
+          <div className="a-kv-k">滞纳金</div>
+          <div className="a-kv-v">{fmtMoney(item.lateFee)}</div>
+        </div>
+        <div className="a-kv-row">
+          <div className="a-kv-k">合计金额</div>
           <div className="a-kv-v" style={{ fontWeight: 900, fontSize: 18, color: '#1d4ed8' }}>
-            ¥{item.amount.toLocaleString()}
+            ¥{(item.amount ?? 0).toLocaleString()}
           </div>
         </div>
         <div className="a-kv-row">

@@ -6,10 +6,22 @@ type LedgerPayDetail = {
   displayNo: string
   contractNo: string
   billNo: string | null
+  houseNo: string | null
   tenantName: string
+  idCardNo: string | null
+  tenantPhone: string | null
   amount: number
-  feeType: string
-  feeTypeLabel: string
+  rentAmount: number
+  performanceDeposit: number
+  utilityDeposit: number
+  cleaningDeposit: number
+  propertyFee: number
+  electricityFee: number
+  waterFee: number
+  lateFee: number
+  receivingAccountName: string | null
+  receivingBankName: string | null
+  receivingAccountNo: string | null
   remark: string | null
   status: string
   payChannel: string | null
@@ -40,6 +52,22 @@ function fmtDt(iso: string | null) {
     return iso
   }
 }
+
+function fmtMoney(n: number | null | undefined) {
+  if (n == null || n === 0) return null
+  return `¥${n.toLocaleString()}`
+}
+
+const FEE_ROWS: { key: keyof LedgerPayDetail; label: string }[] = [
+  { key: 'rentAmount', label: '租金' },
+  { key: 'performanceDeposit', label: '履约保证金' },
+  { key: 'utilityDeposit', label: '水电押金' },
+  { key: 'cleaningDeposit', label: '卫生保洁押金' },
+  { key: 'propertyFee', label: '物业费' },
+  { key: 'electricityFee', label: '电费' },
+  { key: 'waterFee', label: '水费' },
+  { key: 'lateFee', label: '滞纳金' },
+]
 
 export function LedgerPayPage() {
   const { id } = useParams()
@@ -138,7 +166,7 @@ export function LedgerPayPage() {
           <div className="m-card" style={{ textAlign: 'center' }}>
             <div className="m-muted">应付金额</div>
             <div style={{ fontSize: 36, fontWeight: 900, letterSpacing: 0.5, marginTop: 4 }}>
-              ¥{data.amount.toLocaleString()}
+              ¥{(data.amount ?? 0).toLocaleString()}
             </div>
             <div className="m-muted" style={{ marginTop: 8 }}>
               {statusLabel(data.status)}
@@ -150,14 +178,59 @@ export function LedgerPayPage() {
             <div className="m-kv">
               <div className="m-k">流水号</div>
               <div>{data.displayNo}</div>
-              <div className="m-k">合同编号</div>
-              <div>{data.contractNo}</div>
-              <div className="m-k">账单编号</div>
-              <div>{data.billNo || '—'}</div>
-              <div className="m-k">租户</div>
-              <div>{data.tenantName}</div>
-              <div className="m-k">费用类型</div>
-              <div>{data.feeTypeLabel}</div>
+              {data.receivingAccountName ? (
+                <>
+                  <div className="m-k">收款账户</div>
+                  <div>
+                    {data.receivingAccountName}
+                    {data.receivingBankName || data.receivingAccountNo ? (
+                      <div className="m-muted" style={{ fontSize: 12, marginTop: 2 }}>
+                        {[data.receivingBankName, data.receivingAccountNo].filter(Boolean).join(' · ')}
+                      </div>
+                    ) : null}
+                  </div>
+                </>
+              ) : null}
+              {data.houseNo ? (
+                <>
+                  <div className="m-k">房号</div>
+                  <div>{data.houseNo}</div>
+                </>
+              ) : null}
+              {data.tenantName ? (
+                <>
+                  <div className="m-k">租户名称</div>
+                  <div>{data.tenantName}</div>
+                </>
+              ) : null}
+              {data.idCardNo ? (
+                <>
+                  <div className="m-k">身份证号</div>
+                  <div>{data.idCardNo}</div>
+                </>
+              ) : null}
+              {data.contractNo ? (
+                <>
+                  <div className="m-k">合同编号</div>
+                  <div>{data.contractNo}</div>
+                </>
+              ) : null}
+              {data.billNo ? (
+                <>
+                  <div className="m-k">账单编号</div>
+                  <div>{data.billNo}</div>
+                </>
+              ) : null}
+              {FEE_ROWS.map((row) => {
+                const text = fmtMoney(data[row.key] as number)
+                if (!text) return null
+                return (
+                  <div key={row.key} style={{ display: 'contents' }}>
+                    <div className="m-k">{row.label}</div>
+                    <div>{text}</div>
+                  </div>
+                )
+              })}
               {data.remark ? (
                 <>
                   <div className="m-k">备注</div>

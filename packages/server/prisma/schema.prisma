@@ -707,19 +707,66 @@ enum LedgerPaymentStatus {
   CANCELLED
 }
 
+/// 记账本收款账户（生成二维码时绑定）
+model LedgerReceivingAccount {
+  id          String   @id @default(cuid())
+  /// 展示名称，如下拉选项
+  name        String
+  /// 开户行
+  bankName    String   @default("")
+  /// 账号
+  accountNo   String   @default("")
+  /// 户名
+  accountName String   @default("")
+  enabled     Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  payments LedgerPayment[]
+
+  @@index([enabled, sortOrder])
+}
+
 /// 记账本：后台录入信息生成付款二维码，租户微信/支付宝扫码付款后形成流水
 model LedgerPayment {
   id               String              @id @default(cuid())
   /// 展示用流水号，如 JZB20260803001
   displayNo        String              @unique
-  contractNo       String
+  contractNo       String              @default("")
   billNo           String?
-  tenantName       String
+  /// 房号
+  houseNo          String?
+  tenantName       String              @default("")
+  /// 身份证号
+  idCardNo         String?
   tenantPhone      String?
-  /// 收款金额（元）
-  amount           Int
-  /// RENT | PROPERTY | UTILITY | DEPOSIT | OTHER
-  feeType          String              @default("RENT")
+  /// 收款合计金额（元），一般为各项费用之和
+  amount           Int                 @default(0)
+  /// 租金（元）
+  rentAmount       Int                 @default(0)
+  /// 履约保证金（元）
+  performanceDeposit Int               @default(0)
+  /// 水电押金（元）
+  utilityDeposit   Int                 @default(0)
+  /// 卫生保洁押金（元）
+  cleaningDeposit  Int                 @default(0)
+  /// 物业费（元）
+  propertyFee      Int                 @default(0)
+  /// 电费（元）
+  electricityFee   Int                 @default(0)
+  /// 水费（元）
+  waterFee         Int                 @default(0)
+  /// 滞纳金（元）
+  lateFee          Int                 @default(0)
+  /// 绑定的收款账户
+  receivingAccountId String?
+  /// 生成时账户快照（账户改名后流水仍可追溯）
+  receivingAccountName String?
+  receivingBankName    String?
+  receivingAccountNo   String?
+  /// 兼容旧字段：RENT | PROPERTY | UTILITY | DEPOSIT | OTHER
+  feeType          String              @default("OTHER")
   remark           String?
   status           LedgerPaymentStatus @default(PENDING)
   /// 租户实际付款渠道：WECHAT | ALIPAY
@@ -732,8 +779,12 @@ model LedgerPayment {
   createdAt        DateTime            @default(now())
   updatedAt        DateTime            @updatedAt
 
+  receivingAccount LedgerReceivingAccount? @relation(fields: [receivingAccountId], references: [id], onDelete: SetNull)
+
   @@index([status, createdAt])
   @@index([contractNo])
   @@index([tenantName])
+  @@index([houseNo])
+  @@index([receivingAccountId])
 }
 
