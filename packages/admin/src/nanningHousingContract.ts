@@ -32,6 +32,28 @@ export const BOWAN_ANNEX5_TEMPLATES = [
 
 export type BowanAnnex5Template = (typeof BOWAN_ANNEX5_TEMPLATES)[number]['value']
 
+export type Annex5MoveInStatus = '完好' | '轻微瑕疵' | '已损坏' | '缺失' | '其他'
+
+export type Annex5Item = {
+  id: string
+  category: string
+  name: string
+  specification: string
+  unit: string
+  quantity: string
+  referencePrice: string
+  moveInStatus: Annex5MoveInStatus
+  moveInRemark: string
+}
+
+export const DEFAULT_ANNEX5_ITEMS: Annex5Item[] = [
+  { id: 'a5-1', category: '卫浴', name: '马桶、地漏、洗手池及户内下水支管（通水状态核验）', specification: '', unit: '套', quantity: '1', referencePrice: '300', moveInStatus: '完好', moveInRemark: '' },
+  { id: 'a5-2', category: '家电', name: '冰箱', specification: '', unit: '台', quantity: '1', referencePrice: '1200', moveInStatus: '完好', moveInRemark: '' },
+  { id: 'a5-3', category: '家电', name: '空调', specification: '', unit: '台', quantity: '1', referencePrice: '1800', moveInStatus: '完好', moveInRemark: '' },
+  { id: 'a5-4', category: '家具', name: '床架及床垫', specification: '', unit: '套', quantity: '1', referencePrice: '800', moveInStatus: '完好', moveInRemark: '' },
+  { id: 'a5-5', category: '门窗', name: '入户门锁及钥匙', specification: '', unit: '套', quantity: '1', referencePrice: '300', moveInStatus: '完好', moveInRemark: '' },
+]
+
 export type BowanHousePick = ContractHousePick & {
   houseType: string
   ownershipName: string
@@ -69,6 +91,7 @@ export type NanningHousingFormData = {
   agreementSignDate: string
   annex2CustomAddress: string
   annex5Template: BowanAnnex5Template
+  annex5Items: Annex5Item[]
   latestRentGraceDays: string
   terminationDaysPastDue: string
   remarkHtml: string
@@ -210,6 +233,7 @@ export function defaultNanningHousingForm(): NanningHousingFormData {
     agreementSignDate: '',
     annex2CustomAddress: '',
     annex5Template: 'TEMPLATE_1',
+    annex5Items: DEFAULT_ANNEX5_ITEMS.map((item) => ({ ...item })),
     latestRentGraceDays: '',
     terminationDaysPastDue: '7',
     remarkHtml: '',
@@ -290,6 +314,16 @@ export function validateNanningHousingForm(form: NanningHousingFormData): string
   }
   const t = parseInt(form.terminationDaysPastDue.trim(), 10)
   if (Number.isNaN(t) || t < 0) return '解除合同短信触发天数须为不小于 0 的整数'
+  if (!form.annex5Items.length) return '请至少配置 1 项附件五交接项目'
+  for (const [index, item] of form.annex5Items.entries()) {
+    if (!item.name.trim()) return `请填写附件五第 ${index + 1} 项的清点项目`
+    if (!item.unit.trim()) return `请填写附件五第 ${index + 1} 项的单位`
+    const qty = Number(item.quantity)
+    const price = Number(item.referencePrice)
+    if (!Number.isFinite(qty) || qty <= 0) return `附件五第 ${index + 1} 项数量须大于 0`
+    if (!Number.isFinite(price) || price < 0) return `附件五第 ${index + 1} 项参考单价不能小于 0`
+    if (item.moveInStatus !== '完好' && !item.moveInRemark.trim()) return `附件五第 ${index + 1} 项入住状态异常，请填写备注`
+  }
   return null
 }
 

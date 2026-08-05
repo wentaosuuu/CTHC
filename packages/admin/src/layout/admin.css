@@ -1511,6 +1511,137 @@ th.a-report-col-highlight {
   word-break: break-all;
 }
 
+/* 泊湾公寓附件五：合同配置 */
+.annex5-config-card { max-width: 760px; border: 1px solid #dbe5f2; border-radius: 12px; padding: 14px; background: linear-gradient(180deg, #fff, #f8fbff); }
+.annex5-inline-editor { width: 100%; min-width: 0; border: 1px solid #dbe5f2; border-radius: 12px; background: #fff; overflow: hidden; }
+.annex5-inline-editor .annex5-config-head { padding: 12px 14px 0; }
+.annex5-inline-editor .annex5-config-actions { padding: 0 14px 12px; }
+.annex5-config-head, .annex5-config-actions, .annex5-editor-toolbar, .annex5-editor-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.annex5-config-title { font-weight: 900; color: #172033; }
+.annex5-status-badge { padding: 4px 10px; border-radius: 999px; background: #fff7ed; color: #c2410c; font-size: 12px; font-weight: 800; }
+.annex5-config-actions { justify-content: flex-start; margin-top: 12px; flex-wrap: wrap; }
+.annex5-flow-hint { margin-top: 12px; display: flex; gap: 10px; align-items: center; color: #315c9f; font-size: 12px; font-weight: 700; }
+.annex5-reference-table-wrap { width: 100%; overflow-x: auto; border-top: 1px solid #d8e0eb; }
+.annex5-reference-table { width: 100%; min-width: 900px; border-collapse: collapse; table-layout: fixed; background: #fff; font-size: 12px; color: #273449; }
+.annex5-reference-table th, .annex5-reference-table td { border: 1px solid #9aa8ba; padding: 7px 6px; text-align: center; vertical-align: middle; }
+.annex5-reference-table th { background: #f3f6fa; font-weight: 800; line-height: 1.35; }
+.annex5-reference-table th:nth-child(1) { width: 42px; }
+.annex5-reference-table th:nth-child(2) { width: 250px; }
+.annex5-reference-table th:nth-child(3) { width: 58px; }
+.annex5-reference-table th:nth-child(4) { width: 60px; }
+.annex5-reference-table th:nth-child(5) { width: 90px; }
+.annex5-reference-table th:nth-child(6), .annex5-reference-table th:nth-child(7) { width: 68px; }
+.annex5-reference-table th:nth-child(8) { width: 94px; }
+.annex5-reference-table th:nth-child(9) { width: 170px; }
+.annex5-reference-table input:not([type="checkbox"]), .annex5-reference-table textarea { box-sizing: border-box; width: 100%; border: 1px solid #d4dce7; border-radius: 5px; padding: 6px; background: #fff; font: inherit; color: inherit; }
+.annex5-reference-table textarea { resize: vertical; min-height: 38px; }
+.annex5-reference-table input[type="checkbox"] { width: 18px; height: 18px; accent-color: #2468c9; }
+.annex5-reference-table input:disabled { cursor: not-allowed; }
+.annex5-check-cell, .annex5-disabled-cell { text-align: center !important; }
+.annex5-row-delete { display: block; margin: 4px auto 0; border: 0; background: transparent; color: #d33b3b; font-size: 11px; cursor: pointer; }
+.annex5-total-row td { background: #f7f9fc; font-weight: 800; }
+.annex5-hygiene-row > td:first-child { font-weight: 800; background: #f7f9fc; }
+.annex5-hygiene-row > td:last-child { text-align: left; padding: 10px 14px; }
+.annex5-hygiene-row label { display: block; margin: 4px 0; }
+.annex5-hygiene-row label input { margin-right: 6px; vertical-align: middle; }
+.annex5-hygiene-row span { display: block; margin-top: 7px; color: #8a96a8; }
+.annex5-inline-footer { padding: 0 14px 12px; }
+.moveout-reference-table { min-width: 1040px; }
+.moveout-reference-table tr.has-damage td { background: #fffaf0; }
+.moveout-reference-table .moveout-money { min-width: 90px; }
+.annex5-editor-modal { width: min(1380px, calc(100vw - 260px)); margin-left: 220px; }
+.annex5-editor-body { display: block; padding: 0; }
+.annex5-editor-toolbar { padding: 14px 16px; }
+.annex5-table-wrap, .moveout-table-wrap { overflow-x: auto; border-top: 1px solid #e2e8f0; border-bottom: 1px solid #e2e8f0; }
+.annex5-table { width: 100%; min-width: 1240px; border-collapse: collapse; font-size: 12px; }
+.annex5-table th, .annex5-table td { padding: 8px; border-right: 1px solid #e8edf5; border-bottom: 1px solid #edf1f7; vertical-align: top; }
+.annex5-table th { background: #f5f7fb; color: #53627a; text-align: left; white-space: nowrap; }
+.annex5-table input, .annex5-table textarea, .annex5-table select { box-sizing: border-box; width: 100%; min-width: 74px; border: 1px solid #d8e0ec; border-radius: 6px; padding: 6px 7px; background: #fff; font: inherit; }
+.annex5-table textarea { min-width: 180px; resize: vertical; }
+.annex5-money-input { display: flex; align-items: center; gap: 4px; }
+.annex5-link-danger { border: 0; background: transparent; color: #dc2626; cursor: pointer; }
+.annex5-sign-preview { margin: 14px 16px; padding: 12px 14px; border: 1px dashed #c6d3e6; border-radius: 10px; display: grid; grid-template-columns: 1fr 240px 240px; gap: 12px; align-items: center; }
+.annex5-sign-preview > div:first-child { display: flex; flex-direction: column; gap: 4px; }
+.annex5-sign-person { padding: 8px 10px; border-radius: 8px; background: #f8fafc; display: flex; justify-content: space-between; }
+.annex5-sign-person b { color: #b45309; }
+.annex5-editor-footer { position: sticky; bottom: 0; padding: 12px 16px; border-top: 1px solid #e2e8f0; background: rgba(255,255,255,.96); }
+
+/* 附件五：退租验收、押金试算和双方签字 */
+.moveout-workflow-modal { width: min(1180px, calc(100vw - 260px)); margin-left: 220px; }
+.moveout-workflow-body { display: block; padding: 0; background: #f7f9fc; }
+.moveout-steps { padding: 16px 36px; display: grid; grid-template-columns: repeat(3, 1fr); background: #fff; border-bottom: 1px solid #e3e8f0; }
+.moveout-steps button { position: relative; border: 0; background: transparent; display: flex; align-items: center; gap: 10px; color: #8792a5; font-weight: 800; cursor: pointer; }
+.moveout-steps button:not(:last-child)::after { content: ''; position: absolute; left: 40px; right: 18px; top: 15px; height: 2px; background: #e3e8f0; z-index: 0; }
+.moveout-steps b, .moveout-steps span { position: relative; z-index: 1; background: #fff; }
+.moveout-steps b { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; border: 2px solid #cbd5e1; }
+.moveout-steps button.active { color: #1d5fc4; }
+.moveout-steps button.active b { color: #fff; border-color: #1d5fc4; background: #1d5fc4; }
+.moveout-steps button.done { color: #16845b; }
+.moveout-steps button.done b { color: #fff; border-color: #16845b; background: #16845b; }
+.moveout-steps button.done:not(:last-child)::after { background: #7ac5a9; }
+.moveout-step-panel { padding: 18px; min-height: 490px; }
+.moveout-notice, .moveout-safe-note { padding: 11px 14px; border: 1px solid #cfe0fa; border-radius: 9px; background: #eef5ff; color: #315c9f; font-size: 13px; line-height: 1.6; }
+.moveout-section, .moveout-settlement-card, .moveout-sign-card { margin-top: 14px; padding: 16px; border: 1px solid #e1e7f0; border-radius: 12px; background: #fff; }
+.moveout-section h3, .moveout-settlement-card h3, .moveout-sign-card h3 { margin: 0 0 14px; font-size: 15px; }
+.moveout-choice { display: flex; gap: 9px; margin: 9px 0; }
+.moveout-choice span, .moveout-choice small { display: block; }
+.moveout-choice small { margin-top: 4px; color: #76849a; }
+.moveout-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 18px; }
+.moveout-form-grid label > span { display: block; font-weight: 700; margin-bottom: 7px; color: #46546a; }
+.moveout-form-grid .wide { grid-column: 1 / -1; }
+.moveout-form-grid input, .moveout-form-grid select, .moveout-form-grid textarea { width: 100%; box-sizing: border-box; }
+.moveout-form-grid small { display: block; margin-top: 5px; color: #8792a5; }
+.moveout-baseline, .moveout-inspection-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; padding: 12px 14px; background: #fff; border: 1px solid #e1e7f0; border-radius: 10px; }
+.moveout-baseline div { display: flex; flex-direction: column; gap: 5px; }
+.moveout-baseline span { color: #6f7e94; font-size: 12px; }
+.moveout-inspection-toolbar label { font-weight: 800; color: #46546a; }
+.moveout-inspection-toolbar select { margin-left: 8px; padding: 7px 24px 7px 9px; border: 1px solid #d5deea; border-radius: 7px; }
+.moveout-inspection-table { width: 100%; min-width: 1100px; border-collapse: collapse; background: #fff; font-size: 12px; }
+.moveout-inspection-table th, .moveout-inspection-table td { padding: 9px; border-right: 1px solid #e8edf5; border-bottom: 1px solid #e8edf5; vertical-align: top; }
+.moveout-inspection-table th { background: #edf2f8; color: #526077; text-align: left; }
+.moveout-inspection-table tr.has-damage td { background: #fffaf2; }
+.moveout-inspection-table td:first-child { min-width: 190px; }
+.moveout-inspection-table td strong, .moveout-inspection-table td small { display: block; }
+.moveout-inspection-table td small { color: #8490a3; margin-top: 4px; }
+.moveout-inspection-table input, .moveout-inspection-table select, .moveout-inspection-table textarea { box-sizing: border-box; width: 100%; border: 1px solid #d6dfeb; border-radius: 6px; padding: 6px; font: inherit; background: #fff; }
+.moveout-item-tag { display: inline-block; margin-bottom: 5px; padding: 2px 5px; border-radius: 4px; background: #edf5ff; color: #1d5fc4; font-size: 10px; }
+.moveout-money { display: flex; align-items: center; gap: 3px; }
+.moveout-adjusted { color: #b45309 !important; }
+.moveout-upload-link { margin-top: 5px; border: 0; background: transparent; color: #1d5fc4; padding: 0; cursor: pointer; }
+.moveout-comp-summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 16px; background: #17233c; color: #fff; border-radius: 0 0 10px 10px; }
+.moveout-comp-summary div { display: flex; align-items: baseline; gap: 10px; }
+.moveout-comp-summary strong { font-size: 22px; color: #ffd17a; }
+.moveout-comp-summary small { color: #bfcae0; }
+.moveout-settlement-grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 16px; }
+.moveout-settlement-card, .moveout-sign-card { margin-top: 0; }
+.moveout-money-row, .moveout-deductions > div, .moveout-signer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid #edf1f5; }
+.moveout-money-row strong { font-size: 20px; }
+.moveout-deductions button { border: 0; background: transparent; color: #1d5fc4; cursor: pointer; }
+.moveout-deductions label { display: flex; align-items: center; gap: 3px; }
+.moveout-deductions input { width: 90px; padding: 6px; border: 1px solid #d6dfeb; border-radius: 6px; text-align: right; }
+.moveout-settlement-result { margin-top: 14px; padding: 15px; border-radius: 10px; background: #eef8f4; color: #225d49; }
+.moveout-settlement-result > span { display: block; font-size: 12px; }
+.moveout-settlement-result > div { margin-top: 4px; display: flex; justify-content: space-between; align-items: baseline; }
+.moveout-settlement-result strong { font-size: 28px; }
+.moveout-settlement-result .due { color: #c2410c; }
+.moveout-safe-note { margin: 14px 0 0; background: #fff9e9; border-color: #f4dfaa; color: #7a5b13; }
+.moveout-sign-card > p { color: #6d7b90; line-height: 1.7; }
+.moveout-signer div { display: flex; flex-direction: column; gap: 4px; }
+.moveout-signer span { color: #7a879a; font-size: 12px; }
+.moveout-signer > b { padding: 4px 9px; border-radius: 99px; background: #fff7ed; color: #b45309; font-size: 12px; }
+.moveout-sign-flow { margin: 16px 0; display: flex; align-items: center; justify-content: space-between; gap: 6px; color: #53647c; font-size: 12px; }
+.moveout-footer { position: sticky; bottom: 0; z-index: 3; display: flex; justify-content: space-between; padding: 12px 18px; background: rgba(255,255,255,.97); border-top: 1px solid #dfe5ee; }
+.moveout-footer > div { display: flex; gap: 8px; }
+.moveout-simple-void { padding: 16px; }
+
+@media (max-width: 800px) {
+  .annex5-editor-modal, .moveout-workflow-modal { width: 98vw; margin-left: 0; }
+  .annex5-sign-preview, .moveout-settlement-grid, .moveout-form-grid { grid-template-columns: 1fr; }
+  .moveout-form-grid .wide { grid-column: auto; }
+  .moveout-steps { padding: 12px; }
+  .moveout-steps span { font-size: 11px; }
+}
+
 /* 房源配置弹窗：单列铺满，避免右侧留白 */
 .a-house-config-body {
   grid-template-columns: minmax(0, 1fr);

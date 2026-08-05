@@ -18,6 +18,7 @@ import {
   syncNanningHousingDerivedFields,
   sumHouseArea,
   toBowanHousePick,
+  type Annex5Item,
   type NanningHousingFormData,
 } from '../nanningHousingContract'
 
@@ -80,6 +81,14 @@ export function NanningHousingContractForm({
   const houseTypeText = useMemo(() => bowanHouseTypeText(value.houses), [value.houses])
   const ownershipText = useMemo(() => bowanOwnershipText(value.houses), [value.houses])
   const elevatorText = useMemo(() => bowanElevatorText(value.houses), [value.houses])
+  const annex5ReferenceTotal = useMemo(
+    () => value.annex5Items.reduce((sum, item) => sum + (Number(item.quantity) || 0) * (Number(item.referencePrice) || 0), 0),
+    [value.annex5Items],
+  )
+
+  const patchAnnex5Item = (id: string, itemPatch: Partial<Annex5Item>) => {
+    patch({ annex5Items: value.annex5Items.map((row) => (row.id === id ? { ...row, ...itemPatch } : row)) })
+  }
 
   return (
     <>
@@ -481,18 +490,88 @@ export function NanningHousingContractForm({
         附件五 · 房屋、设备、设施交接清单及损坏赔偿价格表
       </div>
       {kv(
-        '损坏赔偿表',
-        <select
-          className="a-filter-select"
-          value={value.annex5Template}
-          onChange={(e) => patch({ annex5Template: e.target.value as NanningHousingFormData['annex5Template'] })}
-        >
-          {BOWAN_ANNEX5_TEMPLATES.map((t) => (
-            <option key={t.value} value={t.value}>
-              {t.label}
-            </option>
-          ))}
-        </select>,
+        '交接清单',
+        <div className="annex5-inline-editor">
+          <div className="annex5-config-head">
+            <div>
+              <div className="annex5-config-title">泊湾公寓房屋交接清单</div>
+              <div className="a-muted" style={{ marginTop: 4 }}>
+                已配置 <strong>{value.annex5Items.length}</strong> 项 · 参考价值合计 <strong>¥{annex5ReferenceTotal.toFixed(2)}</strong>
+              </div>
+            </div>
+            <span className="annex5-status-badge">待入住签字</span>
+          </div>
+          <div className="annex5-config-actions">
+            <select
+              className="a-filter-select"
+              value={value.annex5Template}
+              onChange={(e) => patch({ annex5Template: e.target.value as NanningHousingFormData['annex5Template'] })}
+              aria-label="清单模板"
+            >
+              {BOWAN_ANNEX5_TEMPLATES.map((t) => (
+                <option key={t.value} value={t.value}>{t.label}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="a-btn secondary"
+              onClick={() => patch({ annex5Items: [
+                ...value.annex5Items,
+                { id: `a5-${Date.now()}`, category: '其他', name: '', specification: '', unit: '个', quantity: '1', referencePrice: '0', moveInStatus: '完好', moveInRemark: '' },
+              ] })}
+            >
+              + 添加项目
+            </button>
+          </div>
+          <div className="annex5-reference-table-wrap">
+            <table className="annex5-reference-table">
+              <thead>
+                <tr>
+                  <th rowSpan={2}>序号</th>
+                  <th rowSpan={2}>清点及核验项目</th>
+                  <th rowSpan={2}>单位</th>
+                  <th rowSpan={2}>数量</th>
+                  <th rowSpan={2}>单价（元）</th>
+                  <th colSpan={2}>状态确认</th>
+                  <th rowSpan={2}>赔偿金</th>
+                  <th rowSpan={2}>备注</th>
+                </tr>
+                <tr><th>入住</th><th>退租</th></tr>
+              </thead>
+              <tbody>
+                {value.annex5Items.map((item, index) => (
+                  <tr key={item.id}>
+                    <td>{index + 1}</td>
+                    <td><textarea rows={2} value={item.name} placeholder="请填写清点项目" onChange={(e) => patchAnnex5Item(item.id, { name: e.target.value })} /></td>
+                    <td><input value={item.unit} onChange={(e) => patchAnnex5Item(item.id, { unit: e.target.value })} /></td>
+                    <td><input type="number" min="0.01" step="0.01" value={item.quantity} onChange={(e) => patchAnnex5Item(item.id, { quantity: e.target.value })} /></td>
+                    <td><input type="number" min="0" step="0.01" value={item.referencePrice} onChange={(e) => patchAnnex5Item(item.id, { referencePrice: e.target.value })} /></td>
+                    <td className="annex5-check-cell"><input type="checkbox" checked={item.moveInStatus === '完好'} onChange={(e) => patchAnnex5Item(item.id, { moveInStatus: e.target.checked ? '完好' : '已损坏' })} aria-label={`第${index + 1}项入住状态`} /></td>
+                    <td className="annex5-check-cell"><input type="checkbox" disabled aria-label={`第${index + 1}项退租状态`} /></td>
+                    <td className="annex5-disabled-cell">/</td>
+                    <td>
+                      <textarea rows={2} value={item.moveInRemark} placeholder={item.moveInStatus === '完好' ? '选填' : '入住异常说明'} onChange={(e) => patchAnnex5Item(item.id, { moveInRemark: e.target.value })} />
+                      <button type="button" className="annex5-row-delete" onClick={() => patch({ annex5Items: value.annex5Items.filter((row) => row.id !== item.id) })}>删除本项</button>
+                    </td>
+                  </tr>
+                ))}
+                <tr className="annex5-total-row"><td></td><td>合计</td><td></td><td>{value.annex5Items.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0)}</td><td></td><td></td><td></td><td>/</td><td></td></tr>
+                <tr className="annex5-hygiene-row">
+                  <td colSpan={2}>退租卫生核验</td>
+                  <td colSpan={7}>
+                    <label><input type="checkbox" disabled /> 卫生达标，符合重新出租标准</label>
+                    <label><input type="checkbox" disabled /> 卫生未达标，清洁程度不满足出租要求</label>
+                    <span>退租验收时由店长填写</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div className="annex5-inline-footer">
+            <div className="annex5-flow-hint"><span>① 配置清单</span><span>→</span><span>② 店长入住签字</span><span>→</span><span>③ 租客入住签字</span></div>
+            <div className="a-muted" style={{ fontSize: 12 }}>合同生效后保存入住快照；退租核验将对照该版本，不覆盖入住记录。</div>
+          </div>
+        </div>,
       )}
 
       {showAttachmentUpload

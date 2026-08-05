@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { apiDeleteContractAttachment, apiDeleteMoveOutFile, apiGet, apiPatch, apiPost, apiUploadContractAttachment, apiUploadMoveOutFile } from '../api'
+import { apiDeleteContractAttachment, apiGet, apiPatch, apiPost, apiUploadContractAttachment, apiUploadMoveOutFile } from '../api'
 import { JiangnanFactoryContractForm } from '../components/JiangnanFactoryContractForm'
 import { NonResidentialContractForm } from '../components/NonResidentialContractForm'
 import { NanningHousingContractForm } from '../components/NanningHousingContractForm'
@@ -131,6 +131,29 @@ type ContractItem = {
   billPushToTenant?: boolean
   billPushStatus?: string | null
 }
+
+type MoveOutAnnex5Item = {
+  id: string
+  category: string
+  name: string
+  unit: string
+  moveInQuantity: number
+  moveInStatus: string
+  moveOutStatus: '完好' | '正常损耗' | '损坏' | '缺失' | '数量减少'
+  compensationQuantity: number
+  referencePrice: number
+  actualCompensation: number
+  remark: string
+  isMoveOutAdded?: boolean
+}
+
+const DEFAULT_MOVE_OUT_ANNEX5_ITEMS: MoveOutAnnex5Item[] = [
+  { id: 'mo-1', category: '卫浴', name: '马桶、地漏、洗手池及户内下水支管（通水状态核验）', unit: '套', moveInQuantity: 1, moveInStatus: '完好', moveOutStatus: '完好', compensationQuantity: 0, referencePrice: 300, actualCompensation: 0, remark: '' },
+  { id: 'mo-2', category: '家电', name: '冰箱', unit: '台', moveInQuantity: 1, moveInStatus: '完好', moveOutStatus: '损坏', compensationQuantity: 1, referencePrice: 1200, actualCompensation: 300, remark: '冷藏室层架断裂' },
+  { id: 'mo-3', category: '家电', name: '空调', unit: '台', moveInQuantity: 1, moveInStatus: '完好', moveOutStatus: '完好', compensationQuantity: 0, referencePrice: 1800, actualCompensation: 0, remark: '' },
+  { id: 'mo-4', category: '家具', name: '床架及床垫', unit: '套', moveInQuantity: 1, moveInStatus: '完好', moveOutStatus: '完好', compensationQuantity: 0, referencePrice: 800, actualCompensation: 0, remark: '' },
+  { id: 'mo-5', category: '门窗', name: '入户门锁及钥匙', unit: '套', moveInQuantity: 1, moveInStatus: '完好', moveOutStatus: '缺失', compensationQuantity: 1, referencePrice: 300, actualCompensation: 100, remark: '缺少 1 把备用钥匙' },
+]
 
 // 合同状态 -> 中文
 const CONTRACT_STATUS_ZH: Record<string, string> = {
@@ -439,6 +462,12 @@ export function ContractsPage() {
   const [moveOutScope, setMoveOutScope] = useState<'ALL' | 'PARTIAL'>('ALL')
   const [moveOutReleaseHouseIds, setMoveOutReleaseHouseIds] = useState<string[]>([])
   const [moveOutAttachments, setMoveOutAttachments] = useState<{ id: string; name: string; file: string }[]>([])
+  const [moveOutStep, setMoveOutStep] = useState<1 | 2 | 3>(1)
+  const [moveOutAnnex5Items, setMoveOutAnnex5Items] = useState<MoveOutAnnex5Item[]>(DEFAULT_MOVE_OUT_ANNEX5_ITEMS)
+  const [moveOutHygiene, setMoveOutHygiene] = useState<'PASS' | 'FAIL'>('PASS')
+  const [moveOutCleaningFee, setMoveOutCleaningFee] = useState(0)
+  const [moveOutOtherDeductions, setMoveOutOtherDeductions] = useState(0)
+  const [moveOutDeposit, setMoveOutDeposit] = useState(2600)
   // 退押金
   type DepositRefundOptions = {
     contractDeposit: number
@@ -650,7 +679,7 @@ export function ContractsPage() {
     }
   }, [editLoadingId])
 
-  function openMoveOutModal(c: ContractItem) {
+  async function openMoveOutModal(c: ContractItem) {
     setMoveOutModal(c)
     setMoveOutDate(todayYmd())
     setMoveOutReason('')
@@ -659,6 +688,13 @@ export function ContractsPage() {
     setMoveOutScope('ALL')
     setMoveOutReleaseHouseIds([])
     setMoveOutAttachments([])
+    setMoveOutStep(1)
+    setMoveOutAnnex5Items(DEFAULT_MOVE_OUT_ANNEX5_ITEMS.map((item) => ({ ...item })))
+    setMoveOutHygiene('PASS')
+    setMoveOutCleaningFee(0)
+    setMoveOutOtherDeductions(0)
+    const detail = await apiGet<ContractDetail>('/api/admin/contracts/' + c.id)
+    if (detail.ok) setMoveOutDeposit(detail.data.deposit || 0)
   }
 
   async function openRenewModal(c: ContractItem) {
@@ -927,6 +963,14 @@ export function ContractsPage() {
     refundDepositIncludePayment,
     refundDepositIncludeBalance,
   ])
+
+  const moveOutDamageCompensation = useMemo(
+    () => moveOutAnnex5Items.reduce((sum, item) => sum + Math.max(0, Number(item.actualCompensation) || 0), 0),
+    [moveOutAnnex5Items],
+  )
+  const moveOutDeductionTotal = moveOutDamageCompensation + moveOutCleaningFee + moveOutOtherDeductions
+  const moveOutRefundAmount = Math.max(moveOutDeposit - moveOutDeductionTotal, 0)
+  const moveOutAmountDue = Math.max(moveOutDeductionTotal - moveOutDeposit, 0)
 
   async function submitRefundDeposit() {
     if (!refundDepositModal || !refundDepositOptions) return
@@ -2088,200 +2132,91 @@ export function ContractsPage() {
             if (e.target === e.currentTarget) setMoveOutModal(null)
           }}
         >
-          <div className="a-modal" style={{ maxWidth: 480 }} onClick={(e) => e.stopPropagation()}>
+          <div className={`a-modal ${moveOutModal.status === 'ACTIVE' ? 'moveout-workflow-modal' : 'a-modal--narrow'}`} onClick={(e) => e.stopPropagation()}>
             <div className="a-modal-header">
-              <div className="a-modal-title">办理退租 · {formatContractNo(moveOutModal.contractNo)}</div>
+              <div>
+                <div className="a-modal-title">办理退租 · {formatContractNo(moveOutModal.contractNo)}</div>
+                {moveOutModal.status === 'ACTIVE' ? <div className="a-muted" style={{ marginTop: 4 }}>附件五退租核验、押金试算与双方签字</div> : null}
+              </div>
               <button className="a-modal-close" onClick={() => setMoveOutModal(null)}>
                 关闭
               </button>
             </div>
-            <div className="a-modal-body" style={{ display: 'block' }}>
-              <div className="a-muted" style={{ marginBottom: 10 }}>
-                {moveOutModal.status === 'PENDING_PAYMENT'
-                  ? '当前为待支付：确认后合同作废，房源释放为空置。'
-                  : '当前为在租：提交后合同进入「待租客确认退租」，租客须在 7 日内电子签字；确认后再按所选范围执行退租结案（超时自动撤销申请）。'}
-              </div>
-              {moveOutModal.status === 'ACTIVE' &&
-              moveOutModal.mergedBundle &&
-              moveOutModal.mergedBundle.lines.filter((l) => !l.releasedAt).length > 1 ? (
-                <div style={{ marginBottom: 14, padding: 10, background: '#f8fafc', borderRadius: 8 }}>
-                  <div style={{ fontWeight: 800, marginBottom: 8 }}>退租范围</div>
-                  <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
-                    <input
-                      type="radio"
-                      name="moveOutScope"
-                      checked={moveOutScope === 'ALL'}
-                      onChange={() => {
-                        setMoveOutScope('ALL')
-                        setMoveOutReleaseHouseIds([])
-                      }}
-                    />
-                    <span>整套退租（合同终止，全部在租子房源一并结案）</span>
-                  </label>
-                  <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 8 }}>
-                    <input
-                      type="radio"
-                      name="moveOutScope"
-                      checked={moveOutScope === 'PARTIAL'}
-                      onChange={() => setMoveOutScope('PARTIAL')}
-                    />
-                    <span>仅退部分子房源（其余仍在租；未结清的 BASE 账单将按剩余套数重算，不再对已退套计费）</span>
-                  </label>
-                  {moveOutScope === 'PARTIAL' ? (
-                    <div style={{ marginLeft: 24, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                      {moveOutModal.mergedBundle.lines
-                        .filter((ln) => !ln.releasedAt)
-                        .map((ln) => (
-                          <label key={ln.houseId} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                            <input
-                              type="checkbox"
-                              checked={moveOutReleaseHouseIds.includes(ln.houseId)}
-                              onChange={(e) => {
-                                setMoveOutReleaseHouseIds((prev) =>
-                                  e.target.checked ? [...prev, ln.houseId] : prev.filter((x) => x !== ln.houseId),
-                                )
-                              }}
-                            />
-                            <span className="a-muted">
-                              {ln.apartmentName} · {ln.houseNo}（月租 ¥{ln.rentMonthlySnapshot}）
-                            </span>
-                          </label>
-                        ))}
+            <div className="a-modal-body moveout-workflow-body">
+              {moveOutModal.status === 'PENDING_PAYMENT' ? (
+                <div className="moveout-simple-void">
+                  <div className="moveout-notice">当前为待支付：确认后合同作废，房源释放为空置。</div>
+                  <div className="a-kv">
+                    <div className="a-kv-row"><div className="a-kv-k">作废日期</div><div className="a-kv-v"><input className="a-filter-input" type="date" value={moveOutDate} onChange={(e) => setMoveOutDate(e.target.value)} /></div></div>
+                    <div className="a-kv-row"><div className="a-kv-k">退租原因</div><div className="a-kv-v"><select className="a-filter-select" value={moveOutReason} onChange={(e) => setMoveOutReason(e.target.value)}><option value="">请选择</option>{MOVE_OUT_REASON_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}</select></div></div>
+                  </div>
+                  <div className="moveout-footer"><button className="a-btn ghost" onClick={() => setMoveOutModal(null)}>取消</button><button className="a-btn secondary" onClick={submitMoveOut} disabled={moveOutSubmitting}>确认办理作废</button></div>
+                </div>
+              ) : (
+                <>
+                  <div className="moveout-steps">
+                    {['退租信息', '房屋验收与赔偿', '押金结算及签字'].map((label, index) => {
+                      const step = (index + 1) as 1 | 2 | 3
+                      return <button type="button" key={label} className={moveOutStep === step ? 'active' : moveOutStep > step ? 'done' : ''} onClick={() => setMoveOutStep(step)}><b>{moveOutStep > step ? '✓' : step}</b><span>{label}</span></button>
+                    })}
+                  </div>
+
+                  {moveOutStep === 1 ? (
+                    <div className="moveout-step-panel">
+                      <div className="moveout-notice">提交前需完成附件五退租核验与押金试算。双方签字后才生成正式扣款明细。</div>
+                      {moveOutModal.mergedBundle && moveOutModal.mergedBundle.lines.filter((l) => !l.releasedAt).length > 1 ? (
+                        <section className="moveout-section"><h3>退租范围</h3><label className="moveout-choice"><input type="radio" name="moveOutScope" checked={moveOutScope === 'ALL'} onChange={() => { setMoveOutScope('ALL'); setMoveOutReleaseHouseIds([]) }} /><span><strong>整套退租</strong><small>合同终止，全部在租子房源一并结案</small></span></label><label className="moveout-choice"><input type="radio" name="moveOutScope" checked={moveOutScope === 'PARTIAL'} onChange={() => setMoveOutScope('PARTIAL')} /><span><strong>仅退部分子房源</strong><small>其余房源仍在租，未结清账单按剩余套数重算</small></span></label></section>
+                      ) : null}
+                      <section className="moveout-section"><h3>基本信息</h3><div className="moveout-form-grid"><label><span>退租日期 *</span><input className="a-filter-input" type="date" value={moveOutDate} onChange={(e) => setMoveOutDate(e.target.value)} /></label><label><span>退租原因 *</span><select className="a-filter-select" value={moveOutReason} onChange={(e) => setMoveOutReason(e.target.value)}><option value="">请选择</option>{MOVE_OUT_REASON_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}</select></label><label className="wide"><span>备注</span><textarea className="a-filter-input" rows={3} placeholder="选填：补充说明本次退租情况" value={moveOutRemark} onChange={(e) => setMoveOutRemark(e.target.value)} /></label><label className="wide"><span>现场附件</span><input type="file" className="a-filter-input" onChange={async (e) => { const f = e.target.files?.[0]; e.target.value = ''; if (!f || !moveOutModal) return; const r = await apiUploadMoveOutFile(moveOutModal.id, f); if (!r.ok) return setError(r.error); setMoveOutAttachments((prev) => [...prev, r.data.attachment]) }} /><small>支持房屋现场图片、维修估价单等，将随退租确认单展示给租客。</small></label></div></section>
                     </div>
                   ) : null}
-                </div>
-              ) : null}
-              <div className="a-kv">
-                <div className="a-kv-row">
-                  <div className="a-kv-k">{moveOutModal.status === 'PENDING_PAYMENT' ? '作废日期' : '退租日期'}</div>
-                  <div className="a-kv-v">
-                    <input
-                      className="a-filter-input"
-                      type="date"
-                      value={moveOutDate}
-                      onChange={(e) => setMoveOutDate(e.target.value)}
-                    />
-                  </div>
-                </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">退租原因</div>
-                  <div className="a-kv-v">
-                    <select
-                      className="a-filter-select"
-                      value={moveOutReason}
-                      onChange={(e) => setMoveOutReason(e.target.value)}
-                    >
-                      <option value="">请选择</option>
-                      {MOVE_OUT_REASON_OPTIONS.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-                {moveOutReason === '其他' && (
-                  <div className="a-kv-row">
-                    <div className="a-kv-k">其他原因</div>
-                    <div className="a-kv-v">
-                      <input
-                        className="a-filter-input"
-                        placeholder="请填写"
-                        value={moveOutReasonOther}
-                        onChange={(e) => setMoveOutReasonOther(e.target.value)}
-                      />
-                    </div>
-                  </div>
-                )}
-                <div className="a-kv-row">
-                  <div className="a-kv-k">备注</div>
-                  <div className="a-kv-v">
-                    <textarea
-                      className="a-filter-input"
-                      placeholder="选填"
-                      rows={3}
-                      value={moveOutRemark}
-                      onChange={(e) => setMoveOutRemark(e.target.value)}
-                      style={{ resize: 'vertical', minHeight: 60 }}
-                    />
-                  </div>
-                </div>
-                {moveOutModal.status === 'ACTIVE' ? (
-                  <div className="a-kv-row">
-                    <div className="a-kv-k">退租附件</div>
-                    <div className="a-kv-v">
-                      <div className="a-muted" style={{ marginBottom: 8 }}>
-                        将向租客展示。须由租客在 <strong>7 天</strong> 内在「我的合同」完成电子签字后，系统才执行退租结案；超时未确认将自动撤销。
+
+                  {moveOutStep === 2 ? (
+                    <div className="moveout-step-panel">
+                      <div className="moveout-baseline"><div><strong>入住清单基线</strong><span>版本 V1 · 店长与租客已于 2026/03/01 签字</span></div><button type="button" className="a-btn ghost">查看入住签字原件</button></div>
+                      <div className="moveout-inspection-toolbar">
+                        <span>退租时可调整项目、数量、单价和赔偿金，所有内容将进入双方签字版本。</span>
+                        <button type="button" className="a-btn secondary" onClick={() => setMoveOutAnnex5Items((rows) => [...rows, { id: `mo-${Date.now()}`, category: '其他', name: '', unit: '个', moveInQuantity: 1, moveInStatus: '未记录', moveOutStatus: '完好', compensationQuantity: 0, referencePrice: 0, actualCompensation: 0, remark: '', isMoveOutAdded: true }])}>+ 添加项目</button>
                       </div>
-                      <input
-                        type="file"
-                        className="a-filter-input"
-                        onChange={async (e) => {
-                          const f = e.target.files?.[0]
-                          e.target.value = ''
-                          if (!f || !moveOutModal) return
-                          const r = await apiUploadMoveOutFile(moveOutModal.id, f)
-                          if (!r.ok) return setError(r.error)
-                          setMoveOutAttachments((prev) => [...prev, r.data.attachment])
-                        }}
-                      />
-                      {moveOutAttachments.length > 0 ? (
-                        <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
-                          {moveOutAttachments.map((a) => (
-                            <li key={a.file} style={{ marginBottom: 4 }}>
-                              <span>{a.name}</span>{' '}
-                              <button
-                                type="button"
-                                className="a-btn ghost"
-                                style={{ padding: '2px 8px', fontSize: 12 }}
-                                onClick={async () => {
-                                  if (!moveOutModal) return
-                                  const r = await apiDeleteMoveOutFile(moveOutModal.id, a.file)
-                                  if (!r.ok) return setError(r.error)
-                                  setMoveOutAttachments((prev) => prev.filter((x) => x.file !== a.file))
-                                }}
-                              >
-                                移除
-                              </button>
-                              <button
-                                type="button"
-                                className="a-btn ghost"
-                                style={{ padding: '2px 8px', fontSize: 12 }}
-                                onClick={() =>
-                                  previewFileWithAuth(
-                                    '/api/admin/contracts/' +
-                                      moveOutModal.id +
-                                      '/move-out-file/' +
-                                      encodeURIComponent(a.file),
-                                  ).catch((e) => setError(e instanceof Error ? e.message : '预览失败'))
-                                }
-                              >
-                                预览
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : null}
+                      <div className="moveout-table-wrap">
+                        <table className="annex5-reference-table moveout-reference-table">
+                          <thead>
+                            <tr><th rowSpan={2}>序号</th><th rowSpan={2}>清点及核验项目</th><th rowSpan={2}>单位</th><th rowSpan={2}>数量</th><th rowSpan={2}>单价（元）</th><th colSpan={2}>状态确认</th><th rowSpan={2}>赔偿金</th><th rowSpan={2}>备注</th></tr>
+                            <tr><th>入住</th><th>退租</th></tr>
+                          </thead>
+                          <tbody>
+                            {moveOutAnnex5Items.map((item, index) => (
+                              <tr key={item.id} className={item.actualCompensation > 0 ? 'has-damage' : ''}>
+                                <td>{index + 1}</td>
+                                <td><textarea rows={2} value={item.name} placeholder="请填写清点项目" onChange={(e) => setMoveOutAnnex5Items((rows) => rows.map((row) => row.id === item.id ? { ...row, name: e.target.value } : row))} /></td>
+                                <td><input value={item.unit} onChange={(e) => setMoveOutAnnex5Items((rows) => rows.map((row) => row.id === item.id ? { ...row, unit: e.target.value } : row))} /></td>
+                                <td><input type="number" min="0.01" step="0.01" value={item.moveInQuantity} onChange={(e) => setMoveOutAnnex5Items((rows) => rows.map((row) => row.id === item.id ? { ...row, moveInQuantity: Number(e.target.value) || 0 } : row))} /></td>
+                                <td><input type="number" min="0" step="0.01" value={item.referencePrice} onChange={(e) => setMoveOutAnnex5Items((rows) => rows.map((row) => row.id === item.id ? { ...row, referencePrice: Math.max(0, Number(e.target.value) || 0) } : row))} /></td>
+                                <td className="annex5-check-cell"><input type="checkbox" checked={item.moveInStatus === '完好'} disabled aria-label={`第${index + 1}项入住状态`} /></td>
+                                <td className="annex5-check-cell"><input type="checkbox" checked={item.moveOutStatus === '完好'} onChange={(e) => setMoveOutAnnex5Items((rows) => rows.map((row) => row.id === item.id ? { ...row, moveOutStatus: e.target.checked ? '完好' : '损坏' } : row))} aria-label={`第${index + 1}项退租状态`} /></td>
+                                <td><div className="moveout-money"><span>¥</span><input type="number" min="0" step="0.01" value={item.actualCompensation} onChange={(e) => setMoveOutAnnex5Items((rows) => rows.map((row) => row.id === item.id ? { ...row, actualCompensation: Math.max(0, Number(e.target.value) || 0) } : row))} /></div></td>
+                                <td><textarea rows={2} value={item.remark} placeholder={item.actualCompensation > 0 || item.moveOutStatus !== '完好' ? '请说明异常或赔偿原因' : '选填'} onChange={(e) => setMoveOutAnnex5Items((rows) => rows.map((row) => row.id === item.id ? { ...row, remark: e.target.value } : row))} /><button type="button" className="moveout-upload-link">上传凭证</button></td>
+                              </tr>
+                            ))}
+                            <tr className="annex5-total-row"><td></td><td>合计</td><td></td><td>{moveOutAnnex5Items.reduce((sum, item) => sum + item.moveInQuantity, 0)}</td><td></td><td></td><td></td><td>¥{moveOutDamageCompensation.toFixed(2)}</td><td></td></tr>
+                            <tr className="annex5-hygiene-row"><td colSpan={2}>退租卫生核验</td><td colSpan={7}><label><input type="checkbox" checked={moveOutHygiene === 'PASS'} onChange={() => { setMoveOutHygiene('PASS'); setMoveOutCleaningFee(0) }} /> 卫生达标，符合重新出租标准</label><label><input type="checkbox" checked={moveOutHygiene === 'FAIL'} onChange={() => setMoveOutHygiene('FAIL')} /> 卫生未达标，清洁程度不满足出租要求</label></td></tr>
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="moveout-comp-summary"><span>核验 {moveOutAnnex5Items.length} 项 · 异常 {moveOutAnnex5Items.filter((item) => item.actualCompensation > 0).length} 项</span><div>损坏赔偿合计 <strong>¥{moveOutDamageCompensation.toFixed(2)}</strong><small>将实时计入下一步押金试算</small></div></div>
                     </div>
-                  </div>
-                ) : null}
-              </div>
-              <div style={{ marginTop: 14, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                <button
-                  className="a-btn secondary"
-                  onClick={submitMoveOut}
-                  disabled={moveOutSubmitting}
-                >
-                  {moveOutSubmitting
-                    ? '提交中…'
-                    : moveOutModal.status === 'PENDING_PAYMENT'
-                      ? '确认办理作废'
-                      : '发起退租确认'}
-                </button>
-                <button className="a-btn ghost" onClick={() => setMoveOutModal(null)}>
-                  取消
-                </button>
-              </div>
+                  ) : null}
+
+                  {moveOutStep === 3 ? (
+                    <div className="moveout-step-panel moveout-settlement-grid">
+                      <section className="moveout-settlement-card"><h3>押金结算试算</h3><div className="moveout-money-row"><span>实收可退押金</span><strong>¥{moveOutDeposit.toFixed(2)}</strong></div><div className="moveout-deductions"><div><span>附件五损坏赔偿 <button type="button" onClick={() => setMoveOutStep(2)}>返回查看</button></span><strong>-¥{moveOutDamageCompensation.toFixed(2)}</strong></div><div><span>清洁费 {moveOutHygiene === 'PASS' ? '(卫生达标)' : '(卫生未达标)'}</span><label><b>¥</b><input type="number" min="0" disabled={moveOutHygiene === 'PASS'} value={moveOutCleaningFee} onChange={(e) => setMoveOutCleaningFee(Math.max(0, Number(e.target.value) || 0))} /></label></div><div><span>其他扣款</span><label><b>¥</b><input type="number" min="0" value={moveOutOtherDeductions} onChange={(e) => setMoveOutOtherDeductions(Math.max(0, Number(e.target.value) || 0))} /></label></div></div><div className="moveout-settlement-result"><span>本次扣款合计 ¥{moveOutDeductionTotal.toFixed(2)}</span>{moveOutAmountDue > 0 ? <div><small>押金不足，租客应补缴</small><strong className="due">¥{moveOutAmountDue.toFixed(2)}</strong></div> : <div><small>预计退还租客</small><strong>¥{moveOutRefundAmount.toFixed(2)}</strong></div>}</div><p className="moveout-safe-note">当前仅为试算，不会立即动账。双方签字并审批通过后，系统才生成正式扣款与退款单。</p></section>
+                      <section className="moveout-sign-card"><h3>退租双方签字</h3><p>本次签字内容包含：退租验收清单、每项赔偿、押金抵扣明细及最终应退/应补金额。</p><div className="moveout-signer"><div><span>出租方经办人（店长）</span><strong>系统管理员</strong></div><b>待签字</b></div><div className="moveout-signer"><div><span>承租人</span><strong>{moveOutModal.tenant.name}</strong></div><b>待签字</b></div><div className="moveout-sign-flow"><span>店长签字</span><i>→</i><span>租客签字/提交异议</span><i>→</i><span>生成退租结算单</span></div><button type="button" className="a-btn ghost" style={{ width: '100%' }}>预览退租确认单</button></section>
+                    </div>
+                  ) : null}
+
+                  <div className="moveout-footer"><button className="a-btn ghost" onClick={() => setMoveOutModal(null)}>取消</button><div>{moveOutStep > 1 ? <button className="a-btn ghost" onClick={() => setMoveOutStep((moveOutStep - 1) as 1 | 2)}>上一步</button> : null}{moveOutStep < 3 ? <button className="a-btn secondary" onClick={() => { if (moveOutStep === 1 && !(moveOutReason === '其他' ? moveOutReasonOther.trim() : moveOutReason)) return setError('请选择或填写退租原因'); setMoveOutStep((moveOutStep + 1) as 2 | 3) }}>下一步：{moveOutStep === 1 ? '房屋验收' : '押金结算'}</button> : <button className="a-btn secondary" onClick={submitMoveOut} disabled={moveOutSubmitting}>{moveOutSubmitting ? '提交中…' : '店长签字并发起租客确认'}</button>}</div></div>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -3935,4 +3870,3 @@ export function ContractsPage() {
     </div>
   )
 }
-
