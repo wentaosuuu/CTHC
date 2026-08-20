@@ -28,6 +28,7 @@ type ReceiptInfo = {
 type TxItem = {
   id: string
   txNo: string
+  merchantOrderNo: string | null
   orderId: string
   type: 'BILL_PAYMENT' | 'REFUND' | 'OFFLINE_VERIFY' | 'PREPAYMENT'
   channel: 'ONLINE' | 'OFFLINE'
@@ -277,7 +278,7 @@ export function TransactionsPage() {
       if (receiptFilter === 'printed' && x.receipt.printCount === 0) return false
       if (!kw) return true
       const hay =
-        `${x.txNo} ${x.orderId} ${x.contractNo} ${formatContractNo(x.contractNo)} ${x.tenant.name} ${x.tenant.phone} ${x.house.storeName} ${x.house.apartmentName} ${x.house.houseNo} ${x.houseBizId} ${x.period ?? ''} ${x.note} ${TYPE_ZH[x.type]} ${CHANNEL_ZH[x.channel]}`.toLowerCase()
+        `${x.txNo} ${x.merchantOrderNo ?? ''} ${x.orderId} ${x.contractNo} ${formatContractNo(x.contractNo)} ${x.tenant.name} ${x.tenant.phone} ${x.house.storeName} ${x.house.apartmentName} ${x.house.houseNo} ${x.houseBizId} ${x.period ?? ''} ${x.note} ${TYPE_ZH[x.type]} ${CHANNEL_ZH[x.channel]}`.toLowerCase()
       return hay.includes(kw)
     })
   }, [items, q, typeFilter, channelFilter, storeFilter, apartmentFilter, periodFilter, receiptFilter])
@@ -432,7 +433,7 @@ export function TransactionsPage() {
                 setQ(e.target.value)
                 setPage(1)
               }}
-              placeholder="搜索：流水号/合同/租客/门店/房号/备注…"
+              placeholder="搜索：流水号/商户单号/合同/租客/门店/房号/备注…"
               style={{ minWidth: 210 }}
             />
             <select
@@ -580,6 +581,7 @@ export function TransactionsPage() {
                 </th>
                 <th>时间</th>
                 <th>流水号</th>
+                <th>商户单号</th>
                 <th>订单号</th>
                 <th>
                   <span className="a-th-label-help">
@@ -635,6 +637,9 @@ export function TransactionsPage() {
                     {fmtDt(x.occurredAt)}
                   </td>
                   <td style={{ fontWeight: 800, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{x.txNo}</td>
+                  <td className="a-muted" style={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
+                    {x.merchantOrderNo || '—'}
+                  </td>
                   <td className="a-muted" style={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
                     {x.orderId}
                   </td>

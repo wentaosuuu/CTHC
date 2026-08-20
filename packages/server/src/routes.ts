@@ -20,6 +20,7 @@ import {
 } from './time.js'
 import { buildRentBillSchedule, normalizeRentDueDay } from './rentBillSchedule.js'
 import { buildContractSummaryText } from './contractSummaryText.js'
+import { displayBillNoFromId } from './billDisplayNo.js'
 import {
   applyPrepaidRentCreditToNewContract,
   buildChangeHouseMoneySnapshot,
@@ -5820,6 +5821,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     type Tx = {
       id: string
       txNo: string
+      merchantOrderNo: string | null
       orderId: string
       type: 'BILL_PAYMENT' | 'REFUND' | 'OFFLINE_VERIFY' | 'PREPAYMENT'
       channel: 'ONLINE' | 'OFFLINE'
@@ -5846,7 +5848,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
           downloadUrl: string
         }[]
       } | null
-      receipt: ReturnType<typeof buildReceiptDto>
+      receipt?: ReturnType<typeof buildReceiptDto>
     }
 
     const txs: Tx[] = []
@@ -5868,6 +5870,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       txs.push({
         id: `offlog_${log.id}`,
         txNo: `HX${log.id.slice(-10)}`,
+        merchantOrderNo: null,
         orderId: b.contract.orderId,
         type: 'OFFLINE_VERIFY',
         channel: 'OFFLINE',
@@ -5903,6 +5906,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       txs.push({
         id: `bill_${b.id}`,
         txNo: `TX${b.paidAt ? 'P' : 'B'}${b.id.slice(-10)}`,
+        merchantOrderNo: displayBillNoFromId(b.id),
         orderId: b.contract.orderId,
         type: 'BILL_PAYMENT',
         channel: 'ONLINE',
@@ -5931,6 +5935,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       txs.push({
         id: `prepay_${row.id}`,
         txNo: `YS${row.id.slice(-10)}`,
+        merchantOrderNo: null,
         orderId: c.orderId,
         type: 'PREPAYMENT',
         channel: 'OFFLINE',
@@ -5958,6 +5963,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       txs.push({
         id: `refund_${r.id}`,
         txNo: `TXR${r.id.slice(-10)}`,
+        merchantOrderNo: null,
         orderId: r.contract.orderId,
         type: 'REFUND',
         channel: 'OFFLINE',
@@ -6953,4 +6959,3 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     })
   })
 }
-
