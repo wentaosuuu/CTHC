@@ -1567,9 +1567,9 @@ th.a-report-col-highlight {
 .annex5-editor-footer { position: sticky; bottom: 0; padding: 12px 16px; border-top: 1px solid #e2e8f0; background: rgba(255,255,255,.96); }
 
 /* 附件五：退租验收、押金试算和双方签字 */
-.moveout-workflow-modal { width: min(1180px, calc(100vw - 260px)); margin-left: 220px; }
+.moveout-workflow-modal { width: min(1320px, calc(100vw - 240px)); margin-left: 220px; }
 .moveout-workflow-body { display: block; padding: 0; background: #f7f9fc; }
-.moveout-steps { padding: 16px 36px; display: grid; grid-template-columns: repeat(3, 1fr); background: #fff; border-bottom: 1px solid #e3e8f0; }
+.moveout-steps { padding: 16px 36px; display: grid; grid-template-columns: repeat(4, 1fr); background: #fff; border-bottom: 1px solid #e3e8f0; }
 .moveout-steps button { position: relative; border: 0; background: transparent; display: flex; align-items: center; gap: 10px; color: #8792a5; font-weight: 800; cursor: pointer; }
 .moveout-steps button:not(:last-child)::after { content: ''; position: absolute; left: 40px; right: 18px; top: 15px; height: 2px; background: #e3e8f0; z-index: 0; }
 .moveout-steps b, .moveout-steps span { position: relative; z-index: 1; background: #fff; }
@@ -1633,13 +1633,75 @@ th.a-report-col-highlight {
 .moveout-footer { position: sticky; bottom: 0; z-index: 3; display: flex; justify-content: space-between; padding: 12px 18px; background: rgba(255,255,255,.97); border-top: 1px solid #dfe5ee; }
 .moveout-footer > div { display: flex; gap: 8px; }
 .moveout-simple-void { padding: 16px; }
+.moveout-confirm-choice { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid #dce5f0; border-radius: 8px; background: #f8fafc; }
+.moveout-confirm-choice label { display: flex; align-items: flex-start; gap: 8px; font-weight: 500; color: #334155; }
+.moveout-confirm-choice input, .moveout-house-options input { width: auto; margin-top: 3px; }
+.moveout-house-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 10px 28px; border-left: 3px solid #c9dcfa; background: #f8fbff; }
+.moveout-attachment-list { margin: 8px 0 0; padding: 0; list-style: none; border: 1px solid #e1e7ef; border-radius: 8px; overflow: hidden; }
+.moveout-attachment-list li { display: flex; justify-content: space-between; gap: 10px; padding: 8px 10px; border-bottom: 1px solid #edf1f5; background: #fff; }
+.moveout-attachment-list li:last-child { border-bottom: 0; }
+.moveout-attachment-list button, .moveout-ledger-card td:last-child button { border: 0; background: transparent; color: #dc2626; cursor: pointer; }
+.moveout-ledger-editors { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; align-items: start; }
+.moveout-ledger-card { border: 1px solid #dfe6ef; border-radius: 12px; background: #fff; overflow: hidden; }
+.moveout-ledger-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; background: #f7f9fc; border-bottom: 1px solid #e7ecf3; }
+.moveout-ledger-head h3 { margin: 0; font-size: 15px; }
+.moveout-ledger-card table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12px; }
+.moveout-ledger-card th, .moveout-ledger-card td { padding: 7px; border-bottom: 1px solid #edf1f5; vertical-align: top; }
+.moveout-ledger-card th { text-align: left; color: #64748b; background: #fbfcfe; }
+.moveout-ledger-card th:nth-child(1) { width: 22%; }
+.moveout-ledger-card th:nth-child(2) { width: 18%; }
+.moveout-ledger-card th:nth-child(4) { width: 42px; }
+.moveout-ledger-card input { box-sizing: border-box; width: 100%; min-width: 0; padding: 6px; border: 1px solid #d6dfeb; border-radius: 6px; }
+.moveout-ledger-card input:disabled { color: #475569; background: #f1f5f9; }
+.moveout-cleaning-input { display: flex; justify-content: flex-end; align-items: center; gap: 10px; padding: 10px 14px; color: #6b4e10; background: #fff8e8; }
+.moveout-cleaning-input input { width: 120px; }
+.moveout-settlement-summary { display: flex; align-items: center; justify-content: center; gap: 18px; margin-top: 14px; padding: 16px; color: #fff; background: #17233c; border-radius: 12px; }
+.moveout-settlement-summary div { display: grid; gap: 4px; text-align: center; }
+.moveout-settlement-summary span { color: #cbd5e1; font-size: 12px; }
+.moveout-settlement-summary strong { font-size: 22px; color: #8ee3bf; }
+.moveout-settlement-summary .due strong { color: #fdba74; }
+.moveout-route-summary { margin-bottom: 14px; padding: 14px 16px; border: 1px solid #cfe0fa; border-radius: 10px; background: #eef5ff; }
+.moveout-route-summary div { display: flex; justify-content: space-between; gap: 18px; }
+.moveout-route-summary span { color: #64748b; }
+.moveout-route-summary p { margin: 8px 0 0; color: #315c9f; }
+.moveout-approval-wrap { width: 100%; }
+.moveout-print-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; padding: 10px 12px; border-radius: 8px; background: #eef5ff; color: #315c9f; }
+.moveout-approval-sheet { width: min(100%, 980px); box-sizing: border-box; margin: 0 auto; padding: 24px; color: #111827; background: #fff; border: 1px solid #cbd5e1; box-shadow: 0 8px 30px rgba(15, 23, 42, .08); }
+.moveout-approval-sheet header h2 { margin: 0 0 16px; text-align: center; font-size: 24px; }
+.moveout-approval-sheet header > div { display: flex; justify-content: space-between; margin-bottom: 10px; }
+.moveout-approval-sheet table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12px; }
+.moveout-approval-sheet th, .moveout-approval-sheet td { padding: 7px 8px; border: 1px solid #475569; vertical-align: top; word-break: break-word; }
+.moveout-approval-meta th { width: 14%; background: #f1f5f9; }
+.moveout-approval-ledgers { display: grid; grid-template-columns: 1fr 1fr; }
+.moveout-approval-ledgers table:first-child { border-right: 0; }
+.moveout-approval-ledgers thead th { text-align: center; background: #eaf2ff; }
+.moveout-approval-ledgers tr.total td { font-weight: 800; background: #f8fafc; }
+.moveout-approval-result { display: flex; align-items: baseline; justify-content: center; gap: 10px; padding: 14px; border: 1px solid #475569; border-top: 0; color: #166534; }
+.moveout-approval-result.due { color: #c2410c; }
+.moveout-approval-result strong { font-size: 22px; }
+.moveout-approval-result small { color: #64748b; }
+.moveout-approval-notes { padding: 12px; border: 1px solid #475569; border-top: 0; }
+.moveout-approval-notes h3 { margin: 0 0 8px; font-size: 14px; }
+.moveout-approval-notes p { margin: 4px 0; line-height: 1.55; }
+.moveout-approval-signatures { display: grid; grid-template-columns: 1fr 1fr 1fr; border: 1px solid #475569; border-top: 0; }
+.moveout-approval-signatures div { display: grid; gap: 8px; min-height: 70px; padding: 10px; border-right: 1px solid #475569; }
+.moveout-approval-signatures div:last-child { border-right: 0; }
+.moveout-approval-signatures span { color: #64748b; font-size: 12px; }
+.moveout-approval-signatures b { font-size: 12px; }
 
 @media (max-width: 800px) {
   .annex5-editor-modal, .moveout-workflow-modal { width: 98vw; margin-left: 0; }
-  .annex5-sign-preview, .moveout-settlement-grid, .moveout-form-grid { grid-template-columns: 1fr; }
+  .annex5-sign-preview, .moveout-settlement-grid, .moveout-form-grid, .moveout-ledger-editors { grid-template-columns: 1fr; }
   .moveout-form-grid .wide { grid-column: auto; }
   .moveout-steps { padding: 12px; }
   .moveout-steps span { font-size: 11px; }
+}
+
+@media print {
+  body * { visibility: hidden !important; }
+  .moveout-approval-sheet, .moveout-approval-sheet * { visibility: visible !important; }
+  .moveout-approval-sheet { position: absolute; inset: 0; width: 100%; margin: 0; padding: 8mm; border: 0; box-shadow: none; }
+  .no-print { display: none !important; }
 }
 
 /* 房源配置弹窗：单列铺满，避免右侧留白 */

@@ -388,6 +388,8 @@ model Contract {
   billPushStatus String @default("NOT_ENABLED")
   /// 退租待租客确认：JSON（terminateDate、reason、releaseHouseIds、attachments、deadlineAt 等）
   moveOutPendingJson String?
+  /// 已完成退租结算快照：JSON（交接清单、收支明细、租户确认/银行卡、审批表数据）
+  moveOutArchiveJson String?
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
 
@@ -787,4 +789,3 @@ model LedgerPayment {
   @@index([houseNo])
   @@index([receivingAccountId])
 }
-

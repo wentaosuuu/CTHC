@@ -94,7 +94,9 @@ import {
   executeAdminContractTerminate,
   expireTenantMoveOutIfNeeded,
   MOVEOUT_UPLOAD_ROOT,
+  normalizeMoveOutSettlement,
   unlinkMoveOutFiles,
+  type MoveOutArchivePayload,
   type MoveOutPendingPayload,
 } from './contractMoveOut.js'
 import {
@@ -1122,6 +1124,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       reasonFull: string
       terminateDate: string
       partial: boolean
+      settlement: MoveOutPendingPayload['settlement'] | null
       attachments: { id: string; name: string; file: string; previewUrl: string; downloadUrl: string }[]
     } | null = null
     if (contract.status === 'WAIT_TENANT_MOVEOUT_SIGN' && contract.moveOutPendingJson) {
@@ -1133,6 +1136,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
           reasonFull: p.reasonFull,
           terminateDate: p.terminateDate,
           partial: Boolean(p.partial),
+          settlement: p.settlement ?? null,
           attachments: (p.attachments ?? []).map((a) => ({
             id: a.id,
             name: a.name,
@@ -1318,10 +1322,17 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     res.json({ ok: true, confirmedAt: updated.confirmedAt?.toISOString() })
   })
 
-  /** 租客确认退租（电子签字）：执行实际退租结案并清理退租附件 */
+  /** 租客确认退租（电子签字）：核对结算、提交收款银行卡并执行退租结案。 */
   app.post('/api/contracts/:id/confirm-move-out', async (req, res) => {
     const phone = req.header('x-tenant-phone')
     if (!phone) return res.status(401).json({ error: 'NEED_TENANT_PHONE' })
+    const Body = z.object({
+      accountName: z.string().trim().min(2).max(50),
+      bankName: z.string().trim().min(2).max(100),
+      bankCardNo: z.string().trim().regex(/^\d{12,24}$/),
+      acknowledged: z.literal(true),
+    })
+    const body = Body.parse(req.body ?? {})
 
     const cid = String(req.params.id)
     await expireTenantMoveOutIfNeeded(ctx.prisma, cid)
@@ -1352,7 +1363,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     const reasonText = pending.reasonFull
 
     try {
-      const { result, attachments } = await ctx.prisma.$transaction(async (tx) => {
+      const result = await ctx.prisma.$transaction(async (tx) => {
         const fresh = await tx.contract.findUnique({
           where: { id: cid },
           include: { order: { include: { lines: { include: { house: true } } } } },
@@ -1388,9 +1399,25 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
           reasonText,
           p2.releaseHouseIds ?? [],
         )
-        return { result, attachments: p2.attachments ?? [] }
+        const completedAt = new Date().toISOString()
+        const archive: MoveOutArchivePayload = {
+          ...p2,
+          version: 2,
+          completedAt,
+          completedBy: 'TENANT_CONFIRMED',
+          tenantConfirmation: {
+            accountName: body.accountName,
+            bankName: body.bankName,
+            bankCardNo: body.bankCardNo,
+            signedAt: completedAt,
+          },
+        }
+        await tx.contract.update({
+          where: { id: fresh.id },
+          data: { moveOutArchiveJson: JSON.stringify(archive) },
+        })
+        return result
       })
-      unlinkMoveOutFiles(cid, attachments)
       return res.json({ ok: true, ...result })
     } catch (e: unknown) {
       const code = (e as { code?: string })?.code
@@ -3531,6 +3558,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       reasonFull: string
       terminateDate: string
       partial: boolean
+      settlement: MoveOutPendingPayload['settlement'] | null
       attachments: { id: string; name: string; file: string; previewUrl: string; downloadUrl: string }[]
     } | null = null
     if (contract.status === 'WAIT_TENANT_MOVEOUT_SIGN' && contract.moveOutPendingJson) {
@@ -3542,6 +3570,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
           reasonFull: p.reasonFull,
           terminateDate: p.terminateDate,
           partial: Boolean(p.partial),
+          settlement: p.settlement ?? null,
           attachments: (p.attachments ?? []).map((a) => ({
             id: a.id,
             name: a.name,
@@ -3552,6 +3581,15 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         }
       } catch {
         moveOutPending = null
+      }
+    }
+
+    let moveOutArchive: MoveOutArchivePayload | null = null
+    if (contract.moveOutArchiveJson) {
+      try {
+        moveOutArchive = JSON.parse(contract.moveOutArchiveJson) as MoveOutArchivePayload
+      } catch {
+        moveOutArchive = null
       }
     }
 
@@ -3599,6 +3637,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       tenantSignDeadlineAt: contract.tenantSignDeadlineAt?.toISOString() ?? null,
       moveOutSignDeadlineAt,
       moveOutPending,
+      moveOutArchive,
       voidedAt: contract.voidedAt?.toISOString() ?? null,
       terminatedAt: contract.terminatedAt?.toISOString() ?? null,
       housingReport: contract.housingReport
@@ -4009,10 +4048,29 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
 
   app.post('/api/admin/contracts/:id/terminate-request', adminAuth(ctx.prisma), async (req, res) => {
     const auth = getAdminAuth(req)
+    const MoneyItem = z.object({
+      id: z.string().min(1),
+      name: z.string().min(1),
+      amount: z.number().min(0),
+      remark: z.string().default(''),
+    })
+    const InspectionItem = z.object({
+      id: z.string().min(1),
+      name: z.string().min(1),
+      unit: z.string().default(''),
+      quantity: z.number().min(0),
+      moveInStatus: z.string().default('未记录'),
+      moveOutStatus: z.string().min(1),
+      compensationQuantity: z.number().min(0),
+      referencePrice: z.number().min(0),
+      compensation: z.number().min(0),
+      remark: z.string().default(''),
+    })
     const Body = z.object({
       terminateDate: z.string().min(8),
       reason: z.string().min(1),
       remark: z.string().optional(),
+      requireTenantConfirmation: z.boolean().default(true),
       releaseHouseIds: z.array(z.string().min(1)).optional(),
       attachments: z
         .array(
@@ -4024,6 +4082,16 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         )
         .optional()
         .default([]),
+      settlement: z.object({
+        settlementType: z.enum(['NORMAL_EXPIRY', 'BREACH_EARLY', 'SETTLED_EARLY', 'NEGOTIATED_EARLY']),
+        stopRentDate: z.string().min(8),
+        requireTenantConfirmation: z.boolean(),
+        hygieneStatus: z.enum(['PASS', 'FAIL']),
+        inspectionItems: z.array(InspectionItem).min(1),
+        paidItems: z.array(MoneyItem).min(1),
+        receivableItems: z.array(MoneyItem).min(1),
+        applicationNote: z.string().min(1),
+      }),
     })
     const body = Body.parse(req.body)
     const contract = await ctx.prisma.contract.findUnique({
@@ -4037,6 +4105,14 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     if (!canAccessStore(auth, contract.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
     if (contract.status !== 'ACTIVE') return res.status(409).json({ error: 'INVALID_STATUS' })
     if (contract.moveOutPendingJson) return res.status(409).json({ error: 'MOVEOUT_REQUEST_ALREADY_PENDING' })
+    const terminateAt = new Date(`${body.terminateDate}T00:00:00.000Z`)
+    const stopRentAt = new Date(`${body.settlement.stopRentDate}T00:00:00.000Z`)
+    if (Number.isNaN(terminateAt.getTime()) || body.terminateDate > toYmd(new Date())) {
+      return res.status(400).json({ error: 'INVALID_MOVEOUT_DATE' })
+    }
+    if (Number.isNaN(stopRentAt.getTime()) || stopRentAt.getTime() < contract.startDate.getTime()) {
+      return res.status(400).json({ error: 'INVALID_STOP_RENT_DATE' })
+    }
 
     const order = contract.order
     const merged = Boolean(order?.isMergedBundle && order.lines.length > 0)
@@ -4063,8 +4139,12 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     const reasonText = [`退租：${body.reason}`, body.remark && `备注：${body.remark}`].filter(Boolean).join('；')
     const now = new Date()
     const deadline = new Date(now.getTime() + 7 * 24 * 3600 * 1000)
+    const settlement = normalizeMoveOutSettlement({
+      ...body.settlement,
+      requireTenantConfirmation: body.requireTenantConfirmation,
+    })
     const pending: MoveOutPendingPayload = {
-      version: 1,
+      version: 2,
       terminateDate: body.terminateDate,
       reasonFull: reasonText,
       releaseHouseIds: partial ? releaseIds : [],
@@ -4072,6 +4152,46 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       attachments: body.attachments,
       deadlineAt: deadline.toISOString(),
       createdAt: now.toISOString(),
+      settlement,
+    }
+    if (!body.requireTenantConfirmation) {
+      const archive: MoveOutArchivePayload = {
+        ...pending,
+        deadlineAt: now.toISOString(),
+        completedAt: now.toISOString(),
+        completedBy: 'STORE_DIRECT',
+        version: 2,
+      }
+      const result = await ctx.prisma.$transaction(async (tx) => {
+        const termination = await executeAdminContractTerminate(
+          tx,
+          {
+            id: contract.id,
+            houseId: contract.houseId,
+            order: contract.order
+              ? {
+                  id: contract.order.id,
+                  isMergedBundle: contract.order.isMergedBundle,
+                  lines: contract.order.lines.map((line) => ({
+                    houseId: line.houseId,
+                    releasedAt: line.releasedAt,
+                    rentMonthlySnapshot: line.rentMonthlySnapshot,
+                    depositSnapshot: line.depositSnapshot,
+                  })),
+                }
+              : null,
+          },
+          terminateAt,
+          reasonText,
+          pending.releaseHouseIds,
+        )
+        await tx.contract.update({
+          where: { id: contract.id },
+          data: { moveOutArchiveJson: JSON.stringify(archive) },
+        })
+        return termination
+      })
+      return res.json({ ok: true, completed: true, ...result, settlement })
     }
     await ctx.prisma.contract.update({
       where: { id: contract.id },
@@ -4080,7 +4200,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         moveOutPendingJson: JSON.stringify(pending),
       },
     })
-    res.json({ ok: true, deadlineAt: pending.deadlineAt, partial: pending.partial })
+    res.json({ ok: true, completed: false, deadlineAt: pending.deadlineAt, partial: pending.partial, settlement })
   })
 
   app.post('/api/admin/contracts/:id/cancel-move-out-request', adminAuth(ctx.prisma), async (req, res) => {

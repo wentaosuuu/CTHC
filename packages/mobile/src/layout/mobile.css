@@ -2052,3 +2052,56 @@ a.m-detail-cart-strip {
   padding: 10px 16px;
   font-size: 14px;
 }
+
+.tenant-moveout-steps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin: 16px 0 10px;
+}
+
+.tenant-moveout-steps span {
+  padding: 8px 4px;
+  border-radius: 8px;
+  color: #64748b;
+  background: #f1f5f9;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.tenant-moveout-steps span.active { color: #fff; background: #1d5fc4; }
+.tenant-moveout-steps span.done { color: #166534; background: #dcfce7; }
+
+.tenant-moveout-section {
+  margin-top: 10px;
+  padding: 14px;
+  border: 1px solid #dbe5f2;
+  border-radius: 12px;
+  background: #fbfdff;
+}
+
+.tenant-moveout-section h3 { margin: 0 0 12px; font-size: 15px; line-height: 1.45; }
+.tenant-moveout-section h4 { margin: 0 0 8px; color: #475569; font-size: 13px; }
+.tenant-moveout-next { width: 100%; margin-top: 12px; }
+.tenant-moveout-list { display: grid; gap: 8px; }
+.tenant-moveout-list > div { display: flex; justify-content: space-between; gap: 10px; padding: 10px; border: 1px solid #e2e8f0; border-radius: 9px; background: #fff; }
+.tenant-moveout-list > div > div { display: grid; gap: 3px; min-width: 0; }
+.tenant-moveout-list small { color: #64748b; }
+.tenant-moveout-list b { flex-shrink: 0; color: #166534; font-size: 12px; }
+.tenant-moveout-list b.money { color: #c2410c; }
+.tenant-moveout-files { gap: 8px; margin-top: 12px; }
+.tenant-moveout-files .m-row { justify-content: flex-end; align-items: center; }
+.tenant-moveout-files span { flex: 1; min-width: 0; word-break: break-all; }
+.tenant-settlement-grid { display: grid; gap: 10px; }
+.tenant-settlement-grid > div { padding: 10px; border: 1px solid #e2e8f0; border-radius: 9px; background: #fff; }
+.tenant-settlement-grid p { display: flex; justify-content: space-between; gap: 10px; margin: 0; padding: 7px 0; border-bottom: 1px solid #f1f5f9; font-size: 13px; }
+.tenant-settlement-grid p.total { border-bottom: 0; font-weight: 900; }
+.tenant-settlement-result { display: flex; justify-content: space-between; align-items: baseline; margin: 10px 0; padding: 12px; border-radius: 10px; color: #166534; background: #ecfdf5; }
+.tenant-settlement-result.due { color: #c2410c; background: #fff7ed; }
+.tenant-settlement-result strong { font-size: 24px; }
+.tenant-bank-field { display: grid; gap: 6px; margin-bottom: 12px; }
+.tenant-bank-field span { color: #475569; font-size: 13px; font-weight: 800; }
+.tenant-bank-field input { box-sizing: border-box; width: 100%; padding: 11px 12px; border: 1px solid #cbd5e1; border-radius: 9px; background: #fff; font: inherit; }
+.tenant-bank-ack { display: flex; align-items: flex-start; gap: 8px; margin: 4px 0 14px; color: #475569; font-size: 13px; line-height: 1.55; }
+.tenant-bank-ack input { margin-top: 3px; accent-color: #1d5fc4; }

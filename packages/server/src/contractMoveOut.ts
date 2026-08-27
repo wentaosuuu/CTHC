@@ -28,8 +28,50 @@ export function unlinkMoveOutFiles(contractId: string, attachments: Array<{ file
 
 export type MoveOutPendingAttachment = { id: string; name: string; file: string }
 
+export type MoveOutMoneyItem = {
+  id: string
+  name: string
+  amount: number
+  remark: string
+}
+
+export type MoveOutInspectionItem = {
+  id: string
+  name: string
+  unit: string
+  quantity: number
+  moveInStatus: string
+  moveOutStatus: string
+  compensationQuantity: number
+  referencePrice: number
+  compensation: number
+  remark: string
+}
+
+export type MoveOutSettlementSnapshot = {
+  settlementType: 'NORMAL_EXPIRY' | 'BREACH_EARLY' | 'SETTLED_EARLY' | 'NEGOTIATED_EARLY'
+  stopRentDate: string
+  requireTenantConfirmation: boolean
+  hygieneStatus: 'PASS' | 'FAIL'
+  inspectionItems: MoveOutInspectionItem[]
+  paidItems: MoveOutMoneyItem[]
+  receivableItems: MoveOutMoneyItem[]
+  paidTotal: number
+  receivableTotal: number
+  refundAmount: number
+  amountDue: number
+  applicationNote: string
+}
+
+export type MoveOutTenantConfirmation = {
+  accountName: string
+  bankName: string
+  bankCardNo: string
+  signedAt: string
+}
+
 export type MoveOutPendingPayload = {
-  version: 1
+  version: 1 | 2
   terminateDate: string
   reasonFull: string
   releaseHouseIds: string[]
@@ -37,6 +79,45 @@ export type MoveOutPendingPayload = {
   attachments: MoveOutPendingAttachment[]
   deadlineAt: string
   createdAt: string
+  settlement?: MoveOutSettlementSnapshot
+}
+
+export type MoveOutArchivePayload = MoveOutPendingPayload & {
+  version: 2
+  completedAt: string
+  completedBy: 'TENANT_CONFIRMED' | 'STORE_DIRECT'
+  tenantConfirmation?: MoveOutTenantConfirmation
+}
+
+function money(value: number) {
+  return Math.round(Math.max(0, Number(value) || 0) * 100) / 100
+}
+
+/** 金额合计必须由服务端重算，避免前端篡改审批表结果。 */
+export function normalizeMoveOutSettlement(
+  settlement: Omit<MoveOutSettlementSnapshot, 'paidTotal' | 'receivableTotal' | 'refundAmount' | 'amountDue'>,
+): MoveOutSettlementSnapshot {
+  const paidItems = settlement.paidItems.map((item) => ({ ...item, amount: money(item.amount) }))
+  const receivableItems = settlement.receivableItems.map((item) => ({ ...item, amount: money(item.amount) }))
+  const inspectionItems = settlement.inspectionItems.map((item) => ({
+    ...item,
+    quantity: money(item.quantity),
+    compensationQuantity: money(item.compensationQuantity),
+    referencePrice: money(item.referencePrice),
+    compensation: money(item.compensation),
+  }))
+  const paidTotal = money(paidItems.reduce((sum, item) => sum + item.amount, 0))
+  const receivableTotal = money(receivableItems.reduce((sum, item) => sum + item.amount, 0))
+  return {
+    ...settlement,
+    paidItems,
+    receivableItems,
+    inspectionItems,
+    paidTotal,
+    receivableTotal,
+    refundAmount: money(Math.max(paidTotal - receivableTotal, 0)),
+    amountDue: money(Math.max(receivableTotal - paidTotal, 0)),
+  }
 }
 
 /** 执行管理员退租结案（从租客确认后调用，或旧流程；不含清理附件文件） */
@@ -135,10 +216,10 @@ export async function executeAdminContractTerminate(
       data: { releasedAt: moveAt },
     })
     for (const l of order.lines) {
-      await tx.house.update({ where: { id: l.houseId }, data: { status: 'TERMINATED' } })
+      await tx.house.update({ where: { id: l.houseId }, data: { status: 'VACANT' } })
     }
   } else {
-    await tx.house.update({ where: { id: contract.houseId }, data: { status: 'TERMINATED' } })
+    await tx.house.update({ where: { id: contract.houseId }, data: { status: 'VACANT' } })
   }
   await tx.refund.create({
     data: { contractId: contract.id, amount: 0, reason: reasonText },

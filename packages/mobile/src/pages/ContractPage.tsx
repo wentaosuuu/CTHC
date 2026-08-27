@@ -31,6 +31,22 @@ function formatSignCountdown(ms: number) {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 }
 
+type MoveOutMoneyItem = { id: string; name: string; amount: number; remark: string }
+type MoveOutSettlement = {
+  settlementType: string
+  stopRentDate: string
+  requireTenantConfirmation: boolean
+  hygieneStatus: 'PASS' | 'FAIL'
+  inspectionItems: Array<{ id: string; name: string; unit: string; quantity: number; moveInStatus: string; moveOutStatus: string; compensationQuantity: number; referencePrice: number; compensation: number; remark: string }>
+  paidItems: MoveOutMoneyItem[]
+  receivableItems: MoveOutMoneyItem[]
+  paidTotal: number
+  receivableTotal: number
+  refundAmount: number
+  amountDue: number
+  applicationNote: string
+}
+
 type Contract = {
   id: string
   contractNo: string
@@ -66,6 +82,7 @@ type Contract = {
     reasonFull: string
     terminateDate: string
     partial: boolean
+    settlement: MoveOutSettlement | null
     attachments: { id: string; name: string; file: string; previewUrl: string; downloadUrl: string }[]
   } | null
 }
@@ -76,6 +93,11 @@ export function ContractPage() {
   const [data, setData] = useState<Contract | null>(null)
   const [error, setError] = useState('')
   const [actionMsg, setActionMsg] = useState('')
+  const [tenantMoveOutStep, setTenantMoveOutStep] = useState<1 | 2 | 3>(1)
+  const [refundAccountName, setRefundAccountName] = useState('')
+  const [refundBankName, setRefundBankName] = useState('')
+  const [refundBankCardNo, setRefundBankCardNo] = useState('')
+  const [moveOutAcknowledged, setMoveOutAcknowledged] = useState(false)
 
   const phoneFromUrl = sp.get('phone') || ''
   useEffect(() => {
@@ -146,7 +168,16 @@ export function ContractPage() {
   async function confirmMoveOut() {
     if (!id) return
     setActionMsg('')
-    const r = await apiPost<{ ok: true }>('/api/contracts/' + id + '/confirm-move-out', {}, { headers })
+    if (!refundAccountName.trim() || !refundBankName.trim() || !/^\d{12,24}$/.test(refundBankCardNo.trim())) {
+      return setActionMsg('请完整填写收款人、开户银行和 12–24 位银行卡号。')
+    }
+    if (!moveOutAcknowledged) return setActionMsg('请勾选确认结算内容及退款账户信息无误。')
+    const r = await apiPost<{ ok: true }>('/api/contracts/' + id + '/confirm-move-out', {
+      accountName: refundAccountName.trim(),
+      bankName: refundBankName.trim(),
+      bankCardNo: refundBankCardNo.trim(),
+      acknowledged: true,
+    }, { headers })
     if (!r.ok) return setActionMsg('确认失败：' + r.error)
     setActionMsg('已确认退租，请下拉刷新本页查看合同状态。')
     await load()
@@ -273,49 +304,10 @@ export function ContractPage() {
                 {data.moveOutPending.partial ? '（部分退租）' : ''}
               </div>
               <div style={{ marginTop: 8, fontSize: 14 }}>{data.moveOutPending.reasonFull}</div>
-              {data.moveOutPending.attachments.length > 0 ? (
-                <div className="m-col" style={{ gap: 8, marginTop: 12 }}>
-                  {data.moveOutPending.attachments.map((a) => (
-                    <div key={a.id} className="m-row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div style={{ flex: 1, minWidth: 0, wordBreak: 'break-all' }}>{a.name}</div>
-                      <div className="m-row">
-                        <button
-                          type="button"
-                          className="m-btn ghost"
-                          onClick={async () => {
-                            const r = await previewMoveOutFileWithPhone(data.id, a.file, phone)
-                            if (!r.ok) setActionMsg(`预览失败：${r.error}`)
-                          }}
-                        >
-                          预览
-                        </button>
-                        <button
-                          type="button"
-                          className="m-btn ghost"
-                          onClick={async () => {
-                            const r = await downloadMoveOutFileWithPhone(data.id, a.file, a.name, phone)
-                            if (!r.ok) setActionMsg(`下载失败：${r.error}`)
-                          }}
-                        >
-                          下载
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="m-muted" style={{ marginTop: 8 }}>
-                  暂无附件
-                </div>
-              )}
-              <div className="m-row" style={{ marginTop: 14 }}>
-                <button type="button" className="m-btn" onClick={() => void confirmMoveOut()}>
-                  确认退租（电子签字）
-                </button>
-                <button type="button" className="m-btn secondary" onClick={() => void load()}>
-                  刷新
-                </button>
-              </div>
+              <div className="tenant-moveout-steps"><span className={tenantMoveOutStep === 1 ? 'active' : tenantMoveOutStep > 1 ? 'done' : ''}>1 交接清单</span><span className={tenantMoveOutStep === 2 ? 'active' : tenantMoveOutStep > 2 ? 'done' : ''}>2 退租申请</span><span className={tenantMoveOutStep === 3 ? 'active' : ''}>3 退款账户</span></div>
+              {tenantMoveOutStep === 1 ? <section className="tenant-moveout-section"><h3>确认《房屋、设备、设施交接清单及损坏赔偿价格表》</h3>{data.moveOutPending.settlement ? <div className="tenant-moveout-list">{data.moveOutPending.settlement.inspectionItems.map((item) => <div key={item.id}><div><strong>{item.name}</strong><small>{item.quantity}{item.unit} · 入住：{item.moveInStatus} · 退租：{item.moveOutStatus}</small>{item.compensationQuantity > 0 ? <small>赔偿数量：{item.compensationQuantity}{item.unit}</small> : null}{item.remark ? <small>{item.remark}</small> : null}</div><b className={item.compensation > 0 ? 'money' : ''}>{item.compensation > 0 ? `赔偿 ¥${item.compensation.toFixed(2)}` : '无赔偿'}</b></div>)}</div> : <div className="m-muted">本次为历史退租申请，请结合附件核对交接情况。</div>}{data.moveOutPending.attachments.length > 0 ? <div className="m-col tenant-moveout-files">{data.moveOutPending.attachments.map((a) => <div key={a.id} className="m-row"><span>{a.name}</span><button type="button" className="m-btn ghost" onClick={async () => { const r = await previewMoveOutFileWithPhone(data.id, a.file, phone); if (!r.ok) setActionMsg(`预览失败：${r.error}`) }}>预览</button><button type="button" className="m-btn ghost" onClick={async () => { const r = await downloadMoveOutFileWithPhone(data.id, a.file, a.name, phone); if (!r.ok) setActionMsg(`下载失败：${r.error}`) }}>下载</button></div>)}</div> : null}<button type="button" className="m-btn tenant-moveout-next" onClick={() => setTenantMoveOutStep(2)}>交接清单无误，确认并签字</button></section> : null}
+              {tenantMoveOutStep === 2 ? <section className="tenant-moveout-section"><h3>确认《退租申请表》与结算明细</h3>{data.moveOutPending.settlement ? <><div className="tenant-settlement-grid"><div><h4>已交款项</h4>{data.moveOutPending.settlement.paidItems.map((item) => <p key={item.id}><span>{item.name}</span><b>¥{item.amount.toFixed(2)}</b></p>)}<p className="total"><span>已交小计</span><b>¥{data.moveOutPending.settlement.paidTotal.toFixed(2)}</b></p></div><div><h4>应收款项</h4>{data.moveOutPending.settlement.receivableItems.map((item) => <p key={item.id}><span>{item.name}</span><b>¥{item.amount.toFixed(2)}</b></p>)}<p className="total"><span>应收小计</span><b>¥{data.moveOutPending.settlement.receivableTotal.toFixed(2)}</b></p></div></div><div className={`tenant-settlement-result ${data.moveOutPending.settlement.amountDue > 0 ? 'due' : ''}`}><span>{data.moveOutPending.settlement.amountDue > 0 ? '应补金额' : '预计退款'}</span><strong>¥{(data.moveOutPending.settlement.amountDue || data.moveOutPending.settlement.refundAmount).toFixed(2)}</strong></div><p className="m-muted">{data.moveOutPending.settlement.applicationNote}</p></> : <div className="m-muted">请核对退租说明及附件。</div>}<div className="m-row"><button type="button" className="m-btn secondary" onClick={() => setTenantMoveOutStep(1)}>上一步</button><button type="button" className="m-btn" onClick={() => setTenantMoveOutStep(3)}>退租申请无误，确认并签字</button></div></section> : null}
+              {tenantMoveOutStep === 3 ? <section className="tenant-moveout-section"><h3>提交押金退款银行卡</h3><label className="tenant-bank-field"><span>收款人姓名 *</span><input value={refundAccountName} onChange={(e) => setRefundAccountName(e.target.value)} placeholder={data.tenant.name} /></label><label className="tenant-bank-field"><span>开户银行 *</span><input value={refundBankName} onChange={(e) => setRefundBankName(e.target.value)} placeholder="例如：中国建设银行南宁东葛支行" /></label><label className="tenant-bank-field"><span>银行卡号 *</span><input inputMode="numeric" value={refundBankCardNo} onChange={(e) => setRefundBankCardNo(e.target.value.replace(/\D/g, '').slice(0, 24))} placeholder="请输入 12–24 位银行卡号" /></label><label className="tenant-bank-ack"><input type="checkbox" checked={moveOutAcknowledged} onChange={(e) => setMoveOutAcknowledged(e.target.checked)} /><span>我已核对交接清单、退租申请、结算明细与退款账户，确认无误并同意电子签字。</span></label><div className="m-row"><button type="button" className="m-btn secondary" onClick={() => setTenantMoveOutStep(2)}>上一步</button><button type="button" className="m-btn" onClick={() => void confirmMoveOut()}>提交银行卡并确认退租</button></div><p className="m-muted">提交后系统将生成《退租结算审批表》，由门店打印并报财务办理退款。</p></section> : null}
               {actionMsg ? <div className="m-muted" style={{ marginTop: 8 }}>{actionMsg}</div> : null}
             </div>
           ) : null}
@@ -471,4 +463,3 @@ export function ContractPage() {
     </div>
   )
 }
-
