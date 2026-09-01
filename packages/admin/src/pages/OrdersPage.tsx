@@ -112,6 +112,15 @@ type OrderItem = {
   contractModificationRejectedAt: string | null
   /** 租客在 H5 确认合同后非空，此时禁止改订单 */
   contractConfirmedAt: string | null
+  faceVerifiedAt?: string | null
+  attachments?: {
+    id: string
+    name: string
+    file: string
+    category: string
+    previewUrl: string
+    downloadUrl: string
+  }[]
 }
 
 /** 合同已进入履行或结束态、或租客已确认合同时，不允许再改订单 */
@@ -139,6 +148,8 @@ function statusBadgeClass(status: string) {
   switch (status) {
     case 'PENDING_REVIEW':
       return 'a-badge status-pending'
+    case 'NEED_REVISION':
+      return 'a-badge status-unpaid'
     case 'APPROVED':
       return 'a-badge status-approved'
     case 'REJECTED':
@@ -154,6 +165,8 @@ function orderStatusZh(status: string) {
   switch (status) {
     case 'PENDING_REVIEW':
       return '待审核'
+    case 'NEED_REVISION':
+      return '待租客修改'
     case 'APPROVED':
       return '已通过'
     case 'REJECTED':
@@ -165,9 +178,17 @@ function orderStatusZh(status: string) {
   }
 }
 
+function orderAttachmentCategoryZh(cat: string) {
+  if (cat === 'DEAL_CONFIRMATION') return '成交确认书'
+  if (cat === 'BUSINESS_LICENSE') return '营业执照'
+  return '其他'
+}
+
 function contractStatusZh(status: string | null) {
   if (!status) return '未生成'
   switch (status) {
+    case 'WAIT_INTERNAL_OA':
+      return '待华创OA'
     case 'WAIT_TENANT_SIGN':
       return '待租客签字'
     case 'WAIT_STAMP':
@@ -188,6 +209,8 @@ function contractStatusZh(status: string | null) {
 function contractStatusBadgeClass(status: string | null) {
   if (!status) return 'a-badge status-void'
   switch (status) {
+    case 'WAIT_INTERNAL_OA':
+      return 'a-badge status-ordered'
     case 'WAIT_TENANT_SIGN':
       return 'a-badge status-pending'
     case 'WAIT_STAMP':
@@ -328,12 +351,19 @@ export function OrdersPage() {
     if (approved) {
       if (!confirm('确认审核通过该订单？')) return
     }
-    const reason = approved ? '' : prompt('请输入拒绝原因（必填）') || ''
+    const reason = approved ? '' : prompt('请输入退回修改原因（必填，租客可改附件后重提）') || ''
     if (!approved && !reason.trim()) return
-    if (!approved && !confirm('确认拒绝该订单？房源将解锁为「空置」，其他租客可再次下单。')) return
+    if (!approved && !confirm('确认退回该订单？房源保持锁定，租客可修改附件后重新提交。')) return
     const r = await apiPost<{ ok: true }>('/api/admin/orders/' + orderId + '/review', { approved, reason })
-    if (!r.ok) return setError(r.error)
-    setMsg(approved ? '审核已通过' : '已拒绝订单，房源已解锁')
+    if (!r.ok) {
+      const map: Record<string, string> = {
+        DEAL_CONFIRMATION_REQUIRED: '租客尚未上传成交确认书，无法通过',
+        BUSINESS_LICENSE_REQUIRED: '企业租户尚未上传营业执照，无法通过',
+        REASON_REQUIRED: '请填写退回原因',
+      }
+      return setError(map[r.error] || r.error)
+    }
+    setMsg(approved ? '审核已通过' : '已退回租客修改（房源仍锁定）')
     await load()
   }
 
@@ -1156,6 +1186,7 @@ export function OrdersPage() {
             >
               <option value="">全部订单状态</option>
               <option value="PENDING_REVIEW">待审核</option>
+              <option value="NEED_REVISION">待租客修改</option>
               <option value="APPROVED">已通过</option>
               <option value="REJECTED">已拒绝</option>
               <option value="CANCELLED">已取消</option>
@@ -1168,6 +1199,7 @@ export function OrdersPage() {
             >
               <option value="">全部合同状态</option>
               <option value="__null__">未生成合同</option>
+              <option value="WAIT_INTERNAL_OA">待华创OA</option>
               <option value="WAIT_TENANT_SIGN">待租客签字</option>
               <option value="WAIT_STAMP">待盖章</option>
               <option value="PENDING_PAYMENT">待支付</option>
@@ -1241,7 +1273,7 @@ export function OrdersPage() {
                           审核通过
                         </button>
                         <button className="a-btn secondary" onClick={() => review(o.id, false)}>
-                          审核拒绝
+                          退回修改
                         </button>
                       </>
                     ) : null}
@@ -1404,6 +1436,56 @@ export function OrdersPage() {
                             {idDocTypeZh(orderDetail.tenant.idDocType)} {orderDetail.tenant.idNumber}
                             {orderDetail.tenant.wechat ? ` · 微信 ${orderDetail.tenant.wechat}` : ''}
                           </div>
+                        </div>
+                      </div>
+                      <div className="a-kv-row">
+                        <div className="a-kv-k">扫脸认证</div>
+                        <div className="a-kv-v">
+                          {orderDetail.faceVerifiedAt
+                            ? new Date(orderDetail.faceVerifiedAt).toLocaleString('zh-CN', { hour12: false })
+                            : orderDetail.house.assetType === '泊湾公寓'
+                              ? '—'
+                              : '未认证'}
+                        </div>
+                      </div>
+                      <div className="a-kv-row" style={{ alignItems: 'flex-start' }}>
+                        <div className="a-kv-k">订单附件</div>
+                        <div className="a-kv-v">
+                          {orderDetail.attachments && orderDetail.attachments.length > 0 ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                              {orderDetail.attachments.map((a) => (
+                                <span key={a.id}>
+                                  {orderAttachmentCategoryZh(a.category)} · {a.name}{' '}
+                                  <button
+                                    type="button"
+                                    className="a-btn ghost"
+                                    style={{ padding: '2px 8px', fontSize: 12 }}
+                                    onClick={() =>
+                                      previewFileWithAuth(a.previewUrl).catch((e) =>
+                                        setError(e instanceof Error ? e.message : '预览失败'),
+                                      )
+                                    }
+                                  >
+                                    预览
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="a-btn ghost"
+                                    style={{ padding: '2px 8px', fontSize: 12 }}
+                                    onClick={() =>
+                                      downloadFileWithAuth(a.downloadUrl, a.name).catch((e) =>
+                                        setError(e instanceof Error ? e.message : '下载失败'),
+                                      )
+                                    }
+                                  >
+                                    下载
+                                  </button>
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="a-muted">暂无</span>
+                          )}
                         </div>
                       </div>
                     </div>

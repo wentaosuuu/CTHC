@@ -30,6 +30,19 @@ async function readError(res: Response) {
   if (err === 'CART_MIXED_ASSET_LANE') return '泊湾公寓与商铺/厂房/住宅不能在同一笔订单中结算，请分开提交'
   if (err === 'MERGED_RENT_SUM_MISMATCH') return '合并订单：配置合同的月租须等于各子资产月租之和'
   if (err === 'PRIOR_BILLS_UNPAID') return '请先结清更早账期的欠费账单，再支付本期'
+  if (err === 'NEED_TENANT_PHONE') return '请先绑定手机号'
+  if (err === 'CONTRACT_NOT_ACTIVE') return '仅在租生效合同可发起转租'
+  if (err === 'SUBLET_ALREADY_OPEN') return '该合同已有进行中的转租申请'
+  if (err === 'SUBLET_AREA_EXCEEDS_HOUSE') return '转租面积不能超过房源面积'
+  if (err === 'FILING_MATERIALS_REQUIRED') return '请至少上传一份备案材料'
+  if (err === 'NOT_WAIT_FILING') return '当前状态不可提交或修改备案材料'
+  if (err === 'FACE_VERIFY_REQUIRED') return '请先完成扫脸实名认证'
+  if (err === 'DEAL_CONFIRMATION_REQUIRED') return '请先上传成交确认书'
+  if (err === 'BUSINESS_LICENSE_REQUIRED') return '企业租户请上传营业执照'
+  if (err === 'NEED_REVISION') return '订单需修改后重新提交'
+  if (err === 'NOT_NEED_REVISION') return '当前订单无需重提'
+  if (err === 'REASON_REQUIRED') return '请填写原因'
+  if (err === 'NOT_WAIT_INTERNAL_OA') return '合同当前不在待华创OA状态'
   return err
 }
 

@@ -16,6 +16,7 @@ const MENU_OPTIONS: { id: string; label: string; path: string }[] = [
   { id: 'houses', label: '资产管理', path: '/houses' },
   { id: 'orders', label: '订单管理', path: '/orders' },
   { id: 'contracts', label: '合同管理', path: '/contracts' },
+  { id: 'sublets', label: '转租管理', path: '/sublets' },
   { id: 'tenant_profiles', label: '租客档案', path: '/tenant-profiles' },
   { id: 'transactions', label: '交易记录', path: '/transactions' },
   { id: 'contract_prepayments', label: '合同预收款', path: '/contract-prepayments' },
@@ -42,7 +43,7 @@ const initialRoles: Role[] = [
     name: '店长',
     code: 'STORE_MANAGER',
     description: '只能查看和操作自己门店的数据',
-    menuIds: ['home', 'houses', 'orders', 'contracts', 'tenant_profiles', 'transactions', 'contract_prepayments', 'bills', 'overdue', 'rent_reminders', 'reports', 'ledger_book'],
+    menuIds: ['home', 'houses', 'orders', 'contracts', 'sublets', 'tenant_profiles', 'transactions', 'contract_prepayments', 'bills', 'overdue', 'rent_reminders', 'reports', 'ledger_book'],
   },
   {
     id: 'role_finance',

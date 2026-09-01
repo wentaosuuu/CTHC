@@ -126,6 +126,9 @@ export function AdminLayout({ children }: { children: ReactNode }) {
             <Link className={loc.pathname.startsWith('/contracts') ? 'a-menu-item active' : 'a-menu-item'} to="/contracts">
               合同管理
             </Link>
+            <Link className={loc.pathname.startsWith('/sublets') ? 'a-menu-item active' : 'a-menu-item'} to="/sublets">
+              转租管理
+            </Link>
             <Link
               className={loc.pathname.startsWith('/tenant-profiles') ? 'a-menu-item active' : 'a-menu-item'}
               to="/tenant-profiles"

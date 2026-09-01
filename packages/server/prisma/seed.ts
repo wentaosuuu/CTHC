@@ -1414,6 +1414,8 @@ async function main() {
 
   await seedReportDemoData(prisma)
 
+  await seedDemoSubletApplications(prisma)
+
   const totalContracts = await prisma.contract.count()
   // eslint-disable-next-line no-console
   console.log(
@@ -1549,6 +1551,66 @@ async function ensureMergedBundlePartialChangeHouseDemo(db: PrismaClient) {
   console.log(
     `Demo: 合并合同 ${MERGED_CONTRACT_NO} 已写入部分换房样例（${srcLine.house.apartment.name} ${srcLine.house.houseNo} → ${target.apartment.name} ${target.houseNo}，新合同 ${newContractNo}）。`,
   )
+}
+
+/** 转租申请演示：若干不同状态的申请记录 */
+async function seedDemoSubletApplications(db: PrismaClient) {
+  const existing = await db.subletApplication.count()
+  if (existing > 0) return
+
+  const actives = await db.contract.findMany({
+    where: { status: 'ACTIVE' },
+    take: 4,
+    orderBy: { createdAt: 'asc' },
+    include: {
+      tenant: true,
+      house: { include: { apartment: true } },
+    },
+  })
+  if (actives.length === 0) return
+
+  const manager = await db.admin.findFirst({ where: { email: 'manager@example.com' } })
+  const now = new Date()
+  const ymd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
+
+  const specs: Array<{
+    contract: (typeof actives)[0]
+    status: 'PENDING_REVIEW' | 'WAIT_OA' | 'WAIT_FILING' | 'REJECTED'
+    no: string
+  }> = []
+
+  if (actives[0]) specs.push({ contract: actives[0], status: 'PENDING_REVIEW', no: `ZZ${ymd}001` })
+  if (actives[1]) specs.push({ contract: actives[1], status: 'WAIT_OA', no: `ZZ${ymd}002` })
+  if (actives[2]) specs.push({ contract: actives[2], status: 'WAIT_FILING', no: `ZZ${ymd}003` })
+  if (actives[3]) specs.push({ contract: actives[3], status: 'REJECTED', no: `ZZ${ymd}004` })
+
+  for (const s of specs) {
+    const area = Math.min(Math.max(10, Math.round(s.contract.house.area * 0.6)), s.contract.house.area)
+    const pastReview = s.status !== 'PENDING_REVIEW'
+    const pastOa = s.status === 'WAIT_FILING' || s.status === 'REJECTED'
+    await db.subletApplication.create({
+      data: {
+        applicationNo: s.no,
+        contractId: s.contract.id,
+        tenantId: s.contract.tenantId,
+        storeId: s.contract.house.apartment.storeId,
+        status: s.status,
+        subletArea: area,
+        subletUnit: `${s.contract.tenant.name}转租承接方`,
+        remark: '种子演示数据',
+        rejectReason: s.status === 'REJECTED' ? '演示：初审/OA 未通过' : null,
+        reviewedAt: pastReview ? now : null,
+        reviewedByAdminId: pastReview ? manager?.id : null,
+        reviewedByName: pastReview ? manager?.name ?? '店长' : null,
+        oaPassedAt: pastOa ? now : null,
+        oaRecordedByAdminId: pastOa ? manager?.id : null,
+        oaRecordedByName: pastOa ? manager?.name ?? '店长' : null,
+      },
+    })
+  }
+
+  // eslint-disable-next-line no-console
+  console.log(`Demo: 已写入 ${specs.length} 条转租申请演示数据。`)
 }
 
 main()

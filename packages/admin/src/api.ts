@@ -142,3 +142,34 @@ export async function apiDeleteContractAttachment(
   if (!res.ok) return { ok: false, error: await readAdminError(res) }
   return { ok: true, data: (await res.json()) as { ok: true; attachments: { id: string; name: string; file: string }[] } }
 }
+
+export async function apiUploadSubletMinutesFile<T = unknown>(
+  applicationId: string,
+  file: File,
+): Promise<ApiResult<T>> {
+  const token = getAdminToken()
+  const fd = new FormData()
+  fd.append('file', file)
+  const headers: Record<string, string> = {}
+  if (token) headers.Authorization = `Bearer ${token}`
+  const res = await fetch(`/api/admin/sublets/${encodeURIComponent(applicationId)}/minutes-file`, {
+    method: 'POST',
+    headers,
+    body: fd,
+  })
+  if (!res.ok) return { ok: false, error: await readAdminError(res) }
+  return { ok: true, data: (await res.json()) as T }
+}
+
+export async function apiDeleteSubletMinutesFile<T = unknown>(
+  applicationId: string,
+  fileKey: string,
+): Promise<ApiResult<T>> {
+  const base = withAuthHeaders()
+  const res = await fetch(
+    `/api/admin/sublets/${encodeURIComponent(applicationId)}/minutes-file/${encodeURIComponent(fileKey)}`,
+    { ...base, method: 'DELETE' },
+  )
+  if (!res.ok) return { ok: false, error: await readAdminError(res) }
+  return { ok: true, data: (await res.json()) as T }
+}

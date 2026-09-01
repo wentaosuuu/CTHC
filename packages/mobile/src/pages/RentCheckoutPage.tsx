@@ -154,6 +154,7 @@ export function RentCheckoutPage() {
       idNumber: idNorm,
       phone: phone.trim(),
       wechat,
+      faceVerified: true,
       ...(emergencyContactName.trim() ? { emergencyContactName: emergencyContactName.trim() } : {}),
       ...(emergencyContactPhone.trim() ? { emergencyContactPhone: emergencyContactPhone.trim() } : {}),
       idDocType: docType,
@@ -171,6 +172,7 @@ export function RentCheckoutPage() {
       tenantPhone: string
       tips: string
       storeWecomQrUrl?: string | null
+      needsOrderAttachments?: boolean
     }>('/api/orders/checkout', base)
     if (!r.ok) return setError(r.error)
     setTenantPhone(r.data.tenantPhone)
@@ -181,7 +183,9 @@ export function RentCheckoutPage() {
       addMyOrder({
         id: o.id,
         createdAt,
-        statusText: '已提交，等待管理员审核',
+        statusText: r.data.needsOrderAttachments
+          ? '已提交，请上传成交确认书等附件'
+          : '已提交，等待管理员审核',
         houseTitle:
           contractMode === 'MERGED' && linesSnap.length > 1
             ? `合并意向（${linesSnap.length} 套）`
@@ -201,7 +205,10 @@ export function RentCheckoutPage() {
       qrUrl: r.data.storeWecomQrUrl ?? null,
     })
     const ids = r.data.orders.map((o) => o.id).join('、')
-    setOkMsg(`${r.data.tips ?? '提交成功'} 订单号：${ids}`)
+    const attachHint = r.data.needsOrderAttachments
+      ? `请进入「我的订单」为各订单上传成交确认书${docType === 'USCC' ? '与营业执照' : ''}后再等待审核。`
+      : ''
+    setOkMsg(`${r.data.tips ?? '提交成功'} 订单号：${ids}${attachHint ? ` ${attachHint}` : ''}`)
   }
 
   function onTapDirectOrder() {

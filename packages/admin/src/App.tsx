@@ -19,6 +19,7 @@ import { SystemDepartmentsPage } from './pages/SystemDepartmentsPage'
 import { SystemRolesPage } from './pages/SystemRolesPage'
 import { SystemUsersPage } from './pages/SystemUsersPage'
 import { ProfilePage } from './pages/ProfilePage'
+import { SubletsPage } from './pages/SubletsPage'
 import { getAdminToken } from './auth'
 
 function App() {
@@ -45,6 +46,7 @@ function App() {
         <Route path="/houses" element={authed ? <HousesPage /> : <Navigate to="/login" replace />} />
         <Route path="/orders" element={authed ? <OrdersPage /> : <Navigate to="/login" replace />} />
         <Route path="/contracts" element={authed ? <ContractsPage /> : <Navigate to="/login" replace />} />
+        <Route path="/sublets" element={authed ? <SubletsPage /> : <Navigate to="/login" replace />} />
         <Route path="/tenant-profiles" element={authed ? <TenantProfilesPage /> : <Navigate to="/login" replace />} />
         <Route path="/transactions" element={authed ? <TransactionsPage /> : <Navigate to="/login" replace />} />
         <Route path="/contract-prepayments" element={authed ? <ContractPrepaymentsPage /> : <Navigate to="/login" replace />} />

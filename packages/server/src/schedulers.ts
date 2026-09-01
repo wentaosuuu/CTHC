@@ -101,7 +101,11 @@ export function startSchedulers(prisma: PrismaClient) {
 
     const actives = await prisma.contract.findMany({
       where: { status: 'ACTIVE' },
-      select: { id: true },
+      select: {
+        id: true,
+        startDate: true,
+        house: { select: { apartment: { select: { assetType: true } } } },
+      },
       take: 500,
     })
     for (const c of actives) {

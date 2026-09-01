@@ -17,10 +17,23 @@ type HouseOrderMeta = {
   externalBrowseUrl?: string | null
 }
 
+type OrderAttachmentItem = {
+  id: string
+  name: string
+  file: string
+  category: string
+}
+
 function openExternalUrl(url: string) {
   const u = url.trim()
   if (!u) return
   window.open(u, '_blank', 'noopener,noreferrer')
+}
+
+function categoryLabel(cat: string) {
+  if (cat === 'DEAL_CONFIRMATION') return '成交确认书'
+  if (cat === 'BUSINESS_LICENSE') return '营业执照'
+  return '其他附件'
 }
 
 export function OrderCreatePage() {
@@ -37,10 +50,18 @@ export function OrderCreatePage() {
   const [successWecom, setSuccessWecom] = useState<{ storeName: string; qrUrl: string | null } | null>(null)
   const [showFaceModal, setShowFaceModal] = useState(false)
   const [faceSubmitting, setFaceSubmitting] = useState(false)
+  const [createdOrderId, setCreatedOrderId] = useState<string | null>(null)
+  const [needAttachments, setNeedAttachments] = useState(false)
+  const [attachments, setAttachments] = useState<OrderAttachmentItem[]>([])
+  const [uploading, setUploading] = useState(false)
   const disabled = useMemo(() => !houseId, [houseId])
 
   const isBowan = house?.assetType === BOWAN_ASSET
   const browseExternalUrl = useMemo(() => (house?.externalBrowseUrl ?? '').trim(), [house])
+  const isEnterprise = docValues.docType === 'USCC'
+  const hasDealConfirmation = attachments.some((a) => a.category === 'DEAL_CONFIRMATION')
+  const hasBusinessLicense = attachments.some((a) => a.category === 'BUSINESS_LICENSE')
+  const attachmentsReady = hasDealConfirmation && (!isEnterprise || hasBusinessLicense)
 
   useEffect(() => {
     if (!houseId) return
@@ -89,7 +110,18 @@ export function OrderCreatePage() {
       // ignore
     }
     const createdAt = new Date().toISOString()
-    const { docType, name, idNumber, phone, wechat, emergencyContactName, emergencyContactPhone, idLongTerm, idValidUntil, extraDocValidUntil } = docValues
+    const {
+      docType,
+      name,
+      idNumber,
+      phone,
+      wechat,
+      emergencyContactName,
+      emergencyContactPhone,
+      idLongTerm,
+      idValidUntil,
+      extraDocValidUntil,
+    } = docValues
     const idNorm =
       docType === 'IDCARD' || docType === 'USCC' ? idNumber.trim().toUpperCase() : idNumber.trim()
 
@@ -102,6 +134,7 @@ export function OrderCreatePage() {
       ...(emergencyContactName.trim() ? { emergencyContactName: emergencyContactName.trim() } : {}),
       ...(emergencyContactPhone.trim() ? { emergencyContactPhone: emergencyContactPhone.trim() } : {}),
       idDocType: docType,
+      faceVerified: true,
     }
     if (docType === 'IDCARD') {
       base.idCardLongTerm = idLongTerm
@@ -118,6 +151,7 @@ export function OrderCreatePage() {
       status: string
       tenantPhone: string
       tips: string
+      needsOrderAttachments?: boolean
       house?: { storeName?: string }
       storeWecomQrUrl?: string | null
     }>('/api/orders', payload)
@@ -126,7 +160,9 @@ export function OrderCreatePage() {
     addMyOrder({
       id: r.data.id,
       createdAt,
-      statusText: '已提交，等待管理员审核',
+      statusText: r.data.needsOrderAttachments
+        ? '已提交，请上传成交确认书等附件'
+        : '已提交，等待管理员审核',
       ...houseSnapshot,
     })
     const storeName = r.data.house?.storeName ?? '门店'
@@ -134,7 +170,60 @@ export function OrderCreatePage() {
       storeName,
       qrUrl: r.data.storeWecomQrUrl ?? null,
     })
-    setOkMsg(`下单成功！订单号 ${r.data.id}。请尽快添加店长企业微信，方便跟进审核与签约。`)
+    setCreatedOrderId(r.data.id)
+    if (r.data.needsOrderAttachments) {
+      setNeedAttachments(true)
+      setAttachments([])
+      setOkMsg('')
+    } else {
+      setNeedAttachments(false)
+      setOkMsg(`下单成功！订单号 ${r.data.id}。请尽快添加店长企业微信，方便跟进审核与签约。`)
+    }
+  }
+
+  async function uploadAttachment(category: 'DEAL_CONFIRMATION' | 'BUSINESS_LICENSE', file: File | null) {
+    if (!file || !createdOrderId) return
+    const phone = docValues.phone.trim()
+    if (!phone) return setError('请先填写手机号')
+    setUploading(true)
+    setError('')
+    const fd = new FormData()
+    fd.append('file', file)
+    fd.append('category', category)
+    const res = await fetch(`/api/orders/${encodeURIComponent(createdOrderId)}/attachment`, {
+      method: 'POST',
+      headers: { 'x-tenant-phone': phone },
+      body: fd,
+    })
+    setUploading(false)
+    if (!res.ok) {
+      let err = '上传失败'
+      try {
+        const j = (await res.json()) as { error?: string }
+        if (j.error === 'DEAL_CONFIRMATION_REQUIRED') err = '请上传成交确认书'
+        else if (j.error) err = j.error
+      } catch {
+        /* ignore */
+      }
+      return setError(err)
+    }
+    const data = (await res.json()) as { attachments: OrderAttachmentItem[] }
+    setAttachments(data.attachments)
+  }
+
+  function finishAttachmentStep() {
+    if (!attachmentsReady) {
+      setError(
+        isEnterprise
+          ? '请先上传成交确认书与营业执照'
+          : '请先上传成交确认书',
+      )
+      return
+    }
+    setNeedAttachments(false)
+    setOkMsg(
+      `下单成功！订单号 ${createdOrderId}。附件已提交，请尽快添加店长企业微信，方便跟进审核与签约。`,
+    )
   }
 
   function onTapDirectOrder() {
@@ -155,7 +244,7 @@ export function OrderCreatePage() {
     setFaceSubmitting(false)
   }
 
-  const orderPlaced = Boolean(okMsg)
+  const orderPlaced = Boolean(okMsg) || (Boolean(createdOrderId) && needAttachments)
 
   const documentBlock = !orderPlaced ? <IdDocumentFields {...idDoc.fieldsProps} /> : null
 
@@ -191,10 +280,20 @@ export function OrderCreatePage() {
           {documentBlock}
           <div className="m-card m-col">
             <label className="m-muted m-label-required">租期（月）</label>
-            <input className="m-input" type="number" value={leaseMonths} onChange={(e) => setLeaseMonths(Number(e.target.value))} />
+            <input
+              className="m-input"
+              type="number"
+              value={leaseMonths}
+              onChange={(e) => setLeaseMonths(Number(e.target.value))}
+            />
 
             <label className="m-muted m-label-required">入住日期</label>
-            <input className="m-input" type="date" value={moveInDate} onChange={(e) => setMoveInDate(e.target.value)} />
+            <input
+              className="m-input"
+              type="date"
+              value={moveInDate}
+              onChange={(e) => setMoveInDate(e.target.value)}
+            />
           </div>
         </>
       ) : null}
@@ -225,9 +324,59 @@ export function OrderCreatePage() {
         </>
       ) : null}
 
-      {!orderPlaced && error ? <div className="m-card m-error">提交失败：{error}</div> : null}
+      {needAttachments && createdOrderId ? (
+        <div className="m-card m-col">
+          <div style={{ fontWeight: 900 }}>上传意向附件</div>
+          <div className="m-muted" style={{ marginTop: 6 }}>
+            订单号 {createdOrderId}。厂房/商铺/住宅需上传成交确认书
+            {isEnterprise ? '与营业执照' : ''}后，店长方可审核。
+          </div>
+          <div style={{ marginTop: 12 }}>
+            <label className="m-muted m-label-required">成交确认书</label>
+            <input
+              className="m-input"
+              type="file"
+              accept="image/*,.pdf"
+              disabled={uploading}
+              onChange={(e) => void uploadAttachment('DEAL_CONFIRMATION', e.target.files?.[0] ?? null)}
+            />
+          </div>
+          {isEnterprise ? (
+            <div>
+              <label className="m-muted m-label-required">营业执照</label>
+              <input
+                className="m-input"
+                type="file"
+                accept="image/*,.pdf"
+                disabled={uploading}
+                onChange={(e) => void uploadAttachment('BUSINESS_LICENSE', e.target.files?.[0] ?? null)}
+              />
+            </div>
+          ) : null}
+          {attachments.length > 0 ? (
+            <ul className="m-muted" style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 13 }}>
+              {attachments.map((a) => (
+                <li key={a.id}>
+                  {categoryLabel(a.category)} · {a.name}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          <button
+            type="button"
+            className="m-btn"
+            style={{ marginTop: 12 }}
+            disabled={uploading || !attachmentsReady}
+            onClick={finishAttachmentStep}
+          >
+            {uploading ? '上传中…' : '完成并提交审核'}
+          </button>
+        </div>
+      ) : null}
 
-      {orderPlaced && okMsg ? (
+      {error ? <div className="m-card m-error">提交失败：{error}</div> : null}
+
+      {okMsg ? (
         <div className="m-card m-order-success m-order-success-only">
           <div className="m-order-success-badge">下单成功</div>
           <div className="m-success">{okMsg}</div>
@@ -305,7 +454,9 @@ export function OrderCreatePage() {
           aria-labelledby="face-modal-title"
         >
           <div className="m-modal-box m-face-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="m-modal-title" id="face-modal-title">扫脸实名认证</div>
+            <div className="m-modal-title" id="face-modal-title">
+              扫脸实名认证
+            </div>
             <div className="m-modal-desc">
               提交订单前需完成实名认证。此处将调起扫脸认证接口（如：对接公安/第三方活体检测），
               真实场景中会打开摄像头进行人脸识别，通过后即可提交订单至店长审核。

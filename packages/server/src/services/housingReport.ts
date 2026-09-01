@@ -4,7 +4,33 @@ import path from 'node:path'
 import { PDFDocument, StandardFonts } from 'pdf-lib'
 import { toYmd } from '../time.js'
 
+/** 流程图：仅「住宅」资产在起租日 T+1 自动报备市住建局 */
+export function isResidentialAssetType(assetType: string | null | undefined) {
+  return String(assetType ?? '').trim() === '住宅'
+}
+
+/** 起租日次日 00:00（本地日历日）及之后才允许报备 */
+export function isPastHousingReportTPlus1(startDate: Date, now = new Date()) {
+  const start = new Date(startDate)
+  const t1 = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1)
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  return today.getTime() >= t1.getTime()
+}
+
 export async function ensureHousingReportRecord(prisma: PrismaClient, contractId: string) {
+  const contract = await prisma.contract.findUnique({
+    where: { id: contractId },
+    include: { house: { include: { apartment: true } } },
+  })
+  if (!contract) return null
+  if (contract.status !== 'ACTIVE') return null
+  if (!isResidentialAssetType(contract.house.apartment.assetType)) {
+    return null
+  }
+  if (!isPastHousingReportTPlus1(contract.startDate)) {
+    return null
+  }
+
   const existing = await prisma.housingReport.findUnique({ where: { contractId } })
   if (existing) return existing
   return prisma.housingReport.create({ data: { contractId, status: 'PENDING' } })
@@ -55,8 +81,17 @@ export async function performHousingReportNow(prisma: PrismaClient, contractId: 
   if (contract.status !== 'ACTIVE') {
     return { status: 'SKIPPED', reason: 'CONTRACT_NOT_ACTIVE' as const }
   }
+  if (!isResidentialAssetType(contract.house.apartment.assetType)) {
+    return { status: 'SKIPPED', reason: 'NOT_RESIDENTIAL' as const }
+  }
+  if (!isPastHousingReportTPlus1(contract.startDate)) {
+    return { status: 'SKIPPED', reason: 'BEFORE_T_PLUS_1' as const }
+  }
 
   const report = await ensureHousingReportRecord(prisma, contractId)
+  if (!report) {
+    return { status: 'SKIPPED', reason: 'NO_REPORT_RECORD' as const }
+  }
 
   try {
     const receiptsDir = path.join(process.cwd(), 'receipts')

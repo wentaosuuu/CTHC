@@ -2105,3 +2105,77 @@ a.m-detail-cart-strip {
 .tenant-bank-field input { box-sizing: border-box; width: 100%; padding: 11px 12px; border: 1px solid #cbd5e1; border-radius: 9px; background: #fff; font: inherit; }
 .tenant-bank-ack { display: flex; align-items: flex-start; gap: 8px; margin: 4px 0 14px; color: #475569; font-size: 13px; line-height: 1.55; }
 .tenant-bank-ack input { margin-top: 3px; accent-color: #1d5fc4; }
+
+/* 转租申请 */
+.m-sublet-card {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.m-sublet-card:active {
+  border-color: #93c5fd;
+}
+.m-sublet-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.m-sublet-pill--wait {
+  color: #1e40af;
+  background: #dbeafe;
+}
+.m-sublet-pill--action {
+  color: #9a3412;
+  background: #ffedd5;
+}
+.m-sublet-pill--done {
+  color: #166534;
+  background: #dcfce7;
+}
+.m-sublet-pill--end {
+  color: #64748b;
+  background: #f1f5f9;
+}
+.m-sublet-hint {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #9a3412;
+  background: #fff7ed;
+}
+.m-sublet-hint--end {
+  color: #64748b;
+  background: #f8fafc;
+}
+.m-sublet-steps {
+  display: grid;
+  gap: 8px;
+}
+.m-sublet-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #94a3b8;
+}
+.m-sublet-step.is-done {
+  color: #166534;
+  font-weight: 600;
+}
+.m-sublet-step.is-current {
+  color: #1d4ed8;
+  font-weight: 800;
+}
+.m-sublet-step-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}

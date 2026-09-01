@@ -18,11 +18,15 @@ enum HouseStatus {
 enum OrderStatus {
   PENDING_REVIEW
   APPROVED
+  /// 审核不通过，租客可改资料/附件后重新提交
+  NEED_REVISION
   REJECTED
   CANCELLED
 }
 
 enum ContractStatus {
+  /// 合同已配置，待登记华创内部 OA（非本系统；店长人工登记）
+  WAIT_INTERNAL_OA
   WAIT_TENANT_SIGN
   WAIT_STAMP
   PENDING_PAYMENT
@@ -74,6 +78,24 @@ enum TransactionReceiptStatus {
 enum ReceiptReprintRequestStatus {
   PENDING
   APPROVED
+  REJECTED
+}
+
+/// 转租申请状态机（租户发起 → 店长初审 → 华创OA → 备案材料 → 复审 → 会议纪要）
+enum SubletApplicationStatus {
+  /// 已提交，待店长初审
+  PENDING_REVIEW
+  /// 初审通过，待华创内部 OA（非本系统操作，由店长登记结果）
+  WAIT_OA
+  /// OA 已通过，待租户提交备案材料
+  WAIT_FILING
+  /// 已提交备案材料，待店长复审
+  FILING_REVIEW
+  /// 备案材料复审通过，待店长上传会议纪要
+  WAIT_MINUTES
+  /// 流程完成
+  COMPLETED
+  /// 初审或 OA 不通过，流程结束
   REJECTED
 }
 
@@ -261,6 +283,7 @@ model Tenant {
   orders    Order[]
   contracts Contract[]
   profileLogs TenantProfileLog[]
+  subletApplications SubletApplication[]
 
   @@index([phone])
   @@index([idNumber])
@@ -297,6 +320,10 @@ model Order {
   isMergedBundle Boolean    @default(false)
   status        OrderStatus @default(PENDING_REVIEW)
   reviewReason  String?
+  /// 下单附件 JSON：[{ "id","name","file","category" }] category=DEAL_CONFIRMATION|BUSINESS_LICENSE|OTHER
+  attachmentsJson String    @default("[]")
+  /// H5 扫脸实人认证通过时间（演示可 mock）
+  faceVerifiedAt DateTime?
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
 
@@ -390,6 +417,11 @@ model Contract {
   moveOutPendingJson String?
   /// 已完成退租结算快照：JSON（交接清单、收支明细、租户确认/银行卡、审批表数据）
   moveOutArchiveJson String?
+  /// 华创内部 OA 登记（非本系统）：通过时间
+  oaPassedAt DateTime?
+  oaRecordedByAdminId String?
+  oaRecordedByName String?
+  oaRejectReason String?
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
 
@@ -408,6 +440,56 @@ model Contract {
   rentReminders RentReminder[]
   /// 合同维度的线下超额收款等形成的「预收余额」（元，整数），用于抵扣后续账单或人工处理
   contractCredit ContractCredit?
+  subletApplications SubletApplication[]
+}
+
+/// 转租申请：独立申请记录（不改变合同生命周期，仅跟踪审批与备案材料）
+model SubletApplication {
+  id            String                   @id @default(cuid())
+  /// 展示编号，如 ZZ20260831001
+  applicationNo String                   @unique
+  contractId    String
+  tenantId      String
+  /// 冗余门店，便于店长按门店筛选与权限校验
+  storeId       String
+  status        SubletApplicationStatus  @default(PENDING_REVIEW)
+  /// 转租面积（㎡）
+  subletArea    Float
+  /// 转租单位（承接方名称，如公司/个人）
+  subletUnit    String
+  /// 其他说明
+  remark        String                   @default("")
+  /// 初审/OA/复审驳回原因
+  rejectReason  String?
+  /// 备案材料 JSON：[{ "id","name","file","category" }]  category=CONTRACT|LICENSE|OTHER
+  filingMaterialsJson String             @default("[]")
+  /// 会议纪要附件 JSON：[{ "id","name","file" }]
+  meetingMinutesJson  String             @default("[]")
+  reviewedAt          DateTime?
+  reviewedByAdminId   String?
+  reviewedByName      String?
+  oaPassedAt          DateTime?
+  oaRecordedByAdminId String?
+  oaRecordedByName    String?
+  filingSubmittedAt   DateTime?
+  filingReviewedAt    DateTime?
+  filingReviewedByAdminId String?
+  filingReviewedByName    String?
+  /// 最近一次备案材料复审驳回原因（可多次打回）
+  filingRejectReason  String?
+  completedAt         DateTime?
+  completedByAdminId  String?
+  completedByName     String?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  contract Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, createdAt])
+  @@index([storeId, status])
+  @@index([contractId, status])
+  @@index([status, createdAt])
 }
 
 model Payment {

@@ -18,6 +18,9 @@ import { MyOrderDetailPage } from './pages/MyOrderDetailPage'
 import { RealNameVerifyPage } from './pages/RealNameVerifyPage'
 import { ProfilePage } from './pages/ProfilePage'
 import { LedgerPayPage } from './pages/LedgerPayPage'
+import { SubletListPage } from './pages/SubletListPage'
+import { SubletCreatePage } from './pages/SubletCreatePage'
+import { SubletDetailPage } from './pages/SubletDetailPage'
 
 function App() {
   return (
@@ -30,6 +33,9 @@ function App() {
         <Route path="/bills" element={<MyBillsPage />} />
         <Route path="/bills/:id" element={<BillDetailPage />} />
         <Route path="/me/orders/:id" element={<MyOrderDetailPage />} />
+        <Route path="/me/sublets" element={<SubletListPage />} />
+        <Route path="/me/sublets/new" element={<SubletCreatePage />} />
+        <Route path="/me/sublets/:id" element={<SubletDetailPage />} />
         <Route path="/me/verify" element={<RealNameVerifyPage />} />
         <Route path="/houses/:id" element={<HouseDetailPage />} />
         <Route path="/map" element={<MapPage />} />

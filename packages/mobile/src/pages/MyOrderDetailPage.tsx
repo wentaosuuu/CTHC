@@ -1,211 +1,292 @@
-import { useMemo, useState } from 'react'
-import { useParams } from 'react-router-dom'
-import { getMyOrders, type MyOrderSummary } from '../api'
+import { useEffect, useMemo, useState } from 'react'
+import { Link, useParams } from 'react-router-dom'
+import {
+  apiGet,
+  apiPost,
+  getMyOrders,
+  getTenantPhone,
+  type MyOrderSummary,
+} from '../api'
 
-const NEED_CONFIRM_TEXT = '确认订单'
-
-function needConfirmOrder(order: MyOrderSummary) {
-  return order.statusText?.includes(NEED_CONFIRM_TEXT) ?? false
+type OrderAttachmentItem = {
+  id: string
+  name: string
+  file: string
+  category: string
+  previewUrl?: string
+  downloadUrl?: string
 }
 
-// Demo 合同信息（与「审核通过，请确认订单」订单同页直接展示）
-const DEMO_CONTRACT = {
-  id: 'DEMO-CONTRACT-001',
-  contractNo: 'HT20260316001',
-  apartmentName: '良庆·悦居公寓',
-  houseNo: '330',
-  storeName: '南宁市-良庆区',
-  tenantName: '张三',
-  tenantPhone: '13810000000',
-  startDate: '2026-04-01',
-  endDate: '2027-03-31',
-  rentMonthly: 4200,
-  deposit: 4200,
+type TenantOrderDetail = {
+  id: string
+  status: string
+  reviewReason: string | null
+  createdAt: string
+  leaseMonths: number
+  moveInDate: string
+  needsOrderAttachments: boolean
+  attachments: OrderAttachmentItem[]
+  tenant: { name: string; phone: string; idDocType: string }
+  house: {
+    id: string
+    apartmentName: string
+    houseNo: string
+    storeName: string
+    assetType: string
+    rentMonthly: number
+  }
+  contractId: string | null
+  contractStatus: string | null
+  contractNo: string | null
 }
 
-function isSignedOrder(order: MyOrderSummary) {
-  return order.statusText?.includes('已签约') ?? false
+function orderStatusZh(status: string) {
+  switch (status) {
+    case 'PENDING_REVIEW':
+      return '待审核'
+    case 'NEED_REVISION':
+      return '需修改后重提'
+    case 'APPROVED':
+      return '已通过审核'
+    case 'REJECTED':
+      return '已拒绝'
+    case 'CANCELLED':
+      return '已取消'
+    default:
+      return status
+  }
 }
 
-function contractThumbDataUri(contractNo: string) {
-  const svg = `
-<svg xmlns="http://www.w3.org/2000/svg" width="240" height="160">
-  <rect width="240" height="160" rx="12" fill="#eef2ff"/>
-  <rect x="16" y="16" width="208" height="128" rx="10" fill="#ffffff" stroke="#c7d2fe"/>
-  <text x="28" y="44" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#1e3a8a">租赁合同</text>
-  <text x="28" y="70" font-family="Arial, sans-serif" font-size="12" fill="#334155">合同号：${contractNo}</text>
-  <text x="28" y="92" font-family="Arial, sans-serif" font-size="12" fill="#334155">房源：良庆·悦居公寓 · 330</text>
-  <text x="28" y="114" font-family="Arial, sans-serif" font-size="12" fill="#334155">租期：2026-04-01 至 2027-03-31</text>
-</svg>`
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
+function categoryLabel(cat: string) {
+  if (cat === 'DEAL_CONFIRMATION') return '成交确认书'
+  if (cat === 'BUSINESS_LICENSE') return '营业执照'
+  return '其他附件'
 }
 
 export function MyOrderDetailPage() {
   const { id } = useParams()
-  const [contractConfirmed, setContractConfirmed] = useState(false)
-  const [showContractPreview, setShowContractPreview] = useState(false)
-
-  const order = useMemo<MyOrderSummary | null>(() => {
+  const phone = getTenantPhone()
+  const localOrder = useMemo<MyOrderSummary | null>(() => {
     if (!id) return null
-    const all = getMyOrders()
-    return all.find((o) => o.id === id) ?? null
+    return getMyOrders().find((o) => o.id === id) ?? null
   }, [id])
+
+  const [detail, setDetail] = useState<TenantOrderDetail | null>(null)
+  const [loadErr, setLoadErr] = useState('')
+  const [msg, setMsg] = useState('')
+  const [error, setError] = useState('')
+  const [uploading, setUploading] = useState(false)
+
+  async function reload() {
+    if (!id || !phone) return
+    const r = await apiGet<TenantOrderDetail>(`/api/orders/${encodeURIComponent(id)}`, {
+      headers: { 'x-tenant-phone': phone },
+    })
+    if (!r.ok) {
+      setLoadErr(r.error)
+      setDetail(null)
+      return
+    }
+    setLoadErr('')
+    setDetail(r.data)
+  }
+
+  useEffect(() => {
+    void reload()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, phone])
+
+  async function uploadAttachment(category: 'DEAL_CONFIRMATION' | 'BUSINESS_LICENSE', file: File | null) {
+    if (!file || !id || !phone) return
+    setUploading(true)
+    setError('')
+    setMsg('')
+    const fd = new FormData()
+    fd.append('file', file)
+    fd.append('category', category)
+    const res = await fetch(`/api/orders/${encodeURIComponent(id)}/attachment`, {
+      method: 'POST',
+      headers: { 'x-tenant-phone': phone },
+      body: fd,
+    })
+    setUploading(false)
+    if (!res.ok) {
+      let err = '上传失败'
+      try {
+        const j = (await res.json()) as { error?: string }
+        err = j.error || err
+      } catch {
+        /* ignore */
+      }
+      return setError(err)
+    }
+    const data = (await res.json()) as { attachments: OrderAttachmentItem[] }
+    setDetail((prev) => (prev ? { ...prev, attachments: data.attachments } : prev))
+    setMsg('附件已上传')
+  }
+
+  async function resubmit() {
+    if (!id || !phone) return
+    setError('')
+    setMsg('')
+    const r = await apiPost<{ ok: true; status: string }>(
+      `/api/orders/${encodeURIComponent(id)}/resubmit`,
+      {},
+      { headers: { 'x-tenant-phone': phone } },
+    )
+    if (!r.ok) {
+      const map: Record<string, string> = {
+        DEAL_CONFIRMATION_REQUIRED: '请先上传成交确认书',
+        BUSINESS_LICENSE_REQUIRED: '企业租户请上传营业执照',
+        NOT_NEED_REVISION: '当前订单无需重提',
+      }
+      return setError(map[r.error] || r.error)
+    }
+    setMsg('已重新提交，等待店长审核')
+    await reload()
+  }
 
   if (!id) {
     return <div className="m-card m-error">未找到该订单。</div>
   }
 
-  if (!order) {
-    return <div className="m-card">正在加载订单详情…</div>
+  if (!phone && !localOrder) {
+    return <div className="m-card m-muted">请先绑定手机号后再查看订单详情。</div>
   }
 
-  const showContractBlock = needConfirmOrder(order)
-  const signed = isSignedOrder(order)
-  const contractNo = order.contractNo || DEMO_CONTRACT.contractNo
-  const contractThumb = contractThumbDataUri(contractNo)
-
-  function downloadDemoContract() {
-    const lines = [
-      '租赁合同',
-      `合同号：${contractNo}`,
-      `房源：${DEMO_CONTRACT.apartmentName} · ${DEMO_CONTRACT.houseNo}`,
-      `门店：${DEMO_CONTRACT.storeName}`,
-      `租客：${DEMO_CONTRACT.tenantName}（${DEMO_CONTRACT.tenantPhone}）`,
-      `租期：${DEMO_CONTRACT.startDate} 至 ${DEMO_CONTRACT.endDate}`,
-      `月租：¥${DEMO_CONTRACT.rentMonthly} / 押金：¥${DEMO_CONTRACT.deposit}`,
-      '',
-      '说明：可替换为后端真实合同 PDF 下载链接。',
-    ]
-    const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${contractNo}-租赁合同.txt`
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    URL.revokeObjectURL(url)
+  if (phone && !detail && !loadErr) {
+    return <div className="m-card m-muted">正在加载订单详情…</div>
   }
+
+  if (loadErr && !localOrder) {
+    return <div className="m-card m-error">无法加载订单：{loadErr}</div>
+  }
+
+  const status = detail?.status
+  const canEditAttachments =
+    status === 'PENDING_REVIEW' || status === 'NEED_REVISION'
+  const isEnterprise = detail?.tenant.idDocType === 'USCC'
+  const houseTitle = detail
+    ? `${detail.house.apartmentName} · ${detail.house.houseNo}`
+    : localOrder?.houseTitle ?? '订单详情'
+  const houseSubtitle = detail
+    ? `${detail.house.storeName} · ${detail.house.assetType}`
+    : localOrder?.houseSubtitle ?? `订单号：${id}`
 
   return (
     <div className="m-col">
       <div className="m-card">
-        <div className="m-h1">{order.houseTitle ?? '订单详情'}</div>
+        <div className="m-h1">{houseTitle}</div>
         <div className="m-muted" style={{ marginTop: 4 }}>
-          {order.houseSubtitle ?? `订单号：${order.id}`}
+          {houseSubtitle}
         </div>
         <div style={{ height: 12 }} />
         <div className="m-kv">
           <div className="m-k">订单号</div>
-          <div>{order.id}</div>
+          <div>{id}</div>
           <div className="m-k">提交时间</div>
-          <div>{new Date(order.createdAt).toLocaleString()}</div>
-          {order.rentMonthly ? (
+          <div>
+            {new Date(detail?.createdAt ?? localOrder?.createdAt ?? Date.now()).toLocaleString()}
+          </div>
+          {(detail?.house.rentMonthly ?? localOrder?.rentMonthly) ? (
             <>
               <div className="m-k">月租</div>
-              <div>¥{order.rentMonthly}/月</div>
+              <div>¥{detail?.house.rentMonthly ?? localOrder?.rentMonthly}/月</div>
             </>
           ) : null}
           <div className="m-k">当前状态</div>
-          <div>{order.statusText ?? '已提交，等待管理员审核'}</div>
+          <div>
+            {detail
+              ? orderStatusZh(detail.status)
+              : localOrder?.statusText ?? '已提交，等待管理员审核'}
+          </div>
+          {detail?.reviewReason ? (
+            <>
+              <div className="m-k">退回原因</div>
+              <div style={{ color: '#b91c1c' }}>{detail.reviewReason}</div>
+            </>
+          ) : null}
         </div>
       </div>
 
-      {showContractBlock ? (
-        <>
-          <div className="m-card">
-            <div style={{ fontWeight: 900 }}>合同信息</div>
-            <div className="m-muted" style={{ marginTop: 4 }}>请仔细阅读以下合同内容，确认无误后点击底部按钮。</div>
-            <div style={{ height: 12 }} />
-            <div className="m-kv">
-              <div className="m-k">合同号</div>
-              <div>{DEMO_CONTRACT.contractNo}</div>
-              <div className="m-k">房源</div>
-              <div>{DEMO_CONTRACT.apartmentName} · {DEMO_CONTRACT.houseNo}</div>
-              <div className="m-k">门店</div>
-              <div>{DEMO_CONTRACT.storeName}</div>
-              <div className="m-k">租客</div>
-              <div>{DEMO_CONTRACT.tenantName}（{DEMO_CONTRACT.tenantPhone}）</div>
-              <div className="m-k">租期</div>
-              <div>{DEMO_CONTRACT.startDate} 至 {DEMO_CONTRACT.endDate}</div>
-              <div className="m-k">月租</div>
-              <div>¥{DEMO_CONTRACT.rentMonthly}/月</div>
-              <div className="m-k">押金</div>
-              <div>¥{DEMO_CONTRACT.deposit}</div>
-            </div>
+      {detail?.needsOrderAttachments && canEditAttachments ? (
+        <div className="m-card m-col">
+          <div style={{ fontWeight: 900 }}>
+            {status === 'NEED_REVISION' ? '按店长要求修改附件后重提' : '意向附件'}
           </div>
-
-          <div className="m-card" style={{ marginTop: 4 }}>
-            <div style={{ fontWeight: 900 }}>确认合同信息</div>
-            <div className="m-muted" style={{ marginTop: 6 }}>
-              确认上述合同信息无误后，请点击下方按钮。
-            </div>
-            <div style={{ marginTop: 12 }}>
-              {contractConfirmed ? (
-                <div style={{ color: '#047857', fontWeight: 600 }}>您已确认合同信息</div>
-              ) : (
-                <button
-                  type="button"
-                  className="m-btn"
-                  onClick={() => setContractConfirmed(true)}
-                >
-                  确认合同信息
-                </button>
-              )}
-            </div>
-          </div>
-        </>
-      ) : null}
-
-      {signed ? (
-        <div className="m-card">
-          <div style={{ fontWeight: 900 }}>合同文件</div>
           <div className="m-muted" style={{ marginTop: 6 }}>
-            合同已生效，可预览或下载合同文件。
+            需上传成交确认书{isEnterprise ? '与营业执照' : ''}。
           </div>
-          <div className="m-contract-file">
-            <img src={contractThumb} alt="合同缩略图" className="m-contract-thumb" />
-            <div className="m-col" style={{ gap: 8, flex: 1, minWidth: 0 }}>
-              <div style={{ fontWeight: 700 }}>{contractNo}</div>
-              <div className="m-row" style={{ gap: 8 }}>
-                <button type="button" className="m-btn ghost" onClick={() => setShowContractPreview(true)}>
-                  合同预览
-                </button>
-                <button type="button" className="m-btn" onClick={downloadDemoContract}>
-                  下载合同
-                </button>
-              </div>
+          <div style={{ marginTop: 12 }}>
+            <label className="m-muted m-label-required">成交确认书</label>
+            <input
+              className="m-input"
+              type="file"
+              accept="image/*,.pdf"
+              disabled={uploading}
+              onChange={(e) => void uploadAttachment('DEAL_CONFIRMATION', e.target.files?.[0] ?? null)}
+            />
+          </div>
+          {isEnterprise ? (
+            <div>
+              <label className="m-muted m-label-required">营业执照</label>
+              <input
+                className="m-input"
+                type="file"
+                accept="image/*,.pdf"
+                disabled={uploading}
+                onChange={(e) => void uploadAttachment('BUSINESS_LICENSE', e.target.files?.[0] ?? null)}
+              />
             </div>
-          </div>
+          ) : null}
+          {detail.attachments.length > 0 ? (
+            <ul className="m-muted" style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 13 }}>
+              {detail.attachments.map((a) => (
+                <li key={a.id}>
+                  {categoryLabel(a.category)} · {a.name}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {status === 'NEED_REVISION' ? (
+            <button type="button" className="m-btn" style={{ marginTop: 12 }} disabled={uploading} onClick={() => void resubmit()}>
+              重新提交审核
+            </button>
+          ) : null}
         </div>
       ) : null}
 
-      {showContractPreview ? (
-        <div
-          className="m-modal-backdrop"
-          onClick={() => setShowContractPreview(false)}
-          onKeyDown={(e) => e.key === 'Escape' && setShowContractPreview(false)}
-          role="dialog"
-          aria-modal="true"
-        >
-          <div className="m-modal-box m-contract-preview-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="m-modal-title">合同预览</div>
-            <div className="m-modal-desc">{contractNo}</div>
-            <div className="m-contract-preview">
-              <img src={contractThumb} alt="合同预览" />
-            </div>
-            <div className="m-row" style={{ gap: 8, marginTop: 12 }}>
-              <button type="button" className="m-btn ghost" onClick={() => setShowContractPreview(false)}>
-                关闭
-              </button>
-              <button type="button" className="m-btn" onClick={downloadDemoContract}>
-                下载合同
-              </button>
-            </div>
-          </div>
+      {detail?.attachments && detail.attachments.length > 0 && !canEditAttachments ? (
+        <div className="m-card">
+          <div style={{ fontWeight: 900 }}>已提交附件</div>
+          <ul className="m-muted" style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 13 }}>
+            {detail.attachments.map((a) => (
+              <li key={a.id}>
+                {categoryLabel(a.category)} · {a.name}
+              </li>
+            ))}
+          </ul>
         </div>
       ) : null}
+
+      {detail?.contractId && detail.contractStatus === 'WAIT_TENANT_SIGN' ? (
+        <div className="m-card">
+          <div style={{ fontWeight: 900 }}>合同待确认</div>
+          <div className="m-muted" style={{ marginTop: 6 }}>
+            华创内部 OA 已通过，请前往合同页确认并签字。
+          </div>
+          <Link className="m-btn" style={{ marginTop: 12, display: 'inline-block' }} to={`/contracts/${detail.contractId}`}>
+            去合同页
+          </Link>
+        </div>
+      ) : null}
+
+      {detail?.contractId && detail.contractStatus === 'WAIT_INTERNAL_OA' ? (
+        <div className="m-card m-muted">合同已配置，正在等待内部审批（华创 OA），通过后可确认签字。</div>
+      ) : null}
+
+      {error ? <div className="m-card m-error">{error}</div> : null}
+      {msg ? <div className="m-card m-success">{msg}</div> : null}
     </div>
   )
 }
-

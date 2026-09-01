@@ -1688,6 +1688,42 @@ th.a-report-col-highlight {
 .moveout-approval-signatures div:last-child { border-right: 0; }
 .moveout-approval-signatures span { color: #64748b; font-size: 12px; }
 .moveout-approval-signatures b { font-size: 12px; }
+.moveout-approval-totals th { width: 14%; background: #f1f5f9; }
+.moveout-approval-totals td { font-weight: 800; }
+.moveout-approval-sign-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  border: 1px solid #475569;
+  border-top: 0;
+}
+.moveout-approval-sign-grid div {
+  display: grid;
+  gap: 28px;
+  min-height: 72px;
+  padding: 10px;
+  border-right: 1px solid #475569;
+  border-bottom: 1px solid #475569;
+}
+.moveout-approval-sign-grid div:nth-child(3n) { border-right: 0; }
+.moveout-approval-sign-grid div:nth-child(n+4) { border-bottom: 0; }
+.moveout-approval-sign-grid span { color: #334155; font-size: 12px; font-weight: 600; }
+.moveout-approval-sign-grid b { min-height: 1.2em; }
+.moveout-approval-tenant-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border: 1px solid #475569;
+  border-top: 0;
+}
+.moveout-approval-tenant-row div {
+  display: grid;
+  gap: 8px;
+  min-height: 64px;
+  padding: 10px;
+  border-right: 1px solid #475569;
+}
+.moveout-approval-tenant-row div:last-child { border-right: 0; }
+.moveout-approval-tenant-row span { color: #64748b; font-size: 12px; }
+.moveout-approval-tenant-row b { font-size: 12px; font-weight: 600; }
 
 @media (max-width: 800px) {
   .annex5-editor-modal, .moveout-workflow-modal { width: 98vw; margin-left: 0; }

@@ -66,8 +66,19 @@ export type MoveOutSettlementSnapshot = {
 export type MoveOutTenantConfirmation = {
   accountName: string
   bankName: string
+  /** 开户支行 */
+  bankBranch: string
   bankCardNo: string
-  signedAt: string
+  /** 联行号（选填） */
+  cnapsCode?: string
+  /** 开户省市（选填） */
+  bankRegion?: string
+  phone?: string
+  idNumber?: string
+  /** 租户确认时间（非电子签字） */
+  confirmedAt: string
+  /** @deprecated 兼容旧归档字段 */
+  signedAt?: string
 }
 
 export type MoveOutPendingPayload = {

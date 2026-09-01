@@ -60,6 +60,13 @@ export function MyPage() {
             </div>
             <span className="m-my-menu-arrow">›</span>
           </Link>
+          <Link className="m-my-menu-item" to="/me/sublets">
+            <div className="m-my-menu-main">
+              <span className="m-my-menu-title">转租申请</span>
+              <span className="m-my-menu-desc">提交转租申请、补交备案材料</span>
+            </div>
+            <span className="m-my-menu-arrow">›</span>
+          </Link>
         </div>
       </div>
     </div>

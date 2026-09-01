@@ -123,6 +123,17 @@ import { buildDepositRefundOptions, resolveDepositRefundAmount } from './deposit
 import { contractTemplateTerminationData } from './contractTemplate.js'
 import { maskIdNumber, maskMobilePhone, maskPersonName } from './piiMask.js'
 import { isMainland18Id, isUscc18 } from './orderIdDoc.js'
+import {
+  ensureSubletUploadDir,
+  nextSubletApplicationNo,
+  parseSubletAttachmentsJson,
+  serializeSubletApplication,
+  SUBLET_OPEN_STATUSES,
+  SUBLET_UPLOAD_ROOT,
+  unlinkSubletFiles,
+  type SubletFileAttachment,
+} from './subletApplication.js'
+import { notifyAssetSystemOnContractActive } from './services/assetOutboundStub.js'
 
 const MS_HOUR = 3600_000
 
@@ -213,6 +224,55 @@ const DEPOSIT_REFUND_TEMPLATE_LABEL: Record<string, string> = {
 const CONTRACT_UPLOAD_ROOT = path.join(process.cwd(), 'data', 'contract-uploads')
 const BILL_VERIFY_UPLOAD_ROOT = path.join(process.cwd(), 'data', 'bill-verify-uploads')
 const DEPT_QR_PUBLIC_ROOT = path.join(process.cwd(), 'data', 'dept-qr-public')
+const ORDER_UPLOAD_ROOT = path.join(process.cwd(), 'data', 'order-uploads')
+
+function isNonBowanAssetType(assetType: string | null | undefined) {
+  return String(assetType ?? '').trim() !== '泊湾公寓'
+}
+
+/** 厂房/商铺/住宅：配合同后先登记华创 OA；泊湾：直接待租客确认 */
+function contractStatusAfterTemplateConfig(assetType: string | null | undefined) {
+  return isNonBowanAssetType(assetType) ? ('WAIT_INTERNAL_OA' as const) : ('WAIT_TENANT_SIGN' as const)
+}
+
+type OrderAttachment = { id: string; name: string; file: string; category: string }
+
+function parseOrderAttachmentsJson(raw: string | null | undefined): OrderAttachment[] {
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .filter((x): x is Record<string, unknown> => Boolean(x) && typeof x === 'object')
+      .map((x) => ({
+        id: String(x.id ?? ''),
+        name: String(x.name ?? ''),
+        file: String(x.file ?? ''),
+        category: String(x.category ?? 'OTHER'),
+      }))
+      .filter((x) => x.id && x.file)
+  } catch {
+    return []
+  }
+}
+
+function ensureOrderUploadDir(orderId: string) {
+  const dir = path.join(ORDER_UPLOAD_ROOT, orderId)
+  fs.mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+function serializeOrderAttachments(orderId: string, list: OrderAttachment[], forAdmin: boolean) {
+  const base = forAdmin ? `/api/admin/orders/${orderId}/attachment` : `/api/orders/${orderId}/attachment`
+  return list.map((a) => ({
+    id: a.id,
+    name: a.name,
+    file: a.file,
+    category: a.category,
+    previewUrl: `${base}/${encodeURIComponent(a.file)}`,
+    downloadUrl: `${base}/${encodeURIComponent(a.file)}?download=1`,
+  }))
+}
 
 function ensureDeptQrPublicDir() {
   fs.mkdirSync(DEPT_QR_PUBLIC_ROOT, { recursive: true })
@@ -690,6 +750,8 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       idCardValidUntil: z.string().optional(),
       /** 护照 / 港澳台通行证 可选「有效期至」YYYY-MM-DD */
       docValidUntil: z.string().optional(),
+      /** 厂房/商铺/住宅：扫脸实人认证已通过（演示） */
+      faceVerified: z.boolean().optional(),
     })
     const body = Body.parse(req.body)
     const idDocType: IdDocType = normalizeIdDocType(body.idDocType)
@@ -701,6 +763,9 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     if (!house) return res.status(404).json({ error: 'HOUSE_NOT_FOUND' })
     if (!house.isPublished) return res.status(409).json({ error: 'HOUSE_NOT_PUBLISHED' })
     const isBowanApartment = house.apartment.assetType === '泊湾公寓'
+    if (!isBowanApartment && body.faceVerified !== true) {
+      return res.status(409).json({ error: 'FACE_VERIFY_REQUIRED' })
+    }
     let leaseMonths = body.leaseMonths
     let moveInDateStr = body.moveInDate
     if (isBowanApartment) {
@@ -792,6 +857,8 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         leaseMonths,
         moveInDate: new Date(moveInDateStr),
         status: 'PENDING_REVIEW',
+        faceVerifiedAt: !isBowanApartment && body.faceVerified ? new Date() : null,
+        attachmentsJson: '[]',
       },
       include: { house: { include: { apartment: { include: { store: true } } } } },
     })
@@ -809,11 +876,156 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         apartmentName: order.house.apartment.name,
         storeName: order.house.apartment.store.name,
         houseNo: order.house.houseNo,
+        assetType: order.house.apartment.assetType,
       },
       storeWecomQrUrl: order.house.apartment.store.wecomQrUrl ?? null,
       tenantPhone: tenant.phone,
-      tips: '已提交订单，等待店长审核。',
+      tips: isBowanApartment
+        ? '已提交订单，等待店长审核。'
+        : '已提交订单，请继续上传成交确认书等附件，等待店长审核。',
+      needsOrderAttachments: !isBowanApartment,
     })
+  })
+
+  /** 租客：查询订单详情（含附件与审核退回原因） */
+  app.get('/api/orders/:id', async (req, res) => {
+    const phone = req.header('x-tenant-phone')
+    if (!phone) return res.status(401).json({ error: 'NEED_TENANT_PHONE' })
+    const order = await ctx.prisma.order.findUnique({
+      where: { id: String(req.params.id) },
+      include: {
+        tenant: true,
+        house: { include: { apartment: { include: { store: true } } } },
+        contract: { select: { id: true, status: true, contractNo: true } },
+      },
+    })
+    if (!order || order.tenant.phone !== phone) return res.status(404).json({ error: 'NOT_FOUND' })
+    const assetType = order.house.apartment.assetType
+    res.json({
+      id: order.id,
+      status: order.status,
+      reviewReason: order.reviewReason,
+      createdAt: order.createdAt.toISOString(),
+      leaseMonths: order.leaseMonths,
+      moveInDate: order.moveInDate.toISOString().slice(0, 10),
+      faceVerifiedAt: order.faceVerifiedAt ? order.faceVerifiedAt.toISOString() : null,
+      needsOrderAttachments: isNonBowanAssetType(assetType),
+      attachments: serializeOrderAttachments(order.id, parseOrderAttachmentsJson(order.attachmentsJson), false),
+      tenant: {
+        name: order.tenant.name,
+        phone: order.tenant.phone,
+        idDocType: order.tenant.idDocType,
+      },
+      house: {
+        id: order.house.id,
+        apartmentName: order.house.apartment.name,
+        houseNo: order.house.houseNo,
+        storeName: order.house.apartment.store.name,
+        assetType,
+        rentMonthly: order.house.rentMonthly,
+      },
+      contractId: order.contract?.id ?? null,
+      contractStatus: order.contract?.status ?? null,
+      contractNo: order.contract?.contractNo ?? null,
+    })
+  })
+
+  /** 租客：上传订单附件（成交确认书 / 营业执照） */
+  app.post(
+    '/api/orders/:id/attachment',
+    contractFileUpload.single('file'),
+    async (req, res) => {
+      const phone = req.header('x-tenant-phone')
+      if (!phone) return res.status(401).json({ error: 'NEED_TENANT_PHONE' })
+      if (!req.file) return res.status(400).json({ error: 'NO_FILE' })
+      const category = String(req.body?.category || 'OTHER').toUpperCase()
+      if (!['DEAL_CONFIRMATION', 'BUSINESS_LICENSE', 'OTHER'].includes(category)) {
+        return res.status(400).json({ error: 'INVALID_CATEGORY' })
+      }
+
+      const order = await ctx.prisma.order.findUnique({
+        where: { id: String(req.params.id) },
+        include: { tenant: true, house: { include: { apartment: true } } },
+      })
+      if (!order || order.tenant.phone !== phone) return res.status(404).json({ error: 'NOT_FOUND' })
+      if (order.status !== 'PENDING_REVIEW' && order.status !== 'NEED_REVISION') {
+        return res.status(409).json({ error: 'ORDER_NOT_EDITABLE' })
+      }
+
+      const ext = path.extname(req.file.originalname || '').slice(0, 12) || '.bin'
+      const stored = `${Date.now()}-${randomBytes(8).toString('hex')}${ext.replace(/[^a-zA-Z0-9.]/g, '')}`
+      if (!/^[a-zA-Z0-9._-]+$/.test(stored)) return res.status(400).json({ error: 'BAD_FILENAME' })
+      ensureOrderUploadDir(order.id)
+      fs.writeFileSync(path.join(ORDER_UPLOAD_ROOT, order.id, stored), req.file.buffer)
+
+      const list = parseOrderAttachmentsJson(order.attachmentsJson)
+      list.push({
+        id: randomBytes(6).toString('hex'),
+        name: req.file.originalname || stored,
+        file: stored,
+        category,
+      })
+      const updated = await ctx.prisma.order.update({
+        where: { id: order.id },
+        data: { attachmentsJson: JSON.stringify(list) },
+      })
+      res.json({
+        ok: true,
+        attachments: serializeOrderAttachments(updated.id, parseOrderAttachmentsJson(updated.attachmentsJson), false),
+      })
+    },
+  )
+
+  /** 租客：审核退回后重新提交 */
+  app.post('/api/orders/:id/resubmit', async (req, res) => {
+    const phone = req.header('x-tenant-phone')
+    if (!phone) return res.status(401).json({ error: 'NEED_TENANT_PHONE' })
+    const order = await ctx.prisma.order.findUnique({
+      where: { id: String(req.params.id) },
+      include: { tenant: true, house: { include: { apartment: true } } },
+    })
+    if (!order || order.tenant.phone !== phone) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (order.status !== 'NEED_REVISION') return res.status(409).json({ error: 'NOT_NEED_REVISION' })
+
+    if (isNonBowanAssetType(order.house.apartment.assetType)) {
+      const atts = parseOrderAttachmentsJson(order.attachmentsJson)
+      if (!atts.some((a) => a.category === 'DEAL_CONFIRMATION')) {
+        return res.status(409).json({ error: 'DEAL_CONFIRMATION_REQUIRED' })
+      }
+      if (order.tenant.idDocType === 'USCC' && !atts.some((a) => a.category === 'BUSINESS_LICENSE')) {
+        return res.status(409).json({ error: 'BUSINESS_LICENSE_REQUIRED' })
+      }
+    }
+
+    const updated = await ctx.prisma.order.update({
+      where: { id: order.id },
+      data: { status: 'PENDING_REVIEW', reviewReason: null },
+    })
+    res.json({ ok: true, status: updated.status })
+  })
+
+  app.get('/api/orders/:id/attachment/:fileKey', async (req, res) => {
+    const phone = req.header('x-tenant-phone')
+    if (!phone) return res.status(401).json({ error: 'NEED_TENANT_PHONE' })
+    const fileKey = decodeURIComponent(String(req.params.fileKey))
+    if (!/^[a-zA-Z0-9._-]+$/.test(fileKey)) return res.status(400).json({ error: 'BAD_KEY' })
+    const order = await ctx.prisma.order.findUnique({
+      where: { id: String(req.params.id) },
+      include: { tenant: true },
+    })
+    if (!order || order.tenant.phone !== phone) return res.status(404).json({ error: 'NOT_FOUND' })
+    const att = parseOrderAttachmentsJson(order.attachmentsJson).find((a) => a.file === fileKey)
+    if (!att) return res.status(404).json({ error: 'FILE_NOT_FOUND' })
+    const full = path.join(ORDER_UPLOAD_ROOT, order.id, fileKey)
+    if (!fs.existsSync(full)) return res.status(404).json({ error: 'FILE_MISSING' })
+    const { mime } = mimeFromFileKey(fileKey)
+    res.setHeader('Content-Type', mime)
+    if (req.query.download === '1') {
+      res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(att.name)}`)
+    } else {
+      res.setHeader('Content-Disposition', 'inline')
+    }
+    res.sendFile(path.resolve(full))
   })
 
   /**
@@ -840,6 +1052,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       idCardLongTerm: z.boolean().optional(),
       idCardValidUntil: z.string().optional(),
       docValidUntil: z.string().optional(),
+      faceVerified: z.boolean().optional(),
     })
     const body = Body.parse(req.body)
     const idDocType: IdDocType = normalizeIdDocType(body.idDocType)
@@ -937,9 +1150,13 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     if (hasBowan && hasOther) {
       return res.status(400).json({ error: 'CART_MIXED_ASSET_LANE' })
     }
+    if (hasOther && body.faceVerified !== true) {
+      return res.status(409).json({ error: 'FACE_VERIFY_REQUIRED' })
+    }
 
     const emergencyName = (body.emergencyContactName ?? '').trim() || null
     const emergencyPhone = (body.emergencyContactPhone ?? '').trim() || null
+    const faceVerifiedAt = hasOther && body.faceVerified ? new Date() : null
 
     const tenant = await ctx.prisma.tenant.create({
       data: {
@@ -980,6 +1197,8 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
             moveInDate: new Date(ln.moveInDate),
             status: 'PENDING_REVIEW',
             isMergedBundle: false,
+            faceVerifiedAt,
+            attachmentsJson: '[]',
           },
           include: { house: { include: { apartment: { include: { store: true } } } } },
         })
@@ -1001,7 +1220,10 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         orders: ordersOut,
         tenantPhone: tenant.phone,
         storeWecomQrUrl: sw,
-        tips: `已提交 ${ordersOut.length} 笔订单，等待店长审核。`,
+        needsOrderAttachments: hasOther,
+        tips: hasOther
+          ? `已提交 ${ordersOut.length} 笔订单，请继续上传成交确认书等附件，等待店长审核。`
+          : `已提交 ${ordersOut.length} 笔订单，等待店长审核。`,
       })
     }
 
@@ -1015,6 +1237,8 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         moveInDate: new Date(ln0.moveInDate),
         status: 'PENDING_REVIEW',
         isMergedBundle: true,
+        faceVerifiedAt,
+        attachmentsJson: '[]',
       },
       include: { house: { include: { apartment: { include: { store: true } } } } },
     })
@@ -1048,7 +1272,10 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       ],
       tenantPhone: tenant.phone,
       storeWecomQrUrl: order.house.apartment.store.wecomQrUrl ?? null,
-      tips: `已提交合并订单（${body.lines.length} 个资产），后续将签署同一份合同；请等待店长审核。`,
+      needsOrderAttachments: hasOther,
+      tips: hasOther
+        ? `已提交合并订单（${body.lines.length} 个资产），请继续上传成交确认书等附件，等待店长审核。`
+        : `已提交合并订单（${body.lines.length} 个资产），后续将签署同一份合同；请等待店长审核。`,
     })
   })
 
@@ -1322,14 +1549,19 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     res.json({ ok: true, confirmedAt: updated.confirmedAt?.toISOString() })
   })
 
-  /** 租客确认退租（电子签字）：核对结算、提交收款银行卡并执行退租结案。 */
+  /** 租客确认退租：核对《退租结算审批表》（无需签字）并提交费报口径银行卡后结案。 */
   app.post('/api/contracts/:id/confirm-move-out', async (req, res) => {
     const phone = req.header('x-tenant-phone')
     if (!phone) return res.status(401).json({ error: 'NEED_TENANT_PHONE' })
     const Body = z.object({
       accountName: z.string().trim().min(2).max(50),
       bankName: z.string().trim().min(2).max(100),
+      bankBranch: z.string().trim().min(2).max(120),
       bankCardNo: z.string().trim().regex(/^\d{12,24}$/),
+      cnapsCode: z.string().trim().max(32).optional(),
+      bankRegion: z.string().trim().max(80).optional(),
+      phone: z.string().trim().min(6).max(20).optional(),
+      idNumber: z.string().trim().max(32).optional(),
       acknowledged: z.literal(true),
     })
     const body = Body.parse(req.body ?? {})
@@ -1408,8 +1640,13 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
           tenantConfirmation: {
             accountName: body.accountName,
             bankName: body.bankName,
+            bankBranch: body.bankBranch,
             bankCardNo: body.bankCardNo,
-            signedAt: completedAt,
+            cnapsCode: body.cnapsCode?.trim() || undefined,
+            bankRegion: body.bankRegion?.trim() || undefined,
+            phone: body.phone?.trim() || undefined,
+            idNumber: body.idNumber?.trim() || undefined,
+            confirmedAt: completedAt,
           },
         }
         await tx.contract.update({
@@ -1509,6 +1746,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         data: { status: 'SIGNED' },
       })
       await ensureHousingReportRecord(ctx.prisma, contract.id)
+      await notifyAssetSystemOnContractActive(ctx.prisma, contract.id)
       return res.json({ ok: true, amount: 0, contractStatus: 'ACTIVE' })
     }
 
@@ -1535,6 +1773,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     })
 
     await ensureHousingReportRecord(ctx.prisma, contract.id)
+    await notifyAssetSystemOnContractActive(ctx.prisma, contract.id)
 
     res.json({ ok: true, amount, contractStatus: 'ACTIVE' })
   })
@@ -2729,6 +2968,8 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
           ? o.contract.modificationRejectedAt.toISOString()
           : null,
         contractConfirmedAt: o.contract?.confirmedAt ? o.contract.confirmedAt.toISOString() : null,
+        faceVerifiedAt: o.faceVerifiedAt ? o.faceVerifiedAt.toISOString() : null,
+        attachments: serializeOrderAttachments(o.id, parseOrderAttachmentsJson(o.attachmentsJson), true),
       })),
     })
   })
@@ -2808,7 +3049,33 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         ? o.contract.modificationRejectedAt.toISOString()
         : null,
       contractConfirmedAt: o.contract?.confirmedAt ? o.contract.confirmedAt.toISOString() : null,
+      faceVerifiedAt: o.faceVerifiedAt ? o.faceVerifiedAt.toISOString() : null,
+      attachments: serializeOrderAttachments(o.id, parseOrderAttachmentsJson(o.attachmentsJson), true),
     })
+  })
+
+  app.get('/api/admin/orders/:id/attachment/:fileKey', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const fileKey = decodeURIComponent(String(req.params.fileKey))
+    if (!/^[a-zA-Z0-9._-]+$/.test(fileKey)) return res.status(400).json({ error: 'BAD_KEY' })
+    const order = await ctx.prisma.order.findUnique({
+      where: { id: String(req.params.id) },
+      include: { house: { include: { apartment: true } } },
+    })
+    if (!order) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, order.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    const att = parseOrderAttachmentsJson(order.attachmentsJson).find((a) => a.file === fileKey)
+    if (!att) return res.status(404).json({ error: 'FILE_NOT_FOUND' })
+    const full = path.join(ORDER_UPLOAD_ROOT, order.id, fileKey)
+    if (!fs.existsSync(full)) return res.status(404).json({ error: 'FILE_MISSING' })
+    const { mime } = mimeFromFileKey(fileKey)
+    res.setHeader('Content-Type', mime)
+    if (req.query.download === '1') {
+      res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(att.name)}`)
+    } else {
+      res.setHeader('Content-Disposition', 'inline')
+    }
+    res.sendFile(path.resolve(full))
   })
 
   /**
@@ -2904,6 +3171,16 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     if (order.status !== 'PENDING_REVIEW') return res.status(409).json({ error: 'INVALID_STATUS' })
 
     if (body.approved) {
+      if (isNonBowanAssetType(order.house.apartment.assetType)) {
+        const atts = parseOrderAttachmentsJson(order.attachmentsJson)
+        if (!atts.some((a) => a.category === 'DEAL_CONFIRMATION')) {
+          return res.status(409).json({ error: 'DEAL_CONFIRMATION_REQUIRED' })
+        }
+        const tenant = await ctx.prisma.tenant.findUnique({ where: { id: order.tenantId } })
+        if (tenant?.idDocType === 'USCC' && !atts.some((a) => a.category === 'BUSINESS_LICENSE')) {
+          return res.status(409).json({ error: 'BUSINESS_LICENSE_REQUIRED' })
+        }
+      }
       const updated = await ctx.prisma.order.update({
         where: { id: order.id },
         data: { status: 'APPROVED', reviewReason: null },
@@ -2912,11 +3189,14 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       return res.json({ ok: true, status: updated.status })
     }
 
+    // 流程图：审核不通过 → 回到填表；保留订单与房源锁定，租客可改附件后重提
+    if (!(body.reason || '').trim()) {
+      return res.status(400).json({ error: 'REASON_REQUIRED' })
+    }
     const updated = await ctx.prisma.order.update({
       where: { id: order.id },
-      data: { status: 'REJECTED', reviewReason: body.reason ?? '不通过' },
+      data: { status: 'NEED_REVISION', reviewReason: body.reason!.trim() },
     })
-    await releaseOrderedHousesForOrder(ctx.prisma, order.id, order.houseId)
     return res.json({ ok: true, status: updated.status })
   })
 
@@ -3020,6 +3300,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       const startDate2 = new Date(body.moveInDate)
       const endDate2 = body.endDate ? new Date(body.endDate) : addMonths(startDate2, body.leaseMonths)
       const rentDueDay2 = normalizeRentDueDay(body.rentDueDay, startDate2)
+      const afterConfigStatus = contractStatusAfterTemplateConfig(order.house.apartment.assetType)
       const updated = await ctx.prisma.contract.update({
         where: { id: order.contract.id },
         data: {
@@ -3038,13 +3319,19 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
                 latestRentDueDate: null,
               }
             : {}),
-          status: 'WAIT_TENANT_SIGN',
+          status: afterConfigStatus,
           confirmedAt: null,
           signedAt: null,
           stampedAt: null,
           voidedAt: null,
           terminatedAt: null,
-          tenantSignDeadlineAt: computeTenantSignDeadline(),
+          modificationRequestedAt: null,
+          modificationRejectedAt: null,
+          tenantSignDeadlineAt: afterConfigStatus === 'WAIT_TENANT_SIGN' ? computeTenantSignDeadline() : null,
+          oaPassedAt: null,
+          oaRecordedByAdminId: null,
+          oaRecordedByName: null,
+          oaRejectReason: null,
           ...(body.configRemarkHtml !== undefined ? { configRemarkHtml: body.configRemarkHtml || null } : {}),
           ...(body.attachmentsJson !== undefined ? { attachmentsJson: body.attachmentsJson || '[]' } : {}),
           ...(body.agreementSignDate !== undefined
@@ -3058,7 +3345,12 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
           ...tmplFields,
         },
       })
-      return res.json({ id: updated.id, contractNo: updated.contractNo, tenantPhone: order.tenant.phone })
+      return res.json({
+        id: updated.id,
+        contractNo: updated.contractNo,
+        tenantPhone: order.tenant.phone,
+        status: updated.status,
+      })
     }
 
     const startDate = new Date(body.moveInDate)
@@ -3066,6 +3358,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     const contractNo = `C${new Date().getFullYear()}${String(Date.now()).slice(-8)}`
     const deposit = Math.round(body.rentMonthly * body.depositMultiple)
     const rentDueDay = normalizeRentDueDay(body.rentDueDay, startDate)
+    const afterConfigStatus = contractStatusAfterTemplateConfig(order.house.apartment.assetType)
 
     const contract = await ctx.prisma.contract.create({
       data: {
@@ -3073,7 +3366,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         houseId: order.houseId,
         tenantId: body.tenantId,
         orderId: order.id,
-        status: 'WAIT_TENANT_SIGN',
+        status: afterConfigStatus,
         source: 'SYSTEM',
         startDate,
         endDate,
@@ -3087,7 +3380,11 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         latestRentDueDate: null,
         configRemarkHtml: body.configRemarkHtml ?? null,
         attachmentsJson: body.attachmentsJson ?? '[]',
-        tenantSignDeadlineAt: computeTenantSignDeadline(),
+        tenantSignDeadlineAt: afterConfigStatus === 'WAIT_TENANT_SIGN' ? computeTenantSignDeadline() : null,
+        oaPassedAt: null,
+        oaRecordedByAdminId: null,
+        oaRecordedByName: null,
+        oaRejectReason: null,
         agreementSignDate: body.agreementSignDate ? new Date(body.agreementSignDate) : null,
         contractTemplateDataJson: body.contractTemplateDataJson ?? null,
         billPushToTenant,
@@ -3125,7 +3422,57 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       })
     })
 
-    res.json({ id: contract.id, contractNo, tenantPhone: order.tenant.phone, firstPeriod })
+    res.json({ id: contract.id, contractNo, tenantPhone: order.tenant.phone, firstPeriod, status: contract.status })
+  })
+
+  /** 店长登记华创内部 OA 结果（厂房/商铺/住宅主流程；非本系统操作） */
+  app.post('/api/admin/contracts/:id/oa-result', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const Body = z.object({
+      passed: z.boolean(),
+      reason: z.string().trim().max(1000).optional(),
+    })
+    const parsed = Body.safeParse(req.body ?? {})
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID_BODY' })
+
+    const contract = await ctx.prisma.contract.findUnique({
+      where: { id: String(req.params.id) },
+      include: { house: { include: { apartment: true } } },
+    })
+    if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, contract.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (contract.status !== 'WAIT_INTERNAL_OA') return res.status(409).json({ error: 'NOT_WAIT_INTERNAL_OA' })
+    if (!parsed.data.passed && !(parsed.data.reason || '').trim()) {
+      return res.status(400).json({ error: 'REASON_REQUIRED' })
+    }
+
+    if (parsed.data.passed) {
+      const updated = await ctx.prisma.contract.update({
+        where: { id: contract.id },
+        data: {
+          status: 'WAIT_TENANT_SIGN',
+          oaPassedAt: new Date(),
+          oaRecordedByAdminId: auth.admin.id,
+          oaRecordedByName: auth.admin.name,
+          oaRejectReason: null,
+          tenantSignDeadlineAt: computeTenantSignDeadline(),
+          modificationRejectedAt: null,
+        },
+      })
+      return res.json({ ok: true, status: updated.status })
+    }
+
+    const updated = await ctx.prisma.contract.update({
+      where: { id: contract.id },
+      data: {
+        oaPassedAt: new Date(),
+        oaRecordedByAdminId: auth.admin.id,
+        oaRecordedByName: auth.admin.name,
+        oaRejectReason: (parsed.data.reason || '').trim(),
+        modificationRejectedAt: new Date(),
+      },
+    })
+    return res.json({ ok: true, status: updated.status, oaRejectReason: updated.oaRejectReason })
   })
 
   /**
@@ -3435,6 +3782,8 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
           contractTemplate: c.contractTemplate,
           billPushToTenant: c.billPushToTenant,
           billPushStatus: c.billPushToTenant ? c.billPushStatus : null,
+          oaPassedAt: c.oaPassedAt ? c.oaPassedAt.toISOString() : null,
+          oaRejectReason: c.oaRejectReason ?? null,
         }
       }),
     })
@@ -3608,6 +3957,8 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         storeName: contract.house.apartment.store.name,
         apartmentName: contract.house.apartment.name,
         houseNo: contract.house.houseNo,
+        area: contract.house.area,
+        assetType: contract.house.apartment.assetType,
       },
       mergedBundle,
       startDate: toYmd(contract.startDate),
@@ -3640,6 +3991,9 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       moveOutArchive,
       voidedAt: contract.voidedAt?.toISOString() ?? null,
       terminatedAt: contract.terminatedAt?.toISOString() ?? null,
+      oaPassedAt: contract.oaPassedAt?.toISOString() ?? null,
+      oaRecordedByName: contract.oaRecordedByName ?? null,
+      oaRejectReason: contract.oaRejectReason ?? null,
       housingReport: contract.housingReport
         ? {
             status: contract.housingReport.status,
@@ -3812,6 +4166,26 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     }
 
     if (Object.keys(data).length === 0) return res.status(400).json({ error: 'NO_FIELDS_TO_UPDATE' })
+
+    // 华创 OA 驳回或待 OA 态下重配：重新进入 OA 门闩，清空旧登记
+    const resetToOaGate =
+      contract.status === 'WAIT_INTERNAL_OA' ||
+      Boolean(contract.modificationRejectedAt) ||
+      Boolean(contract.modificationRequestedAt)
+    if (resetToOaGate) {
+      const afterConfigStatus = contractStatusAfterTemplateConfig(contract.house.apartment.assetType)
+      Object.assign(data, {
+        status: afterConfigStatus,
+        confirmedAt: null,
+        signedAt: null,
+        stampedAt: null,
+        tenantSignDeadlineAt: afterConfigStatus === 'WAIT_TENANT_SIGN' ? computeTenantSignDeadline() : null,
+        oaPassedAt: null,
+        oaRecordedByAdminId: null,
+        oaRecordedByName: null,
+        oaRejectReason: null,
+      })
+    }
 
     await ctx.prisma.contract.update({
       where: { id: contract.id },
@@ -4228,7 +4602,83 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     res.json({ ok: true })
   })
 
-  /** 已生效合同退租须先走「发起退租确认」；本接口仅保留兼容，返回明确错误码 */
+  /** 等待租户确认时店长手动办结（保留手动办理权） */
+  app.post('/api/admin/contracts/:id/complete-move-out-direct', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const Body = z.object({
+      remark: z.string().trim().max(500).optional(),
+    })
+    const body = Body.parse(req.body ?? {})
+    const contract = await ctx.prisma.contract.findUnique({
+      where: { id: String(req.params.id) },
+      include: {
+        house: { include: { apartment: true } },
+        order: { include: { lines: { include: { house: true } } } },
+      },
+    })
+    if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, contract.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (contract.status !== 'WAIT_TENANT_MOVEOUT_SIGN' || !contract.moveOutPendingJson) {
+      return res.status(409).json({ error: 'NO_MOVEOUT_PENDING' })
+    }
+    let pending: MoveOutPendingPayload
+    try {
+      pending = JSON.parse(contract.moveOutPendingJson) as MoveOutPendingPayload
+    } catch {
+      return res.status(409).json({ error: 'BAD_PENDING' })
+    }
+    const moveAt = new Date(pending.terminateDate)
+    const reasonText = [pending.reasonFull, body.remark && `手动办结：${body.remark}`].filter(Boolean).join('；')
+    const now = new Date()
+    try {
+      const result = await ctx.prisma.$transaction(async (tx) => {
+        const termination = await executeAdminContractTerminate(
+          tx,
+          {
+            id: contract.id,
+            houseId: contract.houseId,
+            order: contract.order
+              ? {
+                  id: contract.order.id,
+                  isMergedBundle: contract.order.isMergedBundle,
+                  lines: contract.order.lines.map((line) => ({
+                    houseId: line.houseId,
+                    releasedAt: line.releasedAt,
+                    rentMonthlySnapshot: line.rentMonthlySnapshot,
+                    depositSnapshot: line.depositSnapshot,
+                  })),
+                }
+              : null,
+          },
+          moveAt,
+          reasonText,
+          pending.releaseHouseIds ?? [],
+        )
+        const archive: MoveOutArchivePayload = {
+          ...pending,
+          version: 2,
+          deadlineAt: now.toISOString(),
+          completedAt: now.toISOString(),
+          completedBy: 'STORE_DIRECT',
+          reasonFull: reasonText,
+        }
+        await tx.contract.update({
+          where: { id: contract.id },
+          data: { moveOutArchiveJson: JSON.stringify(archive) },
+        })
+        return termination
+      })
+      return res.json({ ok: true, completed: true, ...result })
+    } catch (e: unknown) {
+      const code = (e as { code?: string })?.code
+      if (code === 'INVALID_RELEASE_HOUSE') return res.status(400).json({ error: 'INVALID_RELEASE_HOUSE' })
+      if ((e as Error)?.message === 'NO_ACTIVE_LINES') return res.status(500).json({ error: 'NO_ACTIVE_LINES' })
+      console.error(e)
+      return res.status(500).json({ error: 'MOVEOUT_DIRECT_COMPLETE_FAILED' })
+    }
+  })
+
+  /** 已生效合同退租须先走「办理退租」；本接口仅保留兼容，返回明确错误码 */
   app.post('/api/admin/contracts/:id/terminate', adminAuth(ctx.prisma), async (req, res) => {
     const auth = getAdminAuth(req)
     const contract = await ctx.prisma.contract.findUnique({
@@ -7077,5 +7527,529 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       amount: updated.amount,
       displayNo: updated.displayNo,
     })
+  })
+
+  // ─── 转租申请（独立申请记录）─────────────────────────────────────────────
+
+  const subletInclude = {
+    tenant: { select: { id: true, name: true, phone: true } },
+    contract: {
+      select: {
+        id: true,
+        contractNo: true,
+        status: true,
+        house: {
+          select: {
+            houseNo: true,
+            area: true,
+            apartment: { select: { name: true, storeId: true, store: { select: { id: true, name: true } } } },
+          },
+        },
+      },
+    },
+  } as const
+
+  async function loadSubletForTenant(id: string, phone: string) {
+    const row = await ctx.prisma.subletApplication.findUnique({
+      where: { id },
+      include: subletInclude,
+    })
+    if (!row || row.tenant.phone !== phone) return null
+    return row
+  }
+
+  async function loadSubletForAdmin(id: string, auth: AdminAuth) {
+    const row = await ctx.prisma.subletApplication.findUnique({
+      where: { id },
+      include: subletInclude,
+    })
+    if (!row) return null
+    if (!canAccessStore(auth, row.storeId)) return null
+    return row
+  }
+
+  function sendSubletFile(
+    res: import('express').Response,
+    applicationId: string,
+    fileKey: string,
+    list: SubletFileAttachment[],
+    download: boolean,
+  ) {
+    if (!/^[a-zA-Z0-9._-]+$/.test(fileKey)) return res.status(400).json({ error: 'BAD_KEY' })
+    const att = list.find((a) => a.file === fileKey)
+    if (!att) return res.status(404).json({ error: 'FILE_NOT_FOUND' })
+    const full = path.join(SUBLET_UPLOAD_ROOT, applicationId, fileKey)
+    if (!fs.existsSync(full)) return res.status(404).json({ error: 'FILE_MISSING' })
+    const { mime } = mimeFromFileKey(fileKey)
+    res.setHeader('Content-Type', mime)
+    if (download) {
+      res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(att.name)}`)
+    } else {
+      res.setHeader('Content-Disposition', 'inline')
+    }
+    return res.sendFile(path.resolve(full))
+  }
+
+  /** 租客：可选的在租合同（用于发起转租） */
+  app.get('/api/sublets/eligible-contracts', async (req, res) => {
+    const phone = req.header('x-tenant-phone')
+    if (!phone) return res.status(401).json({ error: 'NEED_TENANT_PHONE' })
+
+    const contracts = await ctx.prisma.contract.findMany({
+      where: { tenant: { phone }, status: 'ACTIVE' },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+      include: {
+        house: { include: { apartment: { include: { store: true } } } },
+        subletApplications: {
+          where: { status: { in: SUBLET_OPEN_STATUSES } },
+          select: { id: true, applicationNo: true, status: true },
+        },
+      },
+    })
+
+    res.json({
+      items: contracts.map((c) => ({
+        id: c.id,
+        contractNo: c.contractNo,
+        storeName: c.house.apartment.store.name,
+        apartmentName: c.house.apartment.name,
+        houseNo: c.house.houseNo,
+        houseArea: c.house.area,
+        openSubletId: c.subletApplications[0]?.id ?? null,
+        openSubletNo: c.subletApplications[0]?.applicationNo ?? null,
+        openSubletStatus: c.subletApplications[0]?.status ?? null,
+      })),
+    })
+  })
+
+  /** 租客：我的转租申请列表 */
+  app.get('/api/sublets', async (req, res) => {
+    const phone = req.header('x-tenant-phone')
+    if (!phone) return res.status(401).json({ error: 'NEED_TENANT_PHONE' })
+
+    const rows = await ctx.prisma.subletApplication.findMany({
+      where: { tenant: { phone } },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+      include: subletInclude,
+    })
+    res.json({ items: rows.map(serializeSubletApplication) })
+  })
+
+  /** 租客：申请详情 */
+  app.get('/api/sublets/:id', async (req, res) => {
+    const phone = req.header('x-tenant-phone')
+    if (!phone) return res.status(401).json({ error: 'NEED_TENANT_PHONE' })
+    const row = await loadSubletForTenant(String(req.params.id), phone)
+    if (!row) return res.status(404).json({ error: 'NOT_FOUND' })
+    res.json(serializeSubletApplication(row))
+  })
+
+  /** 租客：提交转租申请 */
+  app.post('/api/sublets', async (req, res) => {
+    const phone = req.header('x-tenant-phone')
+    if (!phone) return res.status(401).json({ error: 'NEED_TENANT_PHONE' })
+
+    const Body = z.object({
+      contractId: z.string().min(1),
+      subletArea: z.number().positive().max(1_000_000),
+      subletUnit: z.string().trim().min(1).max(200),
+      remark: z.string().trim().max(2000).optional(),
+    })
+    const parsed = Body.safeParse(req.body ?? {})
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID_BODY' })
+
+    const contract = await ctx.prisma.contract.findUnique({
+      where: { id: parsed.data.contractId },
+      include: {
+        tenant: true,
+        house: { include: { apartment: true } },
+        subletApplications: {
+          where: { status: { in: SUBLET_OPEN_STATUSES } },
+          select: { id: true },
+        },
+      },
+    })
+    if (!contract || contract.tenant.phone !== phone) return res.status(404).json({ error: 'CONTRACT_NOT_FOUND' })
+    if (contract.status !== 'ACTIVE') return res.status(409).json({ error: 'CONTRACT_NOT_ACTIVE' })
+    if (contract.subletApplications.length > 0) return res.status(409).json({ error: 'SUBLET_ALREADY_OPEN' })
+    if (parsed.data.subletArea > contract.house.area + 0.01) {
+      return res.status(409).json({ error: 'SUBLET_AREA_EXCEEDS_HOUSE' })
+    }
+
+    const applicationNo = await nextSubletApplicationNo(ctx.prisma)
+    const created = await ctx.prisma.subletApplication.create({
+      data: {
+        applicationNo,
+        contractId: contract.id,
+        tenantId: contract.tenantId,
+        storeId: contract.house.apartment.storeId,
+        subletArea: parsed.data.subletArea,
+        subletUnit: parsed.data.subletUnit,
+        remark: parsed.data.remark ?? '',
+        status: 'PENDING_REVIEW',
+      },
+      include: subletInclude,
+    })
+    res.status(201).json(serializeSubletApplication(created))
+  })
+
+  /** 租客：上传备案材料文件（仅 WAIT_FILING） */
+  app.post(
+    '/api/sublets/:id/filing-file',
+    contractFileUpload.single('file'),
+    async (req, res) => {
+      const phone = req.header('x-tenant-phone')
+      if (!phone) return res.status(401).json({ error: 'NEED_TENANT_PHONE' })
+      if (!req.file) return res.status(400).json({ error: 'NO_FILE' })
+
+      const category = String(req.body?.category || 'OTHER').toUpperCase()
+      if (!['CONTRACT', 'LICENSE', 'OTHER'].includes(category)) {
+        return res.status(400).json({ error: 'INVALID_CATEGORY' })
+      }
+
+      const row = await loadSubletForTenant(String(req.params.id), phone)
+      if (!row) return res.status(404).json({ error: 'NOT_FOUND' })
+      if (row.status !== 'WAIT_FILING') return res.status(409).json({ error: 'NOT_WAIT_FILING' })
+
+      const ext = path.extname(req.file.originalname || '').slice(0, 12) || '.bin'
+      const stored = `${Date.now()}-${randomBytes(8).toString('hex')}${ext.replace(/[^a-zA-Z0-9.]/g, '')}`
+      if (!/^[a-zA-Z0-9._-]+$/.test(stored)) return res.status(400).json({ error: 'BAD_FILENAME' })
+      ensureSubletUploadDir(row.id)
+      fs.writeFileSync(path.join(SUBLET_UPLOAD_ROOT, row.id, stored), req.file.buffer)
+
+      const list = parseSubletAttachmentsJson(row.filingMaterialsJson)
+      list.push({
+        id: randomBytes(6).toString('hex'),
+        name: req.file.originalname || stored,
+        file: stored,
+        category,
+      })
+      const updated = await ctx.prisma.subletApplication.update({
+        where: { id: row.id },
+        data: { filingMaterialsJson: JSON.stringify(list) },
+        include: subletInclude,
+      })
+      res.json(serializeSubletApplication(updated))
+    },
+  )
+
+  /** 租客：删除未提交的备案材料文件 */
+  app.delete('/api/sublets/:id/filing-file/:fileKey', async (req, res) => {
+    const phone = req.header('x-tenant-phone')
+    if (!phone) return res.status(401).json({ error: 'NEED_TENANT_PHONE' })
+    const fileKey = decodeURIComponent(String(req.params.fileKey))
+    const row = await loadSubletForTenant(String(req.params.id), phone)
+    if (!row) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (row.status !== 'WAIT_FILING') return res.status(409).json({ error: 'NOT_WAIT_FILING' })
+
+    const list = parseSubletAttachmentsJson(row.filingMaterialsJson)
+    const next = list.filter((a) => a.file !== fileKey)
+    unlinkSubletFiles(
+      row.id,
+      list.filter((a) => a.file === fileKey),
+    )
+    const updated = await ctx.prisma.subletApplication.update({
+      where: { id: row.id },
+      data: { filingMaterialsJson: JSON.stringify(next) },
+      include: subletInclude,
+    })
+    res.json(serializeSubletApplication(updated))
+  })
+
+  /** 租客：提交备案材料进入复审 */
+  app.post('/api/sublets/:id/submit-filing', async (req, res) => {
+    const phone = req.header('x-tenant-phone')
+    if (!phone) return res.status(401).json({ error: 'NEED_TENANT_PHONE' })
+    const row = await loadSubletForTenant(String(req.params.id), phone)
+    if (!row) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (row.status !== 'WAIT_FILING') return res.status(409).json({ error: 'NOT_WAIT_FILING' })
+    const list = parseSubletAttachmentsJson(row.filingMaterialsJson)
+    if (list.length === 0) return res.status(409).json({ error: 'FILING_MATERIALS_REQUIRED' })
+
+    const updated = await ctx.prisma.subletApplication.update({
+      where: { id: row.id },
+      data: {
+        status: 'FILING_REVIEW',
+        filingSubmittedAt: new Date(),
+        filingRejectReason: null,
+      },
+      include: subletInclude,
+    })
+    res.json(serializeSubletApplication(updated))
+  })
+
+  app.get('/api/sublets/:id/filing-file/:fileKey', async (req, res) => {
+    const phone = req.header('x-tenant-phone')
+    if (!phone) return res.status(401).json({ error: 'NEED_TENANT_PHONE' })
+    const row = await loadSubletForTenant(String(req.params.id), phone)
+    if (!row) return res.status(404).json({ error: 'NOT_FOUND' })
+    return sendSubletFile(
+      res,
+      row.id,
+      decodeURIComponent(String(req.params.fileKey)),
+      parseSubletAttachmentsJson(row.filingMaterialsJson),
+      req.query.download === '1',
+    )
+  })
+
+  app.get('/api/sublets/:id/minutes-file/:fileKey', async (req, res) => {
+    const phone = req.header('x-tenant-phone')
+    if (!phone) return res.status(401).json({ error: 'NEED_TENANT_PHONE' })
+    const row = await loadSubletForTenant(String(req.params.id), phone)
+    if (!row) return res.status(404).json({ error: 'NOT_FOUND' })
+    return sendSubletFile(
+      res,
+      row.id,
+      decodeURIComponent(String(req.params.fileKey)),
+      parseSubletAttachmentsJson(row.meetingMinutesJson),
+      req.query.download === '1',
+    )
+  })
+
+  /** 店长：转租申请列表 */
+  app.get('/api/admin/sublets', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const where: Prisma.SubletApplicationWhereInput =
+      auth.admin.roleCode === 'SYSTEM_ADMIN' || auth.admin.roleCode === 'FINANCE'
+        ? {}
+        : auth.storeIds.length
+          ? { storeId: { in: auth.storeIds } }
+          : { id: '__none__' }
+
+    const rows = await ctx.prisma.subletApplication.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take: 500,
+      include: subletInclude,
+    })
+    res.json({ items: rows.map(serializeSubletApplication) })
+  })
+
+  app.get('/api/admin/sublets/:id', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const row = await loadSubletForAdmin(String(req.params.id), auth)
+    if (!row) return res.status(404).json({ error: 'NOT_FOUND' })
+    res.json(serializeSubletApplication(row))
+  })
+
+  /** 店长：初审 */
+  app.post('/api/admin/sublets/:id/review', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const Body = z.object({
+      approved: z.boolean(),
+      reason: z.string().trim().max(1000).optional(),
+    })
+    const parsed = Body.safeParse(req.body ?? {})
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID_BODY' })
+
+    const row = await loadSubletForAdmin(String(req.params.id), auth)
+    if (!row) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (row.status !== 'PENDING_REVIEW') return res.status(409).json({ error: 'NOT_PENDING_REVIEW' })
+    if (!parsed.data.approved && !(parsed.data.reason || '').trim()) {
+      return res.status(400).json({ error: 'REASON_REQUIRED' })
+    }
+
+    const updated = await ctx.prisma.subletApplication.update({
+      where: { id: row.id },
+      data: parsed.data.approved
+        ? {
+            status: 'WAIT_OA',
+            reviewedAt: new Date(),
+            reviewedByAdminId: auth.admin.id,
+            reviewedByName: auth.admin.name,
+            rejectReason: null,
+          }
+        : {
+            status: 'REJECTED',
+            reviewedAt: new Date(),
+            reviewedByAdminId: auth.admin.id,
+            reviewedByName: auth.admin.name,
+            rejectReason: (parsed.data.reason || '').trim(),
+          },
+      include: subletInclude,
+    })
+    res.json(serializeSubletApplication(updated))
+  })
+
+  /** 店长：登记华创内部 OA 结果（非本系统操作） */
+  app.post('/api/admin/sublets/:id/oa-result', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const Body = z.object({
+      passed: z.boolean(),
+      reason: z.string().trim().max(1000).optional(),
+    })
+    const parsed = Body.safeParse(req.body ?? {})
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID_BODY' })
+
+    const row = await loadSubletForAdmin(String(req.params.id), auth)
+    if (!row) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (row.status !== 'WAIT_OA') return res.status(409).json({ error: 'NOT_WAIT_OA' })
+    if (!parsed.data.passed && !(parsed.data.reason || '').trim()) {
+      return res.status(400).json({ error: 'REASON_REQUIRED' })
+    }
+
+    const updated = await ctx.prisma.subletApplication.update({
+      where: { id: row.id },
+      data: parsed.data.passed
+        ? {
+            status: 'WAIT_FILING',
+            oaPassedAt: new Date(),
+            oaRecordedByAdminId: auth.admin.id,
+            oaRecordedByName: auth.admin.name,
+            rejectReason: null,
+            filingMaterialsJson: '[]',
+          }
+        : {
+            status: 'REJECTED',
+            oaPassedAt: new Date(),
+            oaRecordedByAdminId: auth.admin.id,
+            oaRecordedByName: auth.admin.name,
+            rejectReason: (parsed.data.reason || '').trim(),
+          },
+      include: subletInclude,
+    })
+    res.json(serializeSubletApplication(updated))
+  })
+
+  /** 店长：复审备案材料 */
+  app.post('/api/admin/sublets/:id/filing-review', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const Body = z.object({
+      approved: z.boolean(),
+      reason: z.string().trim().max(1000).optional(),
+    })
+    const parsed = Body.safeParse(req.body ?? {})
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID_BODY' })
+
+    const row = await loadSubletForAdmin(String(req.params.id), auth)
+    if (!row) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (row.status !== 'FILING_REVIEW') return res.status(409).json({ error: 'NOT_FILING_REVIEW' })
+    if (!parsed.data.approved && !(parsed.data.reason || '').trim()) {
+      return res.status(400).json({ error: 'REASON_REQUIRED' })
+    }
+
+    const updated = await ctx.prisma.subletApplication.update({
+      where: { id: row.id },
+      data: parsed.data.approved
+        ? {
+            status: 'WAIT_MINUTES',
+            filingReviewedAt: new Date(),
+            filingReviewedByAdminId: auth.admin.id,
+            filingReviewedByName: auth.admin.name,
+            filingRejectReason: null,
+          }
+        : {
+            status: 'WAIT_FILING',
+            filingReviewedAt: new Date(),
+            filingReviewedByAdminId: auth.admin.id,
+            filingReviewedByName: auth.admin.name,
+            filingRejectReason: (parsed.data.reason || '').trim(),
+          },
+      include: subletInclude,
+    })
+    res.json(serializeSubletApplication(updated))
+  })
+
+  /** 店长：上传会议纪要 */
+  app.post(
+    '/api/admin/sublets/:id/minutes-file',
+    adminAuth(ctx.prisma),
+    contractFileUpload.single('file'),
+    async (req, res) => {
+      const auth = getAdminAuth(req)
+      if (!req.file) return res.status(400).json({ error: 'NO_FILE' })
+      const row = await loadSubletForAdmin(String(req.params.id), auth)
+      if (!row) return res.status(404).json({ error: 'NOT_FOUND' })
+      if (row.status !== 'WAIT_MINUTES') return res.status(409).json({ error: 'NOT_WAIT_MINUTES' })
+
+      const ext = path.extname(req.file.originalname || '').slice(0, 12) || '.bin'
+      const stored = `${Date.now()}-${randomBytes(8).toString('hex')}${ext.replace(/[^a-zA-Z0-9.]/g, '')}`
+      if (!/^[a-zA-Z0-9._-]+$/.test(stored)) return res.status(400).json({ error: 'BAD_FILENAME' })
+      ensureSubletUploadDir(row.id)
+      fs.writeFileSync(path.join(SUBLET_UPLOAD_ROOT, row.id, stored), req.file.buffer)
+
+      const list = parseSubletAttachmentsJson(row.meetingMinutesJson)
+      list.push({
+        id: randomBytes(6).toString('hex'),
+        name: req.file.originalname || stored,
+        file: stored,
+      })
+      const updated = await ctx.prisma.subletApplication.update({
+        where: { id: row.id },
+        data: { meetingMinutesJson: JSON.stringify(list) },
+        include: subletInclude,
+      })
+      res.json(serializeSubletApplication(updated))
+    },
+  )
+
+  app.delete('/api/admin/sublets/:id/minutes-file/:fileKey', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const fileKey = decodeURIComponent(String(req.params.fileKey))
+    const row = await loadSubletForAdmin(String(req.params.id), auth)
+    if (!row) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (row.status !== 'WAIT_MINUTES') return res.status(409).json({ error: 'NOT_WAIT_MINUTES' })
+    const list = parseSubletAttachmentsJson(row.meetingMinutesJson)
+    unlinkSubletFiles(
+      row.id,
+      list.filter((a) => a.file === fileKey),
+    )
+    const next = list.filter((a) => a.file !== fileKey)
+    const updated = await ctx.prisma.subletApplication.update({
+      where: { id: row.id },
+      data: { meetingMinutesJson: JSON.stringify(next) },
+      include: subletInclude,
+    })
+    res.json(serializeSubletApplication(updated))
+  })
+
+  /** 店长：确认完成（须已上传会议纪要） */
+  app.post('/api/admin/sublets/:id/complete', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const row = await loadSubletForAdmin(String(req.params.id), auth)
+    if (!row) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (row.status !== 'WAIT_MINUTES') return res.status(409).json({ error: 'NOT_WAIT_MINUTES' })
+    const minutes = parseSubletAttachmentsJson(row.meetingMinutesJson)
+    if (minutes.length === 0) return res.status(409).json({ error: 'MEETING_MINUTES_REQUIRED' })
+
+    const updated = await ctx.prisma.subletApplication.update({
+      where: { id: row.id },
+      data: {
+        status: 'COMPLETED',
+        completedAt: new Date(),
+        completedByAdminId: auth.admin.id,
+        completedByName: auth.admin.name,
+      },
+      include: subletInclude,
+    })
+    res.json(serializeSubletApplication(updated))
+  })
+
+  app.get('/api/admin/sublets/:id/filing-file/:fileKey', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const row = await loadSubletForAdmin(String(req.params.id), auth)
+    if (!row) return res.status(404).json({ error: 'NOT_FOUND' })
+    return sendSubletFile(
+      res,
+      row.id,
+      decodeURIComponent(String(req.params.fileKey)),
+      parseSubletAttachmentsJson(row.filingMaterialsJson),
+      req.query.download === '1',
+    )
+  })
+
+  app.get('/api/admin/sublets/:id/minutes-file/:fileKey', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const row = await loadSubletForAdmin(String(req.params.id), auth)
+    if (!row) return res.status(404).json({ error: 'NOT_FOUND' })
+    return sendSubletFile(
+      res,
+      row.id,
+      decodeURIComponent(String(req.params.fileKey)),
+      parseSubletAttachmentsJson(row.meetingMinutesJson),
+      req.query.download === '1',
+    )
   })
 }
