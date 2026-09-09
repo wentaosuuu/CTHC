@@ -2179,3 +2179,77 @@ a.m-detail-cart-strip {
   background: currentColor;
   flex-shrink: 0;
 }
+
+.tenant-moveout-steps-3 { grid-template-columns: repeat(3, 1fr); }
+.m-sign-pad {
+  margin-top: 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #fff;
+}
+.m-sign-pad canvas {
+  display: block;
+  touch-action: none;
+  background: #fff;
+}
+.m-sign-pad-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  border-top: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+.mo-app-view {
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+  line-height: 1.7;
+  font-size: 13px;
+  color: #1e293b;
+}
+.mo-app-view-title {
+  text-align: center;
+  font-size: 18px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  margin-bottom: 10px;
+}
+.mo-app-view-case {
+  margin: 12px 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: #f0fdf4;
+  border: 1px solid #86efac;
+}
+.mo-app-view-case-title { font-weight: 800; margin-bottom: 8px; }
+.mo-app-view-case p { margin: 0; text-indent: 2em; }
+.mo-app-view-tips { margin-top: 10px; }
+.mo-app-view-tips p { font-weight: 700; margin: 0 0 6px; }
+.mo-app-view-tips ol { margin: 0; padding-left: 1.3em; }
+.mo-app-view-tips li { margin-bottom: 6px; }
+.tenant-evidence-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.tenant-evidence-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 13px;
+}
+.tenant-evidence-list button {
+  border: 0;
+  background: transparent;
+  color: #b91c1c;
+  font-weight: 700;
+}

@@ -53,11 +53,17 @@ import { downloadFileWithAuth, previewFileWithAuth } from '../fileAuth'
 import { Pagination, paginate } from '../components/Pagination'
 import { parseRentDueDayInput, rentCycleDueDayHint, rentDueDayFromYmd } from '../rentDueDay'
 import { MoveOutApprovalSheet } from '../components/MoveOutApprovalSheet'
+import { MoveOutApplicationSheet } from '../components/MoveOutApplicationSheet'
+import {
+  applicationCaseToSettlementType,
+  settlementTypeToApplicationCase,
+  validateMoveOutApplication,
+  type MoveOutApplicationSnapshot,
+} from '../moveOutApplication'
 import {
   calculateMoveOutSettlement,
   DEFAULT_MOVE_OUT_PAID_ITEMS,
   DEFAULT_MOVE_OUT_RECEIVABLE_ITEMS,
-  MOVE_OUT_SETTLEMENT_TYPE_OPTIONS,
   type MoveOutMoneyItem,
   type MoveOutSettlementSnapshot,
   type MoveOutSettlementType,
@@ -349,6 +355,7 @@ function apiErrorZh(code: string) {
     MOVEOUT_REQUEST_ALREADY_PENDING: '该合同已有待租客确认的退租申请，请先撤销、手动办结或等待租客处理',
     INVALID_MOVEOUT_DATE: '退租日期无效，且当前版本不支持选择未来日期办理结案',
     INVALID_STOP_RENT_DATE: '停止计租日期无效或早于合同起租日期',
+    INVALID_APPLICATION_FORM: '《退租申请书》配置不完整，请检查情形及必填字段',
     NO_MOVEOUT_PENDING: '当前没有待确认的退租申请',
     TENANT_MOVEOUT_DEADLINE_EXCEEDED: '退租确认已超时，请重新发起或联系管理员',
     CONTRACT_MOVEOUT_PENDING: '当前合同正在等待租客确认退租，暂不可进行此操作（可先「手动办结」或「撤销」）',
@@ -366,7 +373,7 @@ type ContractDetail = {
   status: string
   source?: string
   tenant: { name: string; phone: string; idNumber?: string; wechat?: string | null }
-  house: { storeName: string; apartmentName: string; houseNo: string; area?: number | null; assetType?: string | null }
+  house: { storeName: string; apartmentName: string; houseNo: string; area?: number | null; assetType?: string | null; address?: string | null }
   mergedBundle?: MergedBundleListInfo | null
   startDate: string
   endDate: string
@@ -502,9 +509,10 @@ export function ContractsPage() {
   const [moveOutScope, setMoveOutScope] = useState<'ALL' | 'PARTIAL'>('ALL')
   const [moveOutReleaseHouseIds, setMoveOutReleaseHouseIds] = useState<string[]>([])
   const [moveOutAttachments, setMoveOutAttachments] = useState<{ id: string; name: string; file: string }[]>([])
-  const [moveOutStep, setMoveOutStep] = useState<1 | 2 | 3 | 4>(1)
+  const [moveOutStep, setMoveOutStep] = useState<1 | 2 | 3 | 4 | 5>(1)
   const [moveOutContractDetail, setMoveOutContractDetail] = useState<ContractDetail | null>(null)
   const [moveOutSettlementType, setMoveOutSettlementType] = useState<MoveOutSettlementType>('NORMAL_EXPIRY')
+  const [moveOutApplication, setMoveOutApplication] = useState<MoveOutApplicationSnapshot | null>(null)
   const [moveOutStopRentDate, setMoveOutStopRentDate] = useState(todayYmd())
   const [moveOutRequireTenantConfirmation, setMoveOutRequireTenantConfirmation] = useState(true)
   const [moveOutPaidItems, setMoveOutPaidItems] = useState<MoveOutMoneyItem[]>(DEFAULT_MOVE_OUT_PAID_ITEMS)
@@ -736,7 +744,22 @@ export function ContractsPage() {
     setMoveOutAttachments([])
     setMoveOutStep(1)
     setMoveOutContractDetail(null)
-    setMoveOutSettlementType(c.endDate <= todayYmd() ? 'NORMAL_EXPIRY' : 'BREACH_EARLY')
+    const defaultType: MoveOutSettlementType = c.endDate <= todayYmd() ? 'NORMAL_EXPIRY' : 'SETTLED_EARLY'
+    setMoveOutSettlementType(defaultType)
+    setMoveOutApplication({
+      caseType: settlementTypeToApplicationCase(defaultType),
+      tenantEarlyReason: 'JOB_RELOCATION',
+      tenantEarlyReasonOther: '',
+      earlyTerminateDate: todayYmd(),
+      coveredUntilDate: c.endDate,
+      landlordInternalReason: '',
+      tenantName: c.tenant.name,
+      tenantIdNumber: '',
+      contractNo: formatContractNo(c.contractNo),
+      propertyAddress: `${c.house.apartmentName} ${c.house.houseNo}`,
+      leaseStartDate: todayYmd(),
+      leaseEndDate: c.endDate,
+    })
     setMoveOutStopRentDate(todayYmd())
     setMoveOutRequireTenantConfirmation(true)
     setMoveOutPaidItems(DEFAULT_MOVE_OUT_PAID_ITEMS.map((item) => ({ ...item })))
@@ -752,6 +775,24 @@ export function ContractsPage() {
       setMoveOutPaidItems(DEFAULT_MOVE_OUT_PAID_ITEMS.map((item) => (
         item.id === 'performance-bond' ? { ...item, amount: detail.data.deposit || 0 } : { ...item }
       )))
+      const addr =
+        detail.data.house.address?.trim() ||
+        `${detail.data.house.storeName}${detail.data.house.apartmentName}${detail.data.house.houseNo}`
+      setMoveOutApplication((prev) =>
+        prev
+          ? {
+              ...prev,
+              tenantName: detail.data.tenant.name,
+              tenantIdNumber: detail.data.tenant.idNumber ?? '',
+              contractNo: formatContractNo(detail.data.contractNo),
+              propertyAddress: addr,
+              leaseStartDate: detail.data.startDate,
+              leaseEndDate: detail.data.endDate,
+              coveredUntilDate: detail.data.endDate,
+              earlyTerminateDate: todayYmd(),
+            }
+          : prev,
+      )
     }
   }
 
@@ -966,6 +1007,13 @@ export function ContractsPage() {
         setMoveOutSubmitting(false)
         return setError(`“${invalidInspection.name}”存在异常，请填写异常或赔偿说明`)
       }
+      if (moveOutApplication) {
+        const appErr = validateMoveOutApplication(moveOutApplication)
+        if (appErr) {
+          setMoveOutSubmitting(false)
+          return setError(appErr)
+        }
+      }
       const active = moveOutModal.mergedBundle?.lines?.filter((l) => !l.releasedAt) ?? []
       if (moveOutScope === 'PARTIAL') {
         if (active.length <= 1) {
@@ -989,6 +1037,7 @@ export function ContractsPage() {
           remark: moveOutRemark.trim() || undefined,
           requireTenantConfirmation: moveOutRequireTenantConfirmation,
           settlement: moveOutSettlementSnapshot,
+          applicationForm: moveOutApplication ?? undefined,
           attachments: moveOutAttachments,
           ...(moveOutScope === 'PARTIAL' && moveOutReleaseHouseIds.length > 0
             ? { releaseHouseIds: moveOutReleaseHouseIds }
@@ -1001,7 +1050,7 @@ export function ContractsPage() {
       }
       setMsg(r.data.completed
         ? '退租结算审批表已生成并归档；本单无需租户确认，可打印后报财务办理退款。'
-        : '已向租客发起退租确认：租户需核对《退租结算审批表》并提交退款银行卡（无需签字）。等待期间店长仍可手动办结。')
+        : '已向租客发起退租确认：租户需确认交接清单与《退租申请书》并签字，再提交退款银行卡。等待期间店长仍可手动办结。')
     } else {
       setMoveOutSubmitting(false)
       return setError('当前状态不可在此办理退租（支持：待支付作废、已生效退租）')
@@ -1034,11 +1083,16 @@ export function ContractsPage() {
       if (invalid) return setError(`“${invalid.name}”存在异常，请填写异常或赔偿说明`)
     }
     if (moveOutStep === 3) {
+      if (!moveOutApplication) return setError('请配置《退租申请书》')
+      const appErr = validateMoveOutApplication(moveOutApplication)
+      if (appErr) return setError(appErr)
+    }
+    if (moveOutStep === 4) {
       if (moveOutPaidItems.some((item) => !item.name.trim()) || moveOutReceivableItems.some((item) => !item.name.trim())) {
         return setError('结算明细中存在未填写项目名称的行')
       }
     }
-    setMoveOutStep((moveOutStep + 1) as 2 | 3 | 4)
+    setMoveOutStep((moveOutStep + 1) as 2 | 3 | 4 | 5)
   }
 
   async function cancelMoveOutRequest(c: ContractItem) {
@@ -1150,7 +1204,9 @@ export function ContractsPage() {
     [moveOutPaidItems, moveOutReceivableItemsForSubmit],
   )
   const moveOutSettlementSnapshot: MoveOutSettlementSnapshot = {
-    settlementType: moveOutSettlementType,
+    settlementType: moveOutApplication
+      ? applicationCaseToSettlementType(moveOutApplication.caseType)
+      : moveOutSettlementType,
     stopRentDate: moveOutStopRentDate,
     requireTenantConfirmation: moveOutRequireTenantConfirmation,
     hygieneStatus: moveOutHygiene,
@@ -2288,7 +2344,7 @@ export function ContractsPage() {
                             {formatSignLikeCountdown(new Date(c.moveOutSignDeadlineAt).getTime() - nowTick) ?? '—'}
                           </div>
                           <div className="a-muted" style={{ fontSize: 12, marginTop: 6 }}>
-                            等待租户确认审批表并提交银行卡；店长可随时手动办结。
+                            等待租户确认交接清单与《退租申请书》并提交银行卡；店长可随时手动办结。
                           </div>
                         </div>
                         <button className="a-btn" type="button" onClick={() => void completeMoveOutDirect(c)}>
@@ -2366,7 +2422,7 @@ export function ContractsPage() {
             <div className="a-modal-header">
               <div>
                 <div className="a-modal-title">办理退租 · {formatContractNo(moveOutModal.contractNo)}</div>
-                {moveOutModal.status === 'ACTIVE' ? <div className="a-muted" style={{ marginTop: 4 }}>厂房/商铺/住宅：填写退租结算审批表 → 选择是否需租户确认</div> : null}
+                {moveOutModal.status === 'ACTIVE' ? <div className="a-muted" style={{ marginTop: 4 }}>泊湾公寓退租：填写交接清单与《退租申请书》→ 结算审批表 → 可选租户确认签字</div> : null}
               </div>
               <button className="a-modal-close" onClick={() => setMoveOutModal(null)}>
                 关闭
@@ -2384,26 +2440,25 @@ export function ContractsPage() {
                 </div>
               ) : (
                 <>
-                  <div className="moveout-steps">
-                    {['退租信息', '房屋交接与赔偿', '结算明细', '审批表与发起'].map((label, index) => {
-                      const step = (index + 1) as 1 | 2 | 3 | 4
+                  <div className="moveout-steps moveout-steps-5">
+                    {['退租信息', '房屋交接与赔偿', '退租申请书', '结算明细', '审批表与发起'].map((label, index) => {
+                      const step = (index + 1) as 1 | 2 | 3 | 4 | 5
                       return <button type="button" key={label} className={moveOutStep === step ? 'active' : moveOutStep > step ? 'done' : ''} onClick={() => setMoveOutStep(step)}><b>{moveOutStep > step ? '✓' : step}</b><span>{label}</span></button>
                     })}
                   </div>
 
                   {moveOutStep === 1 ? (
                     <div className="moveout-step-panel">
-                      <div className="moveout-notice">按实际退租类型填写日期与原因；系统将根据“是否需要租户确认”分流办理。</div>
+                      <div className="moveout-notice">先填写退租日期与原因；下一步核验交接清单，再配置《退租申请书》情形（情况一～四由店长勾选，租户端只读确认签字）。</div>
                       {moveOutModal.mergedBundle && moveOutModal.mergedBundle.lines.filter((l) => !l.releasedAt).length > 1 ? (
                         <section className="moveout-section"><h3>退租范围</h3><label className="moveout-choice"><input type="radio" name="moveOutScope" checked={moveOutScope === 'ALL'} onChange={() => { setMoveOutScope('ALL'); setMoveOutReleaseHouseIds([]) }} /><span><strong>整套退租</strong><small>合同终止，全部在租子房源一并结案</small></span></label><label className="moveout-choice"><input type="radio" name="moveOutScope" checked={moveOutScope === 'PARTIAL'} onChange={() => setMoveOutScope('PARTIAL')} /><span><strong>仅退部分子房源</strong><small>其余房源仍在租，未结清账单按剩余套数重算</small></span></label>{moveOutScope === 'PARTIAL' ? <div className="moveout-house-options">{moveOutModal.mergedBundle.lines.filter((line) => !line.releasedAt).map((line) => <label key={line.houseId}><input type="checkbox" checked={moveOutReleaseHouseIds.includes(line.houseId)} onChange={(e) => setMoveOutReleaseHouseIds((ids) => e.target.checked ? [...ids, line.houseId] : ids.filter((id) => id !== line.houseId))} /> {line.apartmentName} · {line.houseNo}</label>)}</div> : null}</section>
                       ) : null}
                       <section className="moveout-section"><h3>基本信息</h3><div className="moveout-form-grid">
-                        <label><span>退租类型 *</span><select className="a-filter-select" value={moveOutSettlementType} onChange={(e) => setMoveOutSettlementType(e.target.value as MoveOutSettlementType)}>{MOVE_OUT_SETTLEMENT_TYPE_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}</select><small>{MOVE_OUT_SETTLEMENT_TYPE_OPTIONS.find((item) => item.value === moveOutSettlementType)?.hint}</small></label>
                         <label><span>退租原因 *</span><select className="a-filter-select" value={moveOutReason} onChange={(e) => setMoveOutReason(e.target.value)}><option value="">请选择</option>{MOVE_OUT_REASON_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}</select></label>
                         {moveOutReason === '其他' ? <label className="wide"><span>其他原因 *</span><input className="a-filter-input" value={moveOutReasonOther} onChange={(e) => setMoveOutReasonOther(e.target.value)} placeholder="请说明具体退租原因" /></label> : null}
-                        <label><span>退租日期 *</span><input className="a-filter-input" type="date" value={moveOutDate} onChange={(e) => { setMoveOutDate(e.target.value); setMoveOutStopRentDate(e.target.value) }} /></label>
+                        <label><span>退租日期 *</span><input className="a-filter-input" type="date" value={moveOutDate} onChange={(e) => { setMoveOutDate(e.target.value); setMoveOutStopRentDate(e.target.value); setMoveOutApplication((prev) => prev ? { ...prev, earlyTerminateDate: e.target.value } : prev) }} /></label>
                         <label><span>停止计租日期 *</span><input className="a-filter-input" type="date" value={moveOutStopRentDate} onChange={(e) => setMoveOutStopRentDate(e.target.value)} /></label>
-                        <label className="wide"><span>是否需要租户确认 *</span><div className="moveout-confirm-choice"><label><input type="radio" name="tenantConfirm" checked={moveOutRequireTenantConfirmation} onChange={() => setMoveOutRequireTenantConfirmation(true)} /> 需要：租户确认《退租结算审批表》并提交银行卡（无需签字）；等待期间店长仍可手动办结</label><label><input type="radio" name="tenantConfirm" checked={!moveOutRequireTenantConfirmation} onChange={() => setMoveOutRequireTenantConfirmation(false)} /> 不需要：店长直接生成审批表，打印后报财务</label></div></label>
+                        <label className="wide"><span>是否需要租户确认 *</span><div className="moveout-confirm-choice"><label><input type="radio" name="tenantConfirm" checked={moveOutRequireTenantConfirmation} onChange={() => setMoveOutRequireTenantConfirmation(true)} /> 需要：租户确认交接清单与《退租申请书》并签字，再提交银行卡；等待期间店长仍可手动办结</label><label><input type="radio" name="tenantConfirm" checked={!moveOutRequireTenantConfirmation} onChange={() => setMoveOutRequireTenantConfirmation(false)} /> 不需要：店长直接生成审批表，打印后报财务</label></div></label>
                         <label className="wide"><span>备注</span><textarea className="a-filter-input" rows={3} placeholder="补充说明本次退租情况；无需租户确认时请写明依据" value={moveOutRemark} onChange={(e) => setMoveOutRemark(e.target.value)} /></label>
                         <label className="wide"><span>现场附件</span><input type="file" className="a-filter-input" onChange={async (e) => { const f = e.target.files?.[0]; e.target.value = ''; if (!f || !moveOutModal) return; const r = await apiUploadMoveOutFile(moveOutModal.id, f); if (!r.ok) return setError(r.error); setMoveOutAttachments((prev) => [...prev, r.data.attachment]) }} /><small>支持房屋现场图片、协商依据、维修估价单等，将随退租单归档。</small>{moveOutAttachments.length > 0 ? <ul className="moveout-attachment-list">{moveOutAttachments.map((item) => <li key={item.id}><span>{item.name}</span><button type="button" onClick={() => setMoveOutAttachments((rows) => rows.filter((row) => row.id !== item.id))}>移除</button></li>)}</ul> : null}</label>
                       </div></section>
@@ -2414,7 +2469,7 @@ export function ContractsPage() {
                     <div className="moveout-step-panel">
                       <div className="moveout-baseline"><div><strong>入住清单基线</strong><span>版本 V1 · 店长与租客已于 2026/03/01 签字</span></div><button type="button" className="a-btn ghost">查看入住签字原件</button></div>
                       <div className="moveout-inspection-toolbar">
-                        <span>退租时可调整项目、数量、单价和赔偿金；租户确认审批表时可见（无需签字）。</span>
+                        <span>填写《房屋、设备、设施交接清单及损坏赔偿价格表》；需租户确认时，租户将在此清单上签字确认。</span>
                         <button type="button" className="a-btn secondary" onClick={() => setMoveOutAnnex5Items((rows) => [...rows, { id: `mo-${Date.now()}`, category: '其他', name: '', unit: '个', moveInQuantity: 1, moveInStatus: '未记录', moveOutStatus: '完好', compensationQuantity: 0, referencePrice: 0, actualCompensation: 0, remark: '', isMoveOutAdded: true }])}>+ 添加项目</button>
                       </div>
                       <div className="moveout-table-wrap">
@@ -2443,11 +2498,26 @@ export function ContractsPage() {
                           </tbody>
                         </table>
                       </div>
-                      <div className="moveout-comp-summary"><span>核验 {moveOutAnnex5Items.length} 项 · 异常 {moveOutAnnex5Items.filter((item) => item.actualCompensation > 0).length} 项</span><div>损坏赔偿合计 <strong>¥{moveOutDamageCompensation.toFixed(2)}</strong><small>将实时计入下一步押金试算</small></div></div>
+                      <div className="moveout-comp-summary"><span>核验 {moveOutAnnex5Items.length} 项 · 异常 {moveOutAnnex5Items.filter((item) => item.actualCompensation > 0).length} 项</span><div>损坏赔偿合计 <strong>¥{moveOutDamageCompensation.toFixed(2)}</strong><small>将实时计入结算明细</small></div></div>
                     </div>
                   ) : null}
 
-                  {moveOutStep === 3 ? (
+                  {moveOutStep === 3 && moveOutApplication ? (
+                    <div className="moveout-step-panel">
+                      <div className="moveout-notice">请选择情况一～四并填写对应字段。租户签署页将仅展示已勾选情形；情况三店长内部原因对租户完全隐藏。</div>
+                      <MoveOutApplicationSheet
+                        mode="configure"
+                        value={moveOutApplication}
+                        showLandlordInternalNote
+                        onChange={(next) => {
+                          setMoveOutApplication(next)
+                          setMoveOutSettlementType(applicationCaseToSettlementType(next.caseType))
+                        }}
+                      />
+                    </div>
+                  ) : null}
+
+                  {moveOutStep === 4 ? (
                     <div className="moveout-step-panel">
                       <div className="moveout-notice">按审批表口径核对“已交款项”和“应收款项”。履约保证金默认读取合同押金 ¥{moveOutDeposit.toFixed(2)}；损坏赔偿与保洁费由交接清单自动带入。</div>
                       <div className="moveout-ledger-editors">
@@ -2459,9 +2529,15 @@ export function ContractsPage() {
                     </div>
                   ) : null}
 
-                  {moveOutStep === 4 ? (
+                  {moveOutStep === 5 ? (
                     <div className="moveout-step-panel">
-                      <div className="moveout-route-summary"><div><span>办理分支</span><strong>{moveOutRequireTenantConfirmation ? '需要租户确认' : '无需租户确认，店长直接办理'}</strong></div><p>{moveOutRequireTenantConfirmation ? '提交后租户确认《退租结算审批表》并提交银行卡（无需签字）；等待期间店长仍可手动办结。' : '提交后立即生成并归档审批表，可打印后报财务走退款流程（非本系统动作）。'}</p></div>
+                      <div className="moveout-route-summary"><div><span>办理分支</span><strong>{moveOutRequireTenantConfirmation ? '需要租户确认' : '无需租户确认，店长直接办理'}</strong></div><p>{moveOutRequireTenantConfirmation ? '提交后租户依次：①确认交接清单并签字 → ②确认《退租申请书》并签字 → ③提交银行卡；等待期间店长仍可手动办结。' : '提交后立即生成并归档审批表，可打印后报财务走退款流程（非本系统动作）。'}</p></div>
+                      {moveOutApplication ? (
+                        <section className="moveout-section">
+                          <h3>《退租申请书》租户预览</h3>
+                          <MoveOutApplicationSheet mode="preview" value={moveOutApplication} showLandlordInternalNote={false} />
+                        </section>
+                      ) : null}
                       <MoveOutApprovalSheet
                         tenantName={moveOutModal.tenant.name}
                         unitLabel={`${moveOutModal.house.apartmentName} ${moveOutModal.house.houseNo}`}
@@ -2477,7 +2553,7 @@ export function ContractsPage() {
                     </div>
                   ) : null}
 
-                  <div className="moveout-footer"><button className="a-btn ghost" onClick={() => setMoveOutModal(null)}>取消</button><div>{moveOutStep > 1 ? <button className="a-btn ghost" onClick={() => setMoveOutStep((moveOutStep - 1) as 1 | 2 | 3)}>上一步</button> : null}{moveOutStep < 4 ? <button className="a-btn secondary" onClick={() => goNextMoveOutStep()}>下一步：{moveOutStep === 1 ? '房屋交接' : moveOutStep === 2 ? '结算明细' : '审批表预览'}</button> : <button className="a-btn secondary" onClick={submitMoveOut} disabled={moveOutSubmitting}>{moveOutSubmitting ? '提交中…' : moveOutRequireTenantConfirmation ? '店长签字并发起租户确认' : '确认并生成审批表'}</button>}</div></div>
+                  <div className="moveout-footer"><button className="a-btn ghost" onClick={() => setMoveOutModal(null)}>取消</button><div>{moveOutStep > 1 ? <button className="a-btn ghost" onClick={() => setMoveOutStep((moveOutStep - 1) as 1 | 2 | 3 | 4)}>上一步</button> : null}{moveOutStep < 5 ? <button className="a-btn secondary" onClick={() => goNextMoveOutStep()}>下一步：{moveOutStep === 1 ? '房屋交接' : moveOutStep === 2 ? '退租申请书' : moveOutStep === 3 ? '结算明细' : '审批表预览'}</button> : <button className="a-btn secondary" onClick={submitMoveOut} disabled={moveOutSubmitting}>{moveOutSubmitting ? '提交中…' : moveOutRequireTenantConfirmation ? '发起租户确认' : '确认并生成审批表'}</button>}</div></div>
                 </>
               )}
             </div>

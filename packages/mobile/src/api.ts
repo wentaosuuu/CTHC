@@ -36,8 +36,10 @@ async function readError(res: Response) {
   if (err === 'SUBLET_AREA_EXCEEDS_HOUSE') return '转租面积不能超过房源面积'
   if (err === 'FILING_MATERIALS_REQUIRED') return '请至少上传一份备案材料'
   if (err === 'NOT_WAIT_FILING') return '当前状态不可提交或修改备案材料'
-  if (err === 'FACE_VERIFY_REQUIRED') return '请先完成扫脸实名认证'
-  if (err === 'DEAL_CONFIRMATION_REQUIRED') return '请先上传成交确认书'
+  if (err === 'NEED_INSPECTION_SIGNATURE') return '请先完成交接清单电子签名'
+  if (err === 'NEED_APPLICATION_SIGNATURE') return '请先完成《退租申请书》电子签名'
+  if (err === 'NEED_APPLICATION_PHONE') return '请填写《退租申请书》联系电话'
+  if (err === 'INVALID_APPLICATION_FORM') return '退租申请书配置不完整，请联系门店'
   if (err === 'BUSINESS_LICENSE_REQUIRED') return '企业租户请上传营业执照'
   if (err === 'NEED_REVISION') return '订单需修改后重新提交'
   if (err === 'NOT_NEED_REVISION') return '当前订单无需重提'
@@ -121,6 +123,25 @@ export async function previewMoveOutFileWithPhone(
   window.open(url, '_blank', 'noopener,noreferrer')
   setTimeout(() => URL.revokeObjectURL(url), 60_000)
   return { ok: true, data: true }
+}
+
+export async function uploadMoveOutEvidenceWithPhone(
+  contractId: string,
+  file: File,
+  phone: string,
+): Promise<ApiResult<{ ok: true; attachment: { id: string; name: string; file: string } }>> {
+  const fd = new FormData()
+  fd.append('file', file)
+  const res = await fetch(`/api/contracts/${encodeURIComponent(contractId)}/move-out-evidence`, {
+    method: 'POST',
+    headers: { 'x-tenant-phone': phone },
+    body: fd,
+  })
+  if (!res.ok) return { ok: false, error: await readError(res) }
+  return {
+    ok: true,
+    data: (await res.json()) as { ok: true; attachment: { id: string; name: string; file: string } },
+  }
 }
 
 export async function downloadMoveOutFileWithPhone(

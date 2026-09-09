@@ -1570,6 +1570,7 @@ th.a-report-col-highlight {
 .moveout-workflow-modal { width: min(1320px, calc(100vw - 240px)); margin-left: 220px; }
 .moveout-workflow-body { display: block; padding: 0; background: #f7f9fc; }
 .moveout-steps { padding: 16px 36px; display: grid; grid-template-columns: repeat(4, 1fr); background: #fff; border-bottom: 1px solid #e3e8f0; }
+.moveout-steps-5 { grid-template-columns: repeat(5, 1fr); }
 .moveout-steps button { position: relative; border: 0; background: transparent; display: flex; align-items: center; gap: 10px; color: #8792a5; font-weight: 800; cursor: pointer; }
 .moveout-steps button:not(:last-child)::after { content: ''; position: absolute; left: 40px; right: 18px; top: 15px; height: 2px; background: #e3e8f0; z-index: 0; }
 .moveout-steps b, .moveout-steps span { position: relative; z-index: 1; background: #fff; }
@@ -2349,4 +2350,120 @@ th.a-report-col-highlight {
   font-size: 12px;
   word-break: break-all;
   color: #64748b;
+}
+
+/* 《退租申请书》店长配置 / 预览 */
+.mo-app-sheet {
+  margin-top: 12px;
+  padding: 20px 22px;
+  border: 1px solid #d7dee8;
+  border-radius: 12px;
+  background: #fff;
+  color: #1e293b;
+  line-height: 1.7;
+  font-size: 14px;
+}
+.mo-app-sheet-title {
+  text-align: center;
+  font-size: 22px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  margin-bottom: 14px;
+}
+.mo-app-address { font-weight: 700; margin: 0 0 10px; }
+.mo-app-intro { margin: 0 0 16px; text-indent: 2em; }
+.mo-app-case-picker {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 12px;
+  border-radius: 10px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+.mo-app-case-picker-title { font-weight: 800; color: #334155; margin-bottom: 4px; }
+.mo-app-case-picker label {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+.mo-app-case-picker label.active {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+.mo-app-case-picker strong { display: block; }
+.mo-app-case-picker small { color: #64748b; }
+.mo-app-case {
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fafbfc;
+}
+.mo-app-case.selected {
+  border-color: #86efac;
+  background: #f0fdf4;
+}
+.mo-app-case h4 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.mo-app-check { font-size: 16px; }
+.mo-app-case p { margin: 0; text-indent: 2em; }
+.mo-app-muted { color: #64748b; text-indent: 0 !important; }
+.mo-app-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 14px;
+  margin-bottom: 10px;
+}
+.mo-app-fields label > span {
+  display: block;
+  font-weight: 700;
+  margin-bottom: 5px;
+  color: #475569;
+  font-size: 13px;
+}
+.mo-app-fields input,
+.mo-app-fields select {
+  width: 100%;
+  box-sizing: border-box;
+}
+.mo-app-internal-note {
+  margin-top: 10px !important;
+  text-indent: 0 !important;
+  padding: 10px;
+  border-radius: 8px;
+  background: #fff7ed;
+  border: 1px dashed #fdba74;
+  color: #9a3412;
+  font-size: 13px;
+}
+.mo-app-tips {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed #cbd5e1;
+}
+.mo-app-tips p { font-weight: 700; margin: 0 0 8px; }
+.mo-app-tips ol { margin: 0; padding-left: 1.4em; }
+.mo-app-tips li { margin-bottom: 6px; }
+.mo-app-sign-placeholder {
+  margin-top: 16px;
+  display: grid;
+  gap: 6px;
+  justify-items: end;
+  color: #334155;
+  font-size: 13px;
+}
+.mo-app-sign-placeholder.muted {
+  justify-items: start;
+  color: #64748b;
+  font-size: 12px;
 }

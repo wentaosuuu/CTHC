@@ -63,6 +63,29 @@ export type MoveOutSettlementSnapshot = {
   applicationNote: string
 }
 
+/** 《退租申请书》店长配置快照（租户端只读勾选后签字） */
+export type MoveOutApplicationCase =
+  | 'CASE_1_NORMAL_EXPIRY'
+  | 'CASE_2_NEGOTIATED_TENANT'
+  | 'CASE_3_NEGOTIATED_LANDLORD'
+  | 'CASE_4_SETTLED_EARLY'
+
+export type MoveOutApplicationSnapshot = {
+  caseType: MoveOutApplicationCase
+  tenantEarlyReason?: 'JOB_RELOCATION' | 'FAMILY_ILLNESS' | 'OTHER' | null
+  tenantEarlyReasonOther?: string
+  earlyTerminateDate?: string
+  coveredUntilDate?: string
+  /** 情况三店长内部备注：租户 API 响应中应剥离 */
+  landlordInternalReason?: string
+  tenantName: string
+  tenantIdNumber: string
+  contractNo: string
+  propertyAddress: string
+  leaseStartDate: string
+  leaseEndDate: string
+}
+
 export type MoveOutTenantConfirmation = {
   accountName: string
   bankName: string
@@ -75,14 +98,24 @@ export type MoveOutTenantConfirmation = {
   bankRegion?: string
   phone?: string
   idNumber?: string
-  /** 租户确认时间（非电子签字） */
+  /** 租户确认时间 */
   confirmedAt: string
+  /** 交接清单确认签字（PNG data URL） */
+  inspectionSignatureDataUrl?: string
+  inspectionSignedAt?: string
+  /** 《退租申请书》电子签名（PNG data URL） */
+  applicationSignatureDataUrl?: string
+  applicationSignedAt?: string
+  applicationContactPhone?: string
+  applicationDate?: string
+  /** 租户上传的佐证材料 */
+  evidenceAttachments?: MoveOutPendingAttachment[]
   /** @deprecated 兼容旧归档字段 */
   signedAt?: string
 }
 
 export type MoveOutPendingPayload = {
-  version: 1 | 2
+  version: 1 | 2 | 3
   terminateDate: string
   reasonFull: string
   releaseHouseIds: string[]
@@ -91,10 +124,21 @@ export type MoveOutPendingPayload = {
   deadlineAt: string
   createdAt: string
   settlement?: MoveOutSettlementSnapshot
+  /** 泊湾等：店长预配置的《退租申请书》 */
+  applicationForm?: MoveOutApplicationSnapshot
+}
+
+/** 租户端展示用：隐藏情况三店长内部原因 */
+export function publicMoveOutApplication(
+  app: MoveOutApplicationSnapshot | null | undefined,
+): Omit<MoveOutApplicationSnapshot, 'landlordInternalReason'> | null {
+  if (!app) return null
+  const { landlordInternalReason: _hidden, ...rest } = app
+  return rest
 }
 
 export type MoveOutArchivePayload = MoveOutPendingPayload & {
-  version: 2
+  version: 2 | 3
   completedAt: string
   completedBy: 'TENANT_CONFIRMED' | 'STORE_DIRECT'
   tenantConfirmation?: MoveOutTenantConfirmation
