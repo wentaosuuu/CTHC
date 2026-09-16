@@ -1,4 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { TemplateReportPanel } from './TemplateReportPanel'
+import { TEMPLATE_REPORTS } from './templateReportCatalog'
+import type { TemplateReportKey } from './templateReportCatalog'
+import './reports.css'
 import { apiGet } from '../api'
 import { Pagination, paginate } from '../components/Pagination'
 
@@ -472,8 +477,7 @@ function monthlyRentCellValue(r: MonthlyRentCollectedRow, key: keyof MonthlyRent
   return r[key] ?? ''
 }
 
-export function ReportsPage() {
-  const [tab, setTab] = useState<ReportTab>('business-bills')
+function ExistingReportPanel({ tab }: { tab: ReportTab }) {
   const [stores, setStores] = useState<AdminStore[]>([])
   const [storeId, setStoreId] = useState('')
   const [periodFrom, setPeriodFrom] = useState(currentPeriod)
@@ -572,7 +576,7 @@ export function ReportsPage() {
           : tab === 'monthly-rent-collected'
             ? monthlyRentRows
             : collectionRows
-  const pageData = useMemo(() => paginate(activeRows, page, 20), [activeRows, page])
+  const pageData = useMemo(() => paginate<BusinessBillRow | MonthlyReceivableRow | CollectionTransactionRow | OfflineVerifyStatusRow | MonthlyRentCollectedRow>(activeRows, page, 20), [activeRows, page])
 
   function resetFilters() {
     setStoreId('')
@@ -644,33 +648,8 @@ export function ReportsPage() {
     URL.revokeObjectURL(url)
   }
 
-  const meta = TAB_META[tab]
-
   return (
     <div className="a-col">
-      <div className="a-card">
-        <div className="a-h1">报表管理</div>
-        <div className="a-muted">按业主提供的报表模板逐张上线；各报表以标签页形式追加，字段与导出格式按模板对齐。</div>
-      </div>
-
-      <div className="a-card a-report-tabs-card">
-        <div className="a-report-tabs" role="tablist" aria-label="报表类型">
-          {(Object.keys(TAB_META) as ReportTab[]).map((key) => (
-            <button
-              key={key}
-              type="button"
-              role="tab"
-              aria-selected={tab === key}
-              className={`a-report-tab${tab === key ? ' is-active' : ''}`}
-              onClick={() => setTab(key)}
-            >
-              {TAB_META[key].label}
-            </button>
-          ))}
-        </div>
-        <div className="a-muted a-report-tab-desc">{meta.desc}</div>
-      </div>
-
       {error ? <div className="a-card a-error">加载失败：{error}</div> : null}
 
       <div className="a-card a-row" style={{ justifyContent: 'space-between' }}>
@@ -1274,4 +1253,46 @@ export function ReportsPage() {
       </div>
     </div>
   )
+}
+
+
+type AllReportTab = ReportTab | TemplateReportKey
+const REPORT_GROUPS: { label: string; tabs: AllReportTab[] }[] = [
+  { label: '基础档案', tabs: ['asset-register', 'tenant-register', 'contract-register'] },
+  { label: '账单与收款', tabs: ['business-bills', 'monthly-receivable', 'collection-transactions', 'offline-verify-status', 'monthly-rent-collected'] },
+  { label: '退租结算', tabs: ['moveout-settlement'] },
+  { label: '经营分析', tabs: ['rent-income', 'other-income', 'rent-aging'] },
+]
+function isTemplateTab(tab: AllReportTab): tab is TemplateReportKey { return tab in TEMPLATE_REPORTS }
+function tabLabel(tab: AllReportTab) { return isTemplateTab(tab) ? TEMPLATE_REPORTS[tab].title : TAB_META[tab].label }
+const ALL_TABS = REPORT_GROUPS.flatMap(group => group.tabs)
+
+export function ReportsPage() {
+  const [params, setParams] = useSearchParams()
+  const requested = params.get('report') as AllReportTab | null
+  const tab = requested && ALL_TABS.includes(requested) ? requested : 'business-bills'
+  const meta = isTemplateTab(tab) ? TEMPLATE_REPORTS[tab] : { description: TAB_META[tab].desc }
+  function selectTab(next: AllReportTab) {
+    setParams(current => { const updated = new URLSearchParams(current); updated.set('report', next); return updated }, { replace: true })
+  }
+  return <div className="a-col a-reports-page">
+    <header className="a-card a-reports-header"><div><h1 className="a-h1">报表管理</h1><p className="a-muted">从基础档案到经营分析，按业务分类查询和导出报表。</p></div><span className="a-reports-count">12 张报表</span></header>
+    <section className="a-card a-reports-navigation" aria-label="报表导航">
+      <div role="tablist" aria-label="报表类型" className="a-reports-groups" onKeyDown={event => {
+        const index = ALL_TABS.indexOf(tab)
+        const next = event.key === 'ArrowRight' ? ALL_TABS[(index + 1) % ALL_TABS.length]
+          : event.key === 'ArrowLeft' ? ALL_TABS[(index + ALL_TABS.length - 1) % ALL_TABS.length]
+            : event.key === 'Home' ? ALL_TABS[0] : event.key === 'End' ? ALL_TABS[ALL_TABS.length - 1] : null
+        if (next) { event.preventDefault(); selectTab(next); document.getElementById(`report-tab-${next}`)?.focus() }
+      }}>
+        {REPORT_GROUPS.map(group => <div key={group.label} className="a-reports-group" role="presentation"><span className="a-reports-group-label">{group.label}</span><div className="a-reports-group-tabs" role="presentation">
+          {group.tabs.map(key => <button key={key} type="button" role="tab" id={`report-tab-${key}`} aria-selected={tab === key} aria-controls="report-panel" tabIndex={tab === key ? 0 : -1} className={`a-report-tab${tab === key ? ' is-active' : ''}`} onClick={() => selectTab(key)}>{tabLabel(key)}</button>)}
+        </div></div>)}
+      </div>
+      <p className="a-muted a-reports-description">{meta.description}</p>
+    </section>
+    <section role="tabpanel" id="report-panel" aria-labelledby={`report-tab-${tab}`}>
+      {isTemplateTab(tab) ? <TemplateReportPanel key={tab} type={tab} /> : <ExistingReportPanel key={tab} tab={tab} />}
+    </section>
+  </div>
 }

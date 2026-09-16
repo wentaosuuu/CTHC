@@ -73,6 +73,7 @@ import { buildBusinessBillsReport } from './services/businessBillsReport.js'
 import { buildCollectionTransactionReport } from './services/collectionTransactionReport.js'
 import { buildMonthlyReceivableReport } from './services/monthlyReceivableReport.js'
 import { buildMonthlyRentCollectedReport } from './services/monthlyRentCollectedReport.js'
+import { buildTemplateReport, exportTemplateReport, templateReportQuery, templateReportTypes } from './services/templateReports.js'
 import { buildOfflineVerifyStatusReport } from './services/offlineVerifyStatusReport.js'
 import { buildCollectedReport, buildReceivableReport } from './services/financeReports.js'
 import { insertHouseChangeLogs, jsonArrayCount, truncateLogValue } from './services/houseChangeLog.js'
@@ -7108,6 +7109,30 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     const result = await performHousingReportNow(ctx.prisma, contract.id)
     res.json({ ok: true, ...result })
   })
+
+  /** Excel 模板报表：读取和导出共用门店权限、筛选与计算口径。 */
+  const templateReportHandler: RequestHandler = async (req, res) => {
+    const parsedType = z.enum(templateReportTypes).safeParse(req.params.type)
+    const parsedQuery = templateReportQuery.safeParse(req.query)
+    if (!parsedType.success) { res.status(404).json({ error: 'REPORT_NOT_FOUND' }); return }
+    if (!parsedQuery.success) { res.status(400).json({ error: 'INVALID_REPORT_FILTERS', message: '筛选参数无效，请检查月份范围或筛选值。' }); return }
+    const auth = getAdminAuth(req)
+    if (parsedQuery.data.storeId && !canAccessStore(auth, parsedQuery.data.storeId)) { res.status(403).json({ error: 'FORBIDDEN' }); return }
+    try {
+      const data = await buildTemplateReport(ctx.prisma, parsedType.data, parsedQuery.data, id => canAccessStore(auth, id))
+      if (req.path.endsWith('/export')) {
+        const buffer = await exportTemplateReport(parsedType.data, data)
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        res.setHeader('Content-Disposition', `attachment; filename="${parsedType.data}.xlsx"`)
+        res.send(buffer)
+      } else res.json(data)
+    } catch (error) {
+      console.error('Template report failed:', error)
+      res.status(500).json({ error: 'REPORT_FAILED', message: '报表读取失败，请稍后重试。' })
+    }
+  }
+  app.get('/api/admin/reports/templates/:type/export', adminAuth(ctx.prisma), templateReportHandler)
+  app.get('/api/admin/reports/templates/:type', adminAuth(ctx.prisma), templateReportHandler)
 
   /** 报表管理：月度实收租金明细表 */
   app.get('/api/admin/reports/monthly-rent-collected', adminAuth(ctx.prisma), async (req, res) => {

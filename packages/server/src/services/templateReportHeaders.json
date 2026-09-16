@@ -1,0 +1,2355 @@
+{
+  "asset-register": {
+    "title": "资产信息表",
+    "description": "查看资产基础信息、权属信息、出租情况与租金押金，按当前档案展示。",
+    "columns": [
+      {
+        "label": "序号",
+        "group": "",
+        "format": "number"
+      },
+      {
+        "label": "单元编号（与集团资产系统对应）",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "所属片区",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "项目名称",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "资产名称",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "坐落",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "资产类型",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "计租面积(㎡)",
+        "group": "",
+        "format": "number"
+      },
+      {
+        "label": "资产数量（项）",
+        "group": "",
+        "format": "number"
+      },
+      {
+        "label": "权属单位",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "收租单位",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "管理单位",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "管理部门",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "权证类型",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "权证号",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "证载权利人",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "户型",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "是否可出租",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "不可出租原因（当是否可出租为“否”时必填；“是”时，默认填“/”）",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "出租状态（当是否可出租为“否”时，默认填“/”；“是”时依据合同状态自动识别）",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "空置时长",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "当前承租方",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "租赁合同编号",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "租赁起始日期",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "租赁到期日期",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "当前合同月租金(元/月)",
+        "group": "",
+        "format": "money"
+      },
+      {
+        "label": "租金评估价(元/月)",
+        "group": "",
+        "format": "money"
+      },
+      {
+        "label": "评估基准日",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "评估报告号",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "协议签约租金定价(元/月)",
+        "group": "",
+        "format": "money"
+      },
+      {
+        "label": "定价依据",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "当前挂牌价(元/月)",
+        "group": "",
+        "format": "money"
+      },
+      {
+        "label": "挂牌起始日期",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "挂牌截止日期",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "挂牌链接",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "其他周期性费用-物业费/管理费（元/月）",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "其他周期性费用-垃圾处理费（元/月）",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "履约保证金",
+        "group": "",
+        "format": "money"
+      },
+      {
+        "label": "水电押金",
+        "group": "",
+        "format": "money"
+      },
+      {
+        "label": "保洁押金",
+        "group": "",
+        "format": "money"
+      },
+      {
+        "label": "物业费押金",
+        "group": "",
+        "format": "money"
+      },
+      {
+        "label": "综合押金",
+        "group": "",
+        "format": "money"
+      },
+      {
+        "label": "管理员",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "备注",
+        "group": "",
+        "format": "text"
+      }
+    ],
+    "headerRows": [
+      [
+        {
+          "label": "序号",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "单元编号（与集团资产系统对应）",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "所属片区",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "项目名称",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "资产名称",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "坐落",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "资产类型",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "计租面积(㎡)",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "资产数量（项）",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "权属单位",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "收租单位",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "管理单位",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "管理部门",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "权证类型",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "权证号",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "证载权利人",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "户型",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "是否可出租",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "不可出租原因（当是否可出租为“否”时必填；“是”时，默认填“/”）",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "出租状态（当是否可出租为“否”时，默认填“/”；“是”时依据合同状态自动识别）",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "空置时长",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "当前承租方",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "租赁合同编号",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "租赁起始日期",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "租赁到期日期",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "当前合同月租金(元/月)",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "租金评估价(元/月)",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "评估基准日",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "评估报告号",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "协议签约租金定价(元/月)",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "定价依据",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "当前挂牌价(元/月)",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "挂牌起始日期",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "挂牌截止日期",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "挂牌链接",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "其他周期性费用-物业费/管理费（元/月）",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "其他周期性费用-垃圾处理费（元/月）",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "履约保证金",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "水电押金",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "保洁押金",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "物业费押金",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "综合押金",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "管理员",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "备注",
+          "colSpan": 1,
+          "rowSpan": 1
+        }
+      ]
+    ]
+  },
+  "tenant-register": {
+    "title": "租户档案表",
+    "description": "汇总个人与单位租户的身份、联系、银行账户及信用档案。",
+    "columns": [
+      {
+        "label": "序号",
+        "group": "",
+        "format": "number"
+      },
+      {
+        "label": "租户性质",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "名称",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "法定代表人",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "性别",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "证件类型",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "证件号码",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "证件有效期",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "证件地址",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "联系人",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "联系电话",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "银行账户",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "账户名称",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "开户行",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "紧急联系人/代理人",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "紧急联系电话",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "租户信用等级",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "备注",
+        "group": "",
+        "format": "text"
+      }
+    ],
+    "headerRows": [
+      [
+        {
+          "label": "序号",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "租户性质",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "名称",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "法定代表人",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "性别",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "证件类型",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "证件号码",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "证件有效期",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "证件地址",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "联系人",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "联系电话",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "银行账户",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "账户名称",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "开户行",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "紧急联系人/代理人",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "紧急联系电话",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "租户信用等级",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "备注",
+          "colSpan": 1,
+          "rowSpan": 1
+        }
+      ]
+    ]
+  },
+  "contract-register": {
+    "title": "合同列表",
+    "description": "查看合同来源、履约状态、租赁期限、周期费用与签约备案信息。",
+    "columns": [
+      {
+        "label": "上一份合同的编号",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "下一份合同编号",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "合同来源",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "合同状态",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "合同编号",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "是否享受员工优惠",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "租户",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "租户性质",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "证件类型",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "证件号",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "联系电话",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "合同签订时间",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "合同起始时间",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "合同结束时间",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "免租期",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "计租开始时间",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "计租结束时间",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "计租面积总数",
+        "group": "",
+        "format": "number"
+      },
+      {
+        "label": "支付方式",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "资产类型",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "资产名称",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "项目名称",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "所属片区",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "管理部门",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "租金",
+        "group": "",
+        "format": "money"
+      },
+      {
+        "label": "物业费",
+        "group": "",
+        "format": "money"
+      },
+      {
+        "label": "其他周期性费用",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "履约保证金",
+        "group": "",
+        "format": "money"
+      },
+      {
+        "label": "水电押金",
+        "group": "",
+        "format": "money"
+      },
+      {
+        "label": "其他押金",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "备注",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "签约操作人",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "签约操作时间",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "关闭操作人",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "关闭操作时间",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "合同备案证明编号",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "备案通过时间",
+        "group": "",
+        "format": "text"
+      }
+    ],
+    "headerRows": [
+      [
+        {
+          "label": "上一份合同的编号",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "下一份合同编号",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "合同来源",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "合同状态",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "合同编号",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "是否享受员工优惠",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "租户",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "租户性质",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "证件类型",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "证件号",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "联系电话",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "合同签订时间",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "合同起始时间",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "合同结束时间",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "免租期",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "计租开始时间",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "计租结束时间",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "计租面积总数",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "支付方式",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "资产类型",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "资产名称",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "项目名称",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "所属片区",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "管理部门",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "租金",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "物业费",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "其他周期性费用",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "履约保证金",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "水电押金",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "其他押金",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "备注",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "签约操作人",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "签约操作时间",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "关闭操作人",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "关闭操作时间",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "合同备案证明编号",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "备案通过时间",
+          "colSpan": 1,
+          "rowSpan": 1
+        }
+      ]
+    ]
+  },
+  "moveout-settlement": {
+    "title": "月度退租结算情况明细表",
+    "description": "按退租月份汇总已交款项、费项抵扣、应退款及审批情况。",
+    "columns": [
+      {
+        "label": "序号",
+        "group": "",
+        "format": "number"
+      },
+      {
+        "label": "收款流水 ID（退租抵扣专属）",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "资产名称",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "计租面积",
+        "group": "",
+        "format": "number"
+      },
+      {
+        "label": "项目名称",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "所属片区",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "管理部门",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "合同编号",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "租户名称",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "租赁期限起期",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "租赁期限止期",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "退租日期",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "停止计租日期",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "退租类型",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "履约保证金",
+        "group": "租户已交款项",
+        "format": "money"
+      },
+      {
+        "label": "水电押金",
+        "group": "租户已交款项",
+        "format": "money"
+      },
+      {
+        "label": "保洁押金",
+        "group": "租户已交款项",
+        "format": "money"
+      },
+      {
+        "label": "多交租金",
+        "group": "租户已交款项",
+        "format": "money"
+      },
+      {
+        "label": "其他已交款项",
+        "group": "租户已交款项",
+        "format": "text"
+      },
+      {
+        "label": "合计",
+        "group": "租户已交款项",
+        "format": "money"
+      },
+      {
+        "label": "租金抵扣 (元)",
+        "group": "费项抵扣明细",
+        "format": "money"
+      },
+      {
+        "label": "逾期交租违约金抵扣 (元)",
+        "group": "费项抵扣明细",
+        "format": "text"
+      },
+      {
+        "label": "物业费抵扣 (元)",
+        "group": "费项抵扣明细",
+        "format": "money"
+      },
+      {
+        "label": "水费抵扣 (元)",
+        "group": "费项抵扣明细",
+        "format": "text"
+      },
+      {
+        "label": "电费抵扣 (元)",
+        "group": "费项抵扣明细",
+        "format": "text"
+      },
+      {
+        "label": "保洁费抵扣 (元)",
+        "group": "费项抵扣明细",
+        "format": "text"
+      },
+      {
+        "label": "损坏赔偿费抵扣 (元)",
+        "group": "费项抵扣明细",
+        "format": "text"
+      },
+      {
+        "label": "提前退租违约金抵扣 (元)",
+        "group": "费项抵扣明细",
+        "format": "text"
+      },
+      {
+        "label": "其他费用抵扣 (元)",
+        "group": "费项抵扣明细",
+        "format": "text"
+      },
+      {
+        "label": "其他抵扣说明",
+        "group": "费项抵扣明细",
+        "format": "text"
+      },
+      {
+        "label": "合计",
+        "group": "费项抵扣明细",
+        "format": "money"
+      },
+      {
+        "label": "应退总金额 (元)",
+        "group": "",
+        "format": "money"
+      },
+      {
+        "label": "视同缴费日期",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "关联账单编号",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "退租结算单 ID",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "审批状态",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "审批完成时间",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "审批人",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "备注",
+        "group": "",
+        "format": "text"
+      }
+    ],
+    "headerRows": [
+      [
+        {
+          "label": "序号",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "收款流水 ID（退租抵扣专属）",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "资产名称",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "计租面积",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "项目名称",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "所属片区",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "管理部门",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "合同编号",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "租户名称",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "租赁期限起期",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "租赁期限止期",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "退租日期",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "停止计租日期",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "退租类型",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "租户已交款项",
+          "colSpan": 6,
+          "rowSpan": 1
+        },
+        {
+          "label": "费项抵扣明细",
+          "colSpan": 11,
+          "rowSpan": 1
+        },
+        {
+          "label": "应退总金额 (元)",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "视同缴费日期",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "关联账单编号",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "退租结算单 ID",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "审批状态",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "审批完成时间",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "审批人",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "备注",
+          "colSpan": 1,
+          "rowSpan": 2
+        }
+      ],
+      [
+        {
+          "label": "履约保证金",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "水电押金",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "保洁押金",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "多交租金",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "其他已交款项",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "合计",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "租金抵扣 (元)",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "逾期交租违约金抵扣 (元)",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "物业费抵扣 (元)",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "水费抵扣 (元)",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "电费抵扣 (元)",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "保洁费抵扣 (元)",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "损坏赔偿费抵扣 (元)",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "提前退租违约金抵扣 (元)",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "其他费用抵扣 (元)",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "其他抵扣说明",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "合计",
+          "colSpan": 1,
+          "rowSpan": 1
+        }
+      ]
+    ]
+  },
+  "rent-income": {
+    "title": "租金收入报表",
+    "description": "按统计期间查看经营指标、应收与实收租金，并区分账期口径和收款来源。",
+    "columns": [
+      {
+        "label": "序号",
+        "group": "",
+        "format": "number"
+      },
+      {
+        "label": "资产名称",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "项目名称",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "所属片区",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "管理部门",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "可出租数量 (项)",
+        "group": "基础经营指标",
+        "format": "number"
+      },
+      {
+        "label": "已出租项数 (项)",
+        "group": "基础经营指标",
+        "format": "number"
+      },
+      {
+        "label": "项数出租率 (%)",
+        "group": "基础经营指标",
+        "format": "percent"
+      },
+      {
+        "label": "可出租面积 (㎡)",
+        "group": "基础经营指标",
+        "format": "number"
+      },
+      {
+        "label": "已出租面积 (㎡)",
+        "group": "基础经营指标",
+        "format": "number"
+      },
+      {
+        "label": "面积出租率 (%)",
+        "group": "基础经营指标",
+        "format": "percent"
+      },
+      {
+        "label": "往期未收租金",
+        "group": "应收租金统计",
+        "format": "money"
+      },
+      {
+        "label": "本期应收租金",
+        "group": "应收租金统计",
+        "format": "money"
+      },
+      {
+        "label": "应收合计",
+        "group": "应收租金统计",
+        "format": "money"
+      },
+      {
+        "label": "往期预收本期租金",
+        "group": "实收租金统计（按账期拆分・权责口径）",
+        "format": "money"
+      },
+      {
+        "label": "收回历年旧欠租金",
+        "group": "实收租金统计（按账期拆分・权责口径）",
+        "format": "money"
+      },
+      {
+        "label": "本期收回当年往期欠租",
+        "group": "实收租金统计（按账期拆分・权责口径）",
+        "format": "text"
+      },
+      {
+        "label": "本期收回当年当期欠租",
+        "group": "实收租金统计（按账期拆分・权责口径）",
+        "format": "text"
+      },
+      {
+        "label": "当月实收租金",
+        "group": "实收租金统计（按账期拆分・权责口径）",
+        "format": "money"
+      },
+      {
+        "label": "预收本年租金",
+        "group": "实收租金统计（按账期拆分・权责口径）",
+        "format": "money"
+      },
+      {
+        "label": "预收来年租金",
+        "group": "实收租金统计（按账期拆分・权责口径）",
+        "format": "money"
+      },
+      {
+        "label": "实收合计",
+        "group": "实收租金统计（按账期拆分・权责口径）",
+        "format": "money"
+      },
+      {
+        "label": "未收租金合计",
+        "group": "",
+        "format": "money"
+      },
+      {
+        "label": "收到逾期交租违约金合计",
+        "group": "",
+        "format": "money"
+      },
+      {
+        "label": "系统收款租金",
+        "group": "租金收款统计（按来源拆分・现金流口径）",
+        "format": "money"
+      },
+      {
+        "label": "线下核销租金",
+        "group": "租金收款统计（按来源拆分・现金流口径）",
+        "format": "money"
+      },
+      {
+        "label": "退租押金抵扣租金",
+        "group": "租金收款统计（按来源拆分・现金流口径）",
+        "format": "money"
+      },
+      {
+        "label": "本期收到租金合计",
+        "group": "租金收款统计（按来源拆分・现金流口径）",
+        "format": "money"
+      },
+      {
+        "label": "备注",
+        "group": "",
+        "format": "text"
+      }
+    ],
+    "headerRows": [
+      [
+        {
+          "label": "序号",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "资产名称",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "项目名称",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "所属片区",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "管理部门",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "基础经营指标",
+          "colSpan": 6,
+          "rowSpan": 1
+        },
+        {
+          "label": "应收租金统计",
+          "colSpan": 3,
+          "rowSpan": 1
+        },
+        {
+          "label": "实收租金统计（按账期拆分・权责口径）",
+          "colSpan": 8,
+          "rowSpan": 1
+        },
+        {
+          "label": "未收租金合计",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "收到逾期交租违约金合计",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "租金收款统计（按来源拆分・现金流口径）",
+          "colSpan": 4,
+          "rowSpan": 1
+        },
+        {
+          "label": "备注",
+          "colSpan": 1,
+          "rowSpan": 2
+        }
+      ],
+      [
+        {
+          "label": "可出租数量 (项)",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "已出租项数 (项)",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "项数出租率 (%)",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "可出租面积 (㎡)",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "已出租面积 (㎡)",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "面积出租率 (%)",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "往期未收租金",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "本期应收租金",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "应收合计",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "往期预收本期租金",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "收回历年旧欠租金",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "本期收回当年往期欠租",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "本期收回当年当期欠租",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "当月实收租金",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "预收本年租金",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "预收来年租金",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "实收合计",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "系统收款租金",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "线下核销租金",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "退租押金抵扣租金",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "本期收到租金合计",
+          "colSpan": 1,
+          "rowSpan": 1
+        }
+      ]
+    ]
+  },
+  "other-income": {
+    "title": "其他收入报表",
+    "description": "按费项统计租金以外的应收、实收与未收金额，可按片区、项目或资产汇总。",
+    "columns": [
+      {
+        "label": "序号",
+        "group": "",
+        "format": "number"
+      },
+      {
+        "label": "资产名称",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "项目名称",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "所属片区",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "管理部门",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "可出租数量 (项)",
+        "group": "基础经营指标",
+        "format": "number"
+      },
+      {
+        "label": "已出租项数 (项)",
+        "group": "基础经营指标",
+        "format": "number"
+      },
+      {
+        "label": "项数出租率 (%)",
+        "group": "基础经营指标",
+        "format": "percent"
+      },
+      {
+        "label": "可出租面积 (㎡)",
+        "group": "基础经营指标",
+        "format": "number"
+      },
+      {
+        "label": "已出租面积 (㎡)",
+        "group": "基础经营指标",
+        "format": "number"
+      },
+      {
+        "label": "面积出租率 (%)",
+        "group": "基础经营指标",
+        "format": "percent"
+      },
+      {
+        "label": "费项",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "往期未收",
+        "group": "应收统计",
+        "format": "money"
+      },
+      {
+        "label": "本期应收",
+        "group": "应收统计",
+        "format": "money"
+      },
+      {
+        "label": "应收合计",
+        "group": "应收统计",
+        "format": "money"
+      },
+      {
+        "label": "往期预收本期",
+        "group": "实收统计（按账期拆分・权责口径）",
+        "format": "money"
+      },
+      {
+        "label": "收回旧欠",
+        "group": "实收统计（按账期拆分・权责口径）",
+        "format": "money"
+      },
+      {
+        "label": "当期实收",
+        "group": "实收统计（按账期拆分・权责口径）",
+        "format": "money"
+      },
+      {
+        "label": "预收",
+        "group": "实收统计（按账期拆分・权责口径）",
+        "format": "money"
+      },
+      {
+        "label": "实收合计",
+        "group": "实收统计（按账期拆分・权责口径）",
+        "format": "money"
+      },
+      {
+        "label": "未收合计",
+        "group": "",
+        "format": "money"
+      },
+      {
+        "label": "系统收款",
+        "group": "收款统计（按来源拆分・现金流口径）",
+        "format": "money"
+      },
+      {
+        "label": "线下核销",
+        "group": "收款统计（按来源拆分・现金流口径）",
+        "format": "money"
+      },
+      {
+        "label": "退租押金抵扣",
+        "group": "收款统计（按来源拆分・现金流口径）",
+        "format": "money"
+      },
+      {
+        "label": "本期收到合计",
+        "group": "收款统计（按来源拆分・现金流口径）",
+        "format": "money"
+      },
+      {
+        "label": "备注",
+        "group": "",
+        "format": "text"
+      }
+    ],
+    "headerRows": [
+      [
+        {
+          "label": "序号",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "资产名称",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "项目名称",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "所属片区",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "管理部门",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "基础经营指标",
+          "colSpan": 6,
+          "rowSpan": 1
+        },
+        {
+          "label": "费项",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "应收统计",
+          "colSpan": 3,
+          "rowSpan": 1
+        },
+        {
+          "label": "实收统计（按账期拆分・权责口径）",
+          "colSpan": 5,
+          "rowSpan": 1
+        },
+        {
+          "label": "未收合计",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "收款统计（按来源拆分・现金流口径）",
+          "colSpan": 4,
+          "rowSpan": 1
+        },
+        {
+          "label": "备注",
+          "colSpan": 1,
+          "rowSpan": 2
+        }
+      ],
+      [
+        {
+          "label": "可出租数量 (项)",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "已出租项数 (项)",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "项数出租率 (%)",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "可出租面积 (㎡)",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "已出租面积 (㎡)",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "面积出租率 (%)",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "往期未收",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "本期应收",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "应收合计",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "往期预收本期",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "收回旧欠",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "当期实收",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "预收",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "实收合计",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "系统收款",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "线下核销",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "退租押金抵扣",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "本期收到合计",
+          "colSpan": 1,
+          "rowSpan": 1
+        }
+      ]
+    ]
+  },
+  "rent-aging": {
+    "title": "未收租金账龄分析明细表",
+    "description": "截至所选月末，按财务关账归属月拆分往年及本年各月的未收租金。",
+    "columns": [
+      {
+        "label": "序号",
+        "group": "",
+        "format": "number"
+      },
+      {
+        "label": "经营单元 ID",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "资产名称",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "项目名称",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "所属片区",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "管理部门",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "合同编号",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "租户名称",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "账单编号",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "财务关账归属月",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "应收租金总额 (元)",
+        "group": "",
+        "format": "money"
+      },
+      {
+        "label": "已收租金金额 (元)",
+        "group": "",
+        "format": "money"
+      },
+      {
+        "label": "未收租金总额 (元)",
+        "group": "",
+        "format": "money"
+      },
+      {
+        "label": "往年欠款（截至上年 12 月 31 日）",
+        "group": "账龄拆分（按欠款产生月份）",
+        "format": "money"
+      },
+      {
+        "label": "本年 1 月欠款",
+        "group": "账龄拆分（按欠款产生月份）",
+        "format": "money"
+      },
+      {
+        "label": "本年 2 月欠款",
+        "group": "账龄拆分（按欠款产生月份）",
+        "format": "money"
+      },
+      {
+        "label": "本年 3 月欠款",
+        "group": "账龄拆分（按欠款产生月份）",
+        "format": "money"
+      },
+      {
+        "label": "本年 4 月欠款",
+        "group": "账龄拆分（按欠款产生月份）",
+        "format": "money"
+      },
+      {
+        "label": "本年 5 月欠款",
+        "group": "账龄拆分（按欠款产生月份）",
+        "format": "money"
+      },
+      {
+        "label": "本年 6 月欠款",
+        "group": "账龄拆分（按欠款产生月份）",
+        "format": "money"
+      },
+      {
+        "label": "本年 7 月欠款",
+        "group": "账龄拆分（按欠款产生月份）",
+        "format": "money"
+      },
+      {
+        "label": "本年 8 月欠款",
+        "group": "账龄拆分（按欠款产生月份）",
+        "format": "money"
+      },
+      {
+        "label": "本年 9 月欠款",
+        "group": "账龄拆分（按欠款产生月份）",
+        "format": "money"
+      },
+      {
+        "label": "本年 10 月欠款",
+        "group": "账龄拆分（按欠款产生月份）",
+        "format": "money"
+      },
+      {
+        "label": "本年 11 月欠款",
+        "group": "账龄拆分（按欠款产生月份）",
+        "format": "money"
+      },
+      {
+        "label": "本年 12 月欠款",
+        "group": "账龄拆分（按欠款产生月份）",
+        "format": "money"
+      },
+      {
+        "label": "逾期天数 (天)",
+        "group": "",
+        "format": "number"
+      },
+      {
+        "label": "账单状态",
+        "group": "",
+        "format": "text"
+      },
+      {
+        "label": "备注",
+        "group": "",
+        "format": "text"
+      }
+    ],
+    "headerRows": [
+      [
+        {
+          "label": "序号",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "经营单元 ID",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "资产名称",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "项目名称",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "所属片区",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "管理部门",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "合同编号",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "租户名称",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "账单编号",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "财务关账归属月",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "应收租金总额 (元)",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "已收租金金额 (元)",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "未收租金总额 (元)",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "账龄拆分（按欠款产生月份）",
+          "colSpan": 13,
+          "rowSpan": 1
+        },
+        {
+          "label": "逾期天数 (天)",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "账单状态",
+          "colSpan": 1,
+          "rowSpan": 2
+        },
+        {
+          "label": "备注",
+          "colSpan": 1,
+          "rowSpan": 2
+        }
+      ],
+      [
+        {
+          "label": "往年欠款（截至上年 12 月 31 日）",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "本年 1 月欠款",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "本年 2 月欠款",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "本年 3 月欠款",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "本年 4 月欠款",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "本年 5 月欠款",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "本年 6 月欠款",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "本年 7 月欠款",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "本年 8 月欠款",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "本年 9 月欠款",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "本年 10 月欠款",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "本年 11 月欠款",
+          "colSpan": 1,
+          "rowSpan": 1
+        },
+        {
+          "label": "本年 12 月欠款",
+          "colSpan": 1,
+          "rowSpan": 1
+        }
+      ]
+    ]
+  }
+}
