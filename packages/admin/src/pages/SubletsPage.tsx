@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { apiDeleteSubletMinutesFile, apiGet, apiPost, apiUploadSubletMinutesFile } from '../api'
 import { downloadFileWithAuth, previewFileWithAuth } from '../fileAuth'
 import { Pagination, paginate } from '../components/Pagination'
+import { CONTRACT_TEMPLATES } from '../contractTemplate'
 
 type SubletFile = {
   id: string
@@ -17,6 +19,8 @@ type SubletItem = {
   applicationNo: string
   contractId: string
   contractNo: string
+  proposedSubletDate?: string | null
+  subletReason?: string | null
   tenantName: string
   tenantPhone: string
   storeId: string
@@ -94,27 +98,46 @@ function mapSubletError(code: string) {
 }
 
 export function SubletsPage() {
+  const [searchParams] = useSearchParams()
   const [items, setItems] = useState<SubletItem[]>([])
   const [error, setError] = useState('')
   const [msg, setMsg] = useState('')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
-  const [q, setQ] = useState('')
+  const [q, setQ] = useState(() => searchParams.get('q') ?? searchParams.get('applicationNo') ?? '')
   const [status, setStatus] = useState('')
   const [storeFilter, setStoreFilter] = useState('')
+  const [contractQuery, setContractQuery] = useState('')
+  const [tenantQuery, setTenantQuery] = useState('')
+  const [phoneQuery, setPhoneQuery] = useState('')
+  const [appliedQueries, setAppliedQueries] = useState({ contract: '', tenant: '', phone: '' })
+  const [contractTemplates, setContractTemplates] = useState<Record<string, string>>({})
   const [detail, setDetail] = useState<SubletItem | null>(null)
   const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
 
   async function load() {
+    const [applications, contracts] = await Promise.allSettled([
+      apiGet<{ items: SubletItem[] }>('/api/admin/sublets'),
+      apiGet<{ items: { id: string; contractTemplate?: string }[] }>('/api/admin/contracts'),
+    ])
     setError('')
-    const r = await apiGet<{ items: SubletItem[] }>('/api/admin/sublets')
-    if (!r.ok) return setError(r.error)
-    setItems(r.data.items ?? [])
+    if (applications.status === 'rejected') setError('转租申请加载失败，请重试。')
+    else if (applications.value.ok) setItems(applications.value.data.items ?? [])
+    else setError(applications.value.error)
+    if (contracts.status === 'fulfilled' && contracts.value.ok) {
+      setContractTemplates(Object.fromEntries(contracts.value.data.items.filter((contract) => contract.contractTemplate)
+        .map((contract) => [contract.id, contract.contractTemplate as string])))
+    } else setContractTemplates({})
   }
 
   useEffect(() => {
-    load()
+    let active = true
+    // 异步启动首次请求；清理已卸载实例尚未开始的任务，手动刷新仍使用原 load。
+    void Promise.resolve().then(() => {
+      if (active) return load()
+    })
+    return () => { active = false }
   }, [])
 
   const filterOptions = useMemo(() => {
@@ -127,12 +150,15 @@ export function SubletsPage() {
     return items.filter((x) => {
       if (status && x.status !== status) return false
       if (storeFilter && x.storeName !== storeFilter) return false
+      if (appliedQueries.contract && !x.contractNo.toLowerCase().includes(appliedQueries.contract.trim().toLowerCase())) return false
+      if (appliedQueries.tenant && !x.tenantName.toLowerCase().includes(appliedQueries.tenant.trim().toLowerCase())) return false
+      if (appliedQueries.phone && !x.tenantPhone.includes(appliedQueries.phone.trim())) return false
       if (!kw) return true
       const hay =
         `${x.applicationNo} ${x.contractNo} ${x.tenantName} ${x.tenantPhone} ${x.storeName} ${x.apartmentName} ${x.houseNo} ${x.subletUnit}`.toLowerCase()
       return hay.includes(kw)
     })
-  }, [items, q, status, storeFilter])
+  }, [items, q, status, storeFilter, appliedQueries])
 
   const pageData = useMemo(() => paginate(filtered, page, pageSize), [filtered, page, pageSize])
 
@@ -231,7 +257,8 @@ export function SubletsPage() {
   return (
     <div className="a-col">
       <div className="a-card">
-        <div className="a-h1">转租管理</div>
+        <div className="a-h1">转租审核</div>
+        <p className="a-muted">合同模板取自本地合同列表；当前接口未提供拟转租日期、转租原因时显示“—”。资料项配置重载尚待核对，原审核流程继续保留。</p>
         <div className="a-muted">
           租户发起转租申请记录：店长初审 → 登记华创内部 OA（线下）→ 租户提交备案材料 → 复审 → 上传会议纪要结案。
         </div>
@@ -253,6 +280,12 @@ export function SubletsPage() {
             placeholder="申请号/合同/租客/房号/转租单位"
             style={{ minWidth: 220 }}
           />
+          <label className="a-col" style={{ gap: 4 }}>合同号<input className="a-filter-input" value={contractQuery}
+            placeholder="请输入合同号" onChange={(event) => setContractQuery(event.target.value)} /></label>
+          <label className="a-col" style={{ gap: 4 }}>租客<input className="a-filter-input" value={tenantQuery}
+            placeholder="请输入租客姓名" onChange={(event) => setTenantQuery(event.target.value)} /></label>
+          <label className="a-col" style={{ gap: 4 }}>手机号<input className="a-filter-input" type="tel" value={phoneQuery}
+            placeholder="请输入手机号" onChange={(event) => setPhoneQuery(event.target.value)} /></label>
           <select
             className="a-filter-select"
             value={status}
@@ -285,6 +318,9 @@ export function SubletsPage() {
               </option>
             ))}
           </select>
+          <button type="button" className="a-btn" onClick={() => {
+            setAppliedQueries({ contract: contractQuery.trim(), tenant: tenantQuery.trim(), phone: phoneQuery.trim() }); setPage(1)
+          }}>搜索</button>
           <button
             type="button"
             className="a-btn ghost"
@@ -292,6 +328,10 @@ export function SubletsPage() {
               setQ('')
               setStatus('')
               setStoreFilter('')
+              setContractQuery('')
+              setTenantQuery('')
+              setPhoneQuery('')
+              setAppliedQueries({ contract: '', tenant: '', phone: '' })
               setPage(1)
             }}
           >
@@ -307,47 +347,46 @@ export function SubletsPage() {
         <table className="a-table">
           <thead>
             <tr>
-              <th>申请号</th>
+              <th>ID / 申请号</th>
               <th>状态</th>
-              <th>门店/房源</th>
-              <th>合同</th>
+              <th>合同号</th>
+              <th>合同模板</th>
               <th>租客</th>
-              <th>转租信息</th>
-              <th>提交时间</th>
+              <th>手机号</th>
+              <th>拟转租日期</th>
+              <th>转租原因</th>
+              <th>申请时间</th>
+              <th title="原 DEMO 初审记录">审核人/时间</th>
               <th>操作</th>
             </tr>
           </thead>
           <tbody>
             {pageData.items.length === 0 ? (
               <tr>
-                <td colSpan={8} className="a-muted" style={{ textAlign: 'center', padding: 24 }}>
+                <td colSpan={11} className="a-muted" style={{ textAlign: 'center', padding: 24 }}>
                   暂无转租申请
                 </td>
               </tr>
             ) : (
               pageData.items.map((x) => (
                 <tr key={x.id}>
-                  <td>{x.applicationNo}</td>
+                  <td>{x.applicationNo}<div className="a-muted" style={{ fontSize: 11 }}>{x.id}</div></td>
                   <td>
                     <span className={statusBadgeClass(x.status)}>{x.statusLabel}</span>
                   </td>
-                  <td>
-                    <div>{x.storeName}</div>
-                    <div className="a-muted" style={{ fontSize: 12 }}>
-                      {x.apartmentName} · {x.houseNo}
-                    </div>
-                  </td>
-                  <td>{x.contractNo}</td>
-                  <td>
-                    <div>{x.tenantName}</div>
-                    <div className="a-muted" style={{ fontSize: 12 }}>
-                      {x.tenantPhone}
-                    </div>
-                  </td>
-                  <td>
-                    {x.subletArea}㎡ · {x.subletUnit}
-                  </td>
+                  <td>{x.contractNo}<div className="a-muted">{x.storeName} · {x.apartmentName} · {x.houseNo}</div></td>
+                  <td>{(() => {
+                    const value = contractTemplates[x.contractId]
+                    if (!value) return '—'
+                    const key = value === 'TRIPARTITE' ? 'NON_RESIDENTIAL' : value === 'APARTMENT' ? 'RESIDENTIAL_ASSET' : value
+                    return CONTRACT_TEMPLATES.find((template) => template.value === key)?.label ?? value
+                  })()}</td>
+                  <td>{x.tenantName}</td>
+                  <td>{x.tenantPhone}</td>
+                  <td>{x.proposedSubletDate?.slice(0, 10) || '—'}</td>
+                  <td>{x.subletReason?.trim() || '—'}</td>
                   <td style={{ whiteSpace: 'nowrap' }}>{fmtDt(x.createdAt)}</td>
+                  <td title="原 DEMO 初审记录，不推断为最新审批节点"><div>{x.reviewedByName || '—'}</div><div className="a-muted">{fmtDt(x.reviewedAt)}</div></td>
                   <td>
                     <button type="button" className="a-btn ghost" onClick={() => openDetail(x)}>
                       处理

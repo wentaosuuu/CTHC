@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { apiGet, apiPatch, apiPost } from '../api'
 import { Pagination, paginate } from '../components/Pagination'
+import { DemoDialog } from '../components/DemoDialog'
 
 type CreditTier = 'A' | 'B' | 'C' | 'D'
 type TenantKind = 'INDIVIDUAL' | 'ENTERPRISE'
@@ -22,6 +23,8 @@ type TenantRow = {
   enteredAt: string
   orderCount: number
   contractCount: number
+  associationStatus?: string | null
+  associationStatusLabel?: string | null
 }
 
 type TenantOpLogRow = {
@@ -64,6 +67,37 @@ function apiErrorZh(err: string) {
   return err
 }
 
+type TenantSupplement = {
+  nature: string; legalRepresentative: string; documentAddress: string; contact: string
+  emergencyContact: string; emergencyPhone: string; updatedAt: string
+}
+const TENANT_SUPPLEMENT_KEY = 'cthc.prototype-sync.v1.tenant-supplements'
+function emptySupplement(): TenantSupplement {
+  return { nature: '', legalRepresentative: '', documentAddress: '', contact: '', emergencyContact: '', emergencyPhone: '', updatedAt: '' }
+}
+function readTenantSupplements(): Record<string, TenantSupplement> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(TENANT_SUPPLEMENT_KEY) || 'null')
+    if (!parsed || typeof parsed !== 'object' || !('version' in parsed) || parsed.version !== 1 || !('records' in parsed)
+      || !parsed.records || typeof parsed.records !== 'object' || Array.isArray(parsed.records)) return {}
+    const result: Record<string, TenantSupplement> = {}
+    for (const [id, record] of Object.entries(parsed.records)) {
+      if (!record || typeof record !== 'object') continue
+      const safe = emptySupplement()
+      for (const key of Object.keys(safe) as (keyof TenantSupplement)[]) {
+        const value: unknown = record[key]
+        if (typeof value === 'string') safe[key] = value
+      }
+      result[id] = safe
+    }
+    return result
+  } catch { return {} }
+}
+function associationLabel(row: TenantRow) {
+  // 只展示接口明确提供的关联字段；不根据实名、订单或合同数量推导。
+  return row.associationStatusLabel?.trim() || row.associationStatus?.trim() || '—'
+}
+
 const defaultCreateForm = () => ({
   tenantKind: 'INDIVIDUAL' as TenantKind,
   name: '',
@@ -81,6 +115,7 @@ export function TenantProfilesPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [q, setQ] = useState('')
+  const [appliedQ, setAppliedQ] = useState('')
   const [tierFilter, setTierFilter] = useState<CreditTier | ''>('')
   const [kindFilter, setKindFilter] = useState<TenantKind | ''>('')
   const [verifiedFilter, setVerifiedFilter] = useState<'' | 'yes' | 'no'>('')
@@ -93,27 +128,45 @@ export function TenantProfilesPage() {
   const [opLogs, setOpLogs] = useState<TenantOpLogRow[]>([])
   const [opLogsLoading, setOpLogsLoading] = useState(false)
   const [opLogsError, setOpLogsError] = useState('')
+  const [supplements, setSupplements] = useState(readTenantSupplements)
+  const [detailRow, setDetailRow] = useState<TenantRow | null>(null)
+  const [editRow, setEditRow] = useState<TenantRow | null>(null)
+  const [editForm, setEditForm] = useState(emptySupplement)
+  const [editError, setEditError] = useState('')
+  const [tierRow, setTierRow] = useState<TenantRow | null>(null)
+  const [tierDraft, setTierDraft] = useState<CreditTier>('A')
 
   async function load() {
     setError('')
-    const r = await apiGet<{ items: TenantRow[] }>('/api/admin/tenants')
-    if (!r.ok) return setError(r.error)
-    setItems(r.data.items ?? [])
+    try {
+      const r = await apiGet<{ items: TenantRow[] }>('/api/admin/tenants')
+      if (!r.ok) return setError(r.error)
+      setItems(r.data.items ?? [])
+      setSupplements(readTenantSupplements())
+    } catch { setError('租客档案加载失败，请重试。') }
   }
 
   useEffect(() => {
-    load()
+    let active = true
+    void apiGet<{ items: TenantRow[] }>('/api/admin/tenants').then((result) => {
+      if (!active) return
+      if (result.ok) setItems(result.data.items ?? [])
+      else setError(result.error)
+    }).catch(() => { if (active) setError('租客档案加载失败，请重试。') })
+    return () => { active = false }
   }, [])
 
   async function saveTier(id: string, creditTier: CreditTier) {
     setError('')
     setSavingId(id)
-    const r = await apiPatch<{ ok: true; item: TenantRow }>(`/api/admin/tenants/${encodeURIComponent(id)}`, {
-      creditTier,
-    })
-    setSavingId(null)
-    if (!r.ok) return setError(r.error)
-    setItems((prev) => prev.map((x) => (x.id === id ? r.data.item : x)))
+    try {
+      const r = await apiPatch<{ ok: true; item: TenantRow }>(`/api/admin/tenants/${encodeURIComponent(id)}`, { creditTier })
+      if (!r.ok) { setError(r.error); return false }
+      setItems((prev) => prev.map((x) => (x.id === id ? { ...x, ...r.data.item } : x)))
+      setMsg('信誉等级已保存到本地 DEMO。')
+      return true
+    } catch { setError('信誉等级保存失败，请重试。'); return false }
+    finally { setSavingId(null) }
   }
 
   function openCreate() {
@@ -162,24 +215,51 @@ export function TenantProfilesPage() {
   }
 
   const filtered = useMemo(() => {
-    const kw = q.trim().toLowerCase()
+    const kw = appliedQ.trim().toLowerCase()
     return items.filter((x) => {
       if (tierFilter && x.creditTier !== tierFilter) return false
       if (kindFilter && x.tenantKind !== kindFilter) return false
       if (verifiedFilter === 'yes' && !x.mobileVerified) return false
       if (verifiedFilter === 'no' && x.mobileVerified) return false
       if (!kw) return true
-      const hay =
-        `${x.name} ${x.phone} ${x.wechat ?? ''} ${x.idNumberMasked} ${x.idDocType} ${x.createdByLabel} ${x.tenantKindLabel}`.toLowerCase()
-      return hay.includes(kw)
+      // 只能匹配接口已返回的展示内容，无法用完整证件号检索已脱敏数据。
+      return [x.name, x.phone, x.idNumberMasked].some((value) => (value || '').toLowerCase() === kw)
     })
-  }, [items, q, tierFilter, kindFilter, verifiedFilter])
+  }, [items, appliedQ, tierFilter, kindFilter, verifiedFilter])
 
   const pageData = useMemo(() => paginate(filtered, page, pageSize), [filtered, page, pageSize])
 
-  useEffect(() => {
-    setPage(1)
-  }, [q, tierFilter, kindFilter, verifiedFilter, pageSize])
+  function query() { setAppliedQ(q); setPage(1) }
+  function resetFilters() {
+    setQ(''); setAppliedQ(''); setTierFilter(''); setKindFilter(''); setVerifiedFilter(''); setPage(1)
+  }
+  function openEdit(row: TenantRow) {
+    setEditRow(row); setEditForm({ ...emptySupplement(), ...supplements[row.id] }); setEditError('')
+  }
+  function saveSupplement() {
+    if (!editRow) return
+    const next = { ...editForm, updatedAt: new Date().toISOString() }
+    for (const key of Object.keys(next) as (keyof TenantSupplement)[]) next[key] = next[key].trim()
+    const records = { ...readTenantSupplements(), [editRow.id]: next }
+    try { localStorage.setItem(TENANT_SUPPLEMENT_KEY, JSON.stringify({ version: 1, records })) }
+    catch { setEditError('本机存储不可用或空间不足，补充资料未保存。请重试。'); return }
+    setSupplements(records); setEditRow(null); setMsg('档案补充资料已保存到本机演示，原档案基本字段未更改。')
+  }
+  function exportTenants() {
+    const cell = (value: unknown) => {
+      const text = String(value ?? '')
+      const safe = /^[=+@-]/.test(text) ? `'${text}` : text
+      return `"${safe.replace(/"/g, '""')}"`
+    }
+    const rows: unknown[][] = [['租客姓名', '手机号', '证件类型', '证件号码（已脱敏）', '信誉等级', '关联状态', '订单数', '合同数', '入档时间', '档案类型', '实名状态', '创建来源']]
+    for (const row of filtered) rows.push([row.name, row.phone, DOC_ZH[row.idDocType] ?? row.idDocType, row.idNumberMasked,
+      row.creditTier, associationLabel(row), row.orderCount, row.contractCount, fmtEntered(row.enteredAt), row.tenantKindLabel, row.mobileVerifiedLabel, row.createdByLabel])
+    const url = URL.createObjectURL(new Blob(['\ufeff' + rows.map((row) => row.map(cell).join(',')).join('\r\n')], { type: 'text/csv;charset=utf-8' }))
+    const link = document.createElement('a'); link.href = url; link.download = '租客列表-当前筛选-脱敏.csv'; link.click(); URL.revokeObjectURL(url)
+    setMsg(`已导出当前筛选的 ${filtered.length} 条租客记录，沿用列表已有脱敏内容。`)
+  }
+  const currentDetail = detailRow ? items.find((row) => row.id === detailRow.id) ?? detailRow : null
+  const currentSupplement = currentDetail ? supplements[currentDetail.id] ?? emptySupplement() : emptySupplement()
 
   const idLabel = createForm.tenantKind === 'ENTERPRISE' ? '统一社会信用代码' : '身份证号'
   const nameLabel = createForm.tenantKind === 'ENTERPRISE' ? '企业名称' : '姓名'
@@ -187,7 +267,7 @@ export function TenantProfilesPage() {
   return (
     <div className="a-col">
       <div className="a-card">
-        <div className="a-h1">租客档案</div>
+        <div className="a-h1">租客列表</div>
         <div className="a-muted" style={{ marginTop: 6 }}>
           记录租客基本信息、实名状态与档案来源。店长可在后台代建档案；租客在移动端下单或实名后也会自动入档。
         </div>
@@ -210,7 +290,9 @@ export function TenantProfilesPage() {
             <input
               className="a-input"
               style={{ minWidth: 220, flex: '1 1 200px' }}
-              placeholder="按姓名、手机、证件、创建人搜索…"
+              placeholder="姓名/手机/已展示证件精确匹配"
+              aria-label="租客精确查询"
+              onKeyDown={(event) => { if (event.key === 'Enter') query() }}
               value={q}
               onChange={(e) => setQ(e.target.value)}
             />
@@ -218,7 +300,7 @@ export function TenantProfilesPage() {
               className="a-input"
               style={{ width: 120 }}
               value={kindFilter}
-              onChange={(e) => setKindFilter((e.target.value || '') as TenantKind | '')}
+              onChange={(e) => { setKindFilter((e.target.value || '') as TenantKind | ''); setPage(1) }}
             >
               <option value="">全部类型</option>
               <option value="INDIVIDUAL">个人</option>
@@ -228,7 +310,7 @@ export function TenantProfilesPage() {
               className="a-input"
               style={{ width: 120 }}
               value={verifiedFilter}
-              onChange={(e) => setVerifiedFilter((e.target.value || '') as '' | 'yes' | 'no')}
+              onChange={(e) => { setVerifiedFilter((e.target.value || '') as '' | 'yes' | 'no'); setPage(1) }}
             >
               <option value="">全部实名</option>
               <option value="yes">已实名</option>
@@ -238,7 +320,7 @@ export function TenantProfilesPage() {
               className="a-input"
               style={{ width: 120 }}
               value={tierFilter}
-              onChange={(e) => setTierFilter((e.target.value || '') as CreditTier | '')}
+              onChange={(e) => { setTierFilter((e.target.value || '') as CreditTier | ''); setPage(1) }}
             >
               <option value="">全部等级</option>
               <option value="A">A</option>
@@ -247,11 +329,16 @@ export function TenantProfilesPage() {
               <option value="D">D</option>
             </select>
           </div>
+          <button type="button" className="a-btn ghost" onClick={query}>查询</button>
+          <button type="button" className="a-btn ghost" onClick={resetFilters}>重置</button>
+          <button type="button" className="a-btn ghost" onClick={() => void load()}>刷新</button>
+          <button type="button" className="a-btn ghost" onClick={exportTenants}>导出</button>
           <button type="button" className="a-btn" onClick={openCreate}>
             新增租客
           </button>
         </div>
 
+        <p className="a-muted" style={{ fontSize: 12 }}>姓名、手机或证件按列表展示内容精确匹配；证件号码已脱敏，不能用未返回的完整证件号查询。关联状态仅显示接口明确字段，未提供时显示“—”。</p>
         <div className="a-table-wrap" style={{ marginTop: 14 }}>
           <table className="a-table a-table-sticky-op" style={{ minWidth: 1280 }}>
             <thead>
@@ -260,9 +347,10 @@ export function TenantProfilesPage() {
                 <th>姓名/企业名</th>
                 <th>手机号</th>
                 <th>证件类型</th>
-                <th>证件号</th>
+                <th>证件号码</th>
                 <th>是否实名</th>
-                <th>信誉度</th>
+                <th>信誉等级</th>
+                <th>关联状态</th>
                 <th>创建来源</th>
                 <th>入档时间</th>
                 <th>订单</th>
@@ -274,7 +362,7 @@ export function TenantProfilesPage() {
             <tbody>
               {pageData.items.length === 0 ? (
                 <tr>
-                  <td colSpan={13} className="a-muted">
+                  <td colSpan={14} className="a-muted">
                     暂无租客档案。可点击「新增租客」代建档案，或等待租客在移动端下单/实名后自动入档。
                   </td>
                 </tr>
@@ -298,6 +386,7 @@ export function TenantProfilesPage() {
                     <td>
                       <span className={`a-tier-badge a-tier-${row.creditTier.toLowerCase()}`}>{row.creditTier}</span>
                     </td>
+                    <td>{associationLabel(row)}</td>
                     <td className="a-muted" style={{ fontSize: 12, whiteSpace: 'nowrap' }} title={row.createdByLabel}>
                       {row.createdByLabel}
                     </td>
@@ -327,9 +416,12 @@ export function TenantProfilesPage() {
                       </div>
                     </td>
                     <td className="a-op-cell">
-                      <button type="button" className="a-btn ghost" onClick={() => void openOpLogModal(row)}>
-                        操作记录
-                      </button>
+                      <div className="a-row" style={{ flexWrap: 'wrap', gap: 6 }}>
+                        <button type="button" className="a-btn ghost" onClick={() => setDetailRow(row)}>详情</button>
+                        <button type="button" className="a-btn ghost" onClick={() => openEdit(row)}>编辑档案</button>
+                        <button type="button" className="a-btn ghost" onClick={() => { setTierRow(row); setTierDraft(row.creditTier); setError('') }}>调整信誉</button>
+                        <button type="button" className="a-btn ghost" onClick={() => void openOpLogModal(row)}>操作记录</button>
+                      </div>
                     </td>
                   </tr>
                 ))
@@ -348,6 +440,38 @@ export function TenantProfilesPage() {
           }}
         />
       </div>
+
+      {currentDetail ? <DemoDialog title={`租客详情 · ${currentDetail.name}`} onClose={() => setDetailRow(null)}>
+        <div className="a-kv">{[
+          ['租客姓名', currentDetail.name], ['手机号', currentDetail.phone], ['证件类型', DOC_ZH[currentDetail.idDocType] ?? currentDetail.idDocType],
+          ['证件号码', currentDetail.idNumberMasked], ['信誉等级', currentDetail.creditTier], ['关联状态', associationLabel(currentDetail)],
+          ['订单数', currentDetail.orderCount], ['合同数', currentDetail.contractCount], ['入档时间', fmtEntered(currentDetail.enteredAt)],
+          ['档案类型', currentDetail.tenantKindLabel], ['实名状态', currentDetail.mobileVerifiedLabel], ['创建来源', currentDetail.createdByLabel],
+          ['租户性质（补充资料）', currentSupplement.nature], ['法定代表人', currentSupplement.legalRepresentative], ['证件地址', currentSupplement.documentAddress],
+          ['联系人', currentSupplement.contact], ['紧急联系人', currentSupplement.emergencyContact], ['紧急联系电话', currentSupplement.emergencyPhone],
+        ].map(([label, value]) => <div className="a-kv-row" key={label}><div className="a-kv-k">{label}</div><div className="a-kv-v">{value === 0 ? 0 : value || '—'}</div></div>)}</div>
+        <p className="a-muted" style={{ fontSize: 12 }}>证件沿用原有脱敏展示。档案补充资料仅保存于本机演示。</p>
+      </DemoDialog> : null}
+      {editRow ? <DemoDialog title={`编辑档案 · ${editRow.name}`} onClose={() => setEditRow(null)}>
+        <form className="a-col" onSubmit={(event) => { event.preventDefault(); saveSupplement() }}>
+          <p className="a-muted">本表为本机演示补充资料，不修改原档案基本字段；无新增必填项。</p>
+          {editError ? <p role="alert" className="a-error">{editError}</p> : null}
+          <label className="a-col">租客姓名<input className="a-filter-input" value={editRow.name} disabled /></label>
+          <label className="a-col">租户性质<select className="a-filter-select" value={editForm.nature} onChange={(event) => setEditForm((previous) => ({ ...previous, nature: event.target.value }))}>
+            <option value="">请选择</option>{editForm.nature ? <option value={editForm.nature}>{editForm.nature}</option> : null}</select></label>
+          <div className="a-muted" style={{ fontSize: 12 }}>开发端租户性质选项待核对，本次仅保留空值或已存值。</div>
+          {([['legalRepresentative', '法定代表人'], ['documentAddress', '证件地址'], ['contact', '联系人'], ['emergencyContact', '紧急联系人'], ['emergencyPhone', '紧急联系电话']] as const).map(([key, label]) =>
+            <label className="a-col" key={key}>{label}<input className="a-filter-input" type={key === 'emergencyPhone' ? 'tel' : 'text'} value={editForm[key]} onChange={(event) => setEditForm((previous) => ({ ...previous, [key]: event.target.value }))} /></label>)}
+          <div className="a-row"><button type="submit" className="a-btn">保存补充资料</button><button type="button" className="a-btn ghost" onClick={() => setEditRow(null)}>取消</button></div>
+        </form>
+      </DemoDialog> : null}
+      {tierRow ? <DemoDialog title={`调整信誉 · ${tierRow.name}`} onClose={() => setTierRow(null)}>
+        <div className="a-col">{error ? <p className="a-error" role="alert">{error}</p> : null}
+          <label className="a-col">信誉等级<select className="a-filter-select" value={tierDraft} onChange={(event) => setTierDraft(event.target.value as CreditTier)}>{(['A', 'B', 'C', 'D'] as CreditTier[]).map((tier) => <option key={tier}>{tier}</option>)}</select></label>
+          <div className="a-row"><button type="button" className="a-btn" disabled={savingId === tierRow.id} onClick={() => { void saveTier(tierRow.id, tierDraft).then((saved) => { if (saved) setTierRow(null) }) }}>{savingId === tierRow.id ? '保存中…' : '保存信誉'}</button>
+            <button type="button" className="a-btn ghost" onClick={() => setTierRow(null)}>取消</button></div>
+        </div>
+      </DemoDialog> : null}
 
       {createOpen ? (
         <div

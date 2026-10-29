@@ -369,7 +369,7 @@ export function TransactionsPage() {
   return (
     <div className="a-col">
       <div className="a-card">
-        <div className="a-h1">交易记录</div>
+        <div className="a-h1">交易记录列表</div>
         <div className="a-muted">
           汇总系统内收款、退款与线下核销流水。<strong>所有角色</strong>每条交易流水收据仅可<strong>导出 1 次</strong>；再次导出须向<strong>财务</strong>申请并说明原因。<strong>财务作废</strong>后，可重新开具收据（作废记录保留在收据详情中）。
         </div>

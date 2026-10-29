@@ -1,3 +1,6 @@
+import { registerWorkbenchRefundRoutes } from './workbenchRefundRoutes.js'
+import { readManualFlow, manualFlowVisibleToTenant, writeManualFlow, preserveManualFlow, manualFlowDto, createManualFlowBills, advanceManualFlow } from './manualContractFlow.js'
+import { signingPriceError, repriceContractTemplateSnapshot, repriceUnpaidBaseBills } from './orderSigningPrice.js'
 import type { Express, Request, RequestHandler } from 'express'
 import type { PrismaClient, Admin, AdminRoleCode, Prisma, TenantCreditTier } from '@prisma/client'
 import bcrypt from 'bcryptjs'
@@ -572,6 +575,10 @@ async function syncContractBaseRentBills(
 
 export function registerRoutes(app: Express, prisma: PrismaClient) {
   const ctx: Ctx = { prisma }
+  registerWorkbenchRefundRoutes(app, prisma, adminAuth(prisma), (req) => {
+    const auth = getAdminAuth(req)
+    return auth.admin.roleCode === 'SYSTEM_ADMIN' ? null : auth.storeIds
+  })
 
   ensureDeptQrPublicDir()
   app.get('/api/public/dept-qr/:fileName', (req, res) => {
@@ -898,10 +905,10 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       include: {
         tenant: true,
         house: { include: { apartment: { include: { store: true } } } },
-        contract: { select: { id: true, status: true, contractNo: true } },
+        contract: { select: { id: true, status: true, contractNo: true, contractTemplateDataJson: true } },
       },
     })
-    if (!order || order.tenant.phone !== phone) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!order || order.tenant.phone !== phone || !manualFlowVisibleToTenant(order.contract?.contractTemplateDataJson)) return res.status(404).json({ error: 'NOT_FOUND' })
     const assetType = order.house.apartment.assetType
     res.json({
       id: order.id,
@@ -1300,10 +1307,11 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         stampedAt: true,
         renewedFromId: true,
         moveOutPendingJson: true,
+        contractTemplateDataJson: true,
       },
     })
     res.json({
-      items: contracts.map((c) => {
+      items: contracts.filter((c) => manualFlowVisibleToTenant(c.contractTemplateDataJson)).map((c) => {
         let moveOutSignDeadlineAt: string | null = null
         if (c.status === 'WAIT_TENANT_MOVEOUT_SIGN' && c.moveOutPendingJson) {
           try {
@@ -1346,6 +1354,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     })
     if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
     if (contract.tenant.phone !== phone) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (!manualFlowVisibleToTenant(contract.contractTemplateDataJson)) return res.status(404).json({ error: 'NOT_FOUND' })
 
     let moveOutSignDeadlineAt: string | null = null
     let moveOutPending: {
@@ -1454,6 +1463,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     })
     if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
     if (contract.tenant.phone !== phone) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (!manualFlowVisibleToTenant(contract.contractTemplateDataJson)) return res.status(404).json({ error: 'NOT_FOUND' })
 
     const list = parseContractAttachmentsJson(contract.attachmentsJson)
     const att = list.find((a) => a.file === fileKey)
@@ -1507,6 +1517,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     })
     if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
     if (contract.tenant.phone !== phone) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (!manualFlowVisibleToTenant(contract.contractTemplateDataJson)) return res.status(404).json({ error: 'NOT_FOUND' })
     if (contract.status !== 'WAIT_TENANT_MOVEOUT_SIGN' || !contract.moveOutPendingJson) {
       return res.status(409).json({ error: 'NO_MOVEOUT_PENDING' })
     }
@@ -1541,6 +1552,8 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     })
     if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
     if (contract.tenant.phone !== phone) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (!manualFlowVisibleToTenant(contract.contractTemplateDataJson)) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (readManualFlow(contract.contractTemplateDataJson)) return res.status(409).json({ error: 'MANUAL_FLOW_USE_DEMO_ACTION' })
     if (contract.status !== 'WAIT_TENANT_SIGN') return res.status(409).json({ error: 'INVALID_STATUS' })
 
     const now = new Date()
@@ -1602,6 +1615,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     })
     if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
     if (contract.tenant.phone !== phone) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (!manualFlowVisibleToTenant(contract.contractTemplateDataJson)) return res.status(404).json({ error: 'NOT_FOUND' })
     if (contract.status !== 'WAIT_TENANT_MOVEOUT_SIGN' || !contract.moveOutPendingJson) {
       return res.status(409).json({ error: 'INVALID_STATUS' })
     }
@@ -1730,6 +1744,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       })
       if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
       if (contract.tenant.phone !== phone) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (!manualFlowVisibleToTenant(contract.contractTemplateDataJson)) return res.status(404).json({ error: 'NOT_FOUND' })
       if (contract.status !== 'WAIT_TENANT_MOVEOUT_SIGN' || !contract.moveOutPendingJson) {
         return res.status(409).json({ error: 'INVALID_STATUS' })
       }
@@ -1757,6 +1772,8 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     })
     if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
     if (contract.tenant.phone !== phone) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (readManualFlow(contract.contractTemplateDataJson)?.mode === 'BILL_ONLY') return res.status(409).json({ error: 'CONTRACT_READ_ONLY' })
+    if (!manualFlowVisibleToTenant(contract.contractTemplateDataJson)) return res.status(404).json({ error: 'NOT_FOUND' })
     if (contract.status === 'VOID' || contract.status === 'TERMINATED') {
       return res.status(409).json({ error: 'CONTRACT_ALREADY_ENDED' })
     }
@@ -1786,6 +1803,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     })
     if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
     if (contract.tenant.phone !== phone) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (!manualFlowVisibleToTenant(contract.contractTemplateDataJson)) return res.status(404).json({ error: 'NOT_FOUND' })
     if (contract.status !== 'PENDING_PAYMENT') return res.status(409).json({ error: 'INVALID_STATUS' })
     if (!contract.stampedAt) return res.status(409).json({ error: 'NOT_STAMPED_YET' })
 
@@ -1920,7 +1938,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     const phone = req.header('x-tenant-phone')
     if (!phone) return res.status(401).json({ error: 'NEED_TENANT_PHONE' })
 
-    const bills = await ctx.prisma.bill.findMany({
+    const billRecords = await ctx.prisma.bill.findMany({
       where: await mobileBillsWhere(ctx.prisma, phone),
       include: {
         contract: {
@@ -1941,6 +1959,8 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       orderBy: { dueDate: 'desc' },
       take: 200,
     })
+
+    const bills = billRecords.filter((bill) => manualFlowVisibleToTenant(bill.contract.contractTemplateDataJson))
 
     const unpaidRows: BillPayOrderRow[] = bills
       .filter((b) => b.status === 'UNPAID' || b.status === 'OVERDUE')
@@ -3001,8 +3021,9 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         bundleLineCount: o.lines.length,
         bundleRentMonthlySum:
           o.isMergedBundle && o.lines.length > 0
-            ? o.lines.reduce((s, l) => s + l.rentMonthlySnapshot, 0)
-            : o.house.rentMonthly,
+            ? o.lines.reduce((sum, line) => sum + line.rentMonthlySnapshot, 0)
+            : o.lines.find((line) => !line.releasedAt && line.houseId === o.houseId)?.rentMonthlySnapshot ?? o.house.rentMonthly,
+        signedPriceLines: o.lines.filter((line) => !line.releasedAt).map((line) => ({ houseId: line.houseId, rentMonthly: line.rentMonthlySnapshot })), 
         tenantId: o.tenantId,
         tenant: {
           name: o.tenant.name,
@@ -3082,8 +3103,9 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       bundleLineCount: o.lines.length,
       bundleRentMonthlySum:
         o.isMergedBundle && o.lines.length > 0
-          ? o.lines.reduce((s, l) => s + l.rentMonthlySnapshot, 0)
-          : o.house.rentMonthly,
+          ? o.lines.reduce((sum, line) => sum + line.rentMonthlySnapshot, 0)
+          : o.lines.find((line) => !line.releasedAt && line.houseId === o.houseId)?.rentMonthlySnapshot ?? o.house.rentMonthly,
+      signedPriceLines: o.lines.filter((line) => !line.releasedAt).map((line) => ({ houseId: line.houseId, rentMonthly: line.rentMonthlySnapshot })), 
       tenantId: o.tenantId,
       tenant: {
         name: o.tenant.name,
@@ -3170,12 +3192,13 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       tenantName: z.string().min(1).max(80).optional(),
       tenantPhone: z.string().min(6).max(20).optional(),
       tenantWechat: z.string().max(80).optional(),
+      signingPrices: z.array(z.object({ houseId: z.string().min(1), rentMonthly: z.number(), minimumRentSnapshot: z.number() })).min(1).max(200).optional(),
     })
     const body = Body.parse(req.body)
 
     const order = await ctx.prisma.order.findUnique({
       where: { id: String(req.params.id) },
-      include: { house: { include: { apartment: true } }, contract: true },
+      include: { house: { include: { apartment: true } }, contract: true, lines: { where: { releasedAt: null }, orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }] } },
     })
     if (!order) return res.status(404).json({ error: 'NOT_FOUND' })
     if (!canAccessStore(auth, order.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
@@ -3194,10 +3217,36 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       return res.status(409).json({ error: 'CONTRACT_EFFECTIVE_ORDER_LOCKED' })
     }
 
+    const expectedHouseIds = order.isMergedBundle && order.lines.length ? order.lines.map((line) => line.houseId) : [order.houseId]
+    if (body.signingPrices) {
+      const priceError = signingPriceError(expectedHouseIds, body.signingPrices)
+      if (priceError) return res.status(400).json({ error: priceError })
+    }
+    const priorPrices = new Map(order.lines.map((line) => [line.houseId, line.rentMonthlySnapshot]))
+    const priceChanged = body.signingPrices?.some((price) => price.rentMonthly !== (priorPrices.get(price.houseId) ?? order.house.rentMonthly)) ?? false
+    const signedTotal = body.signingPrices?.reduce((sum, price) => sum + price.rentMonthly, 0)
     const moveIn = new Date(body.moveInDate)
     const endDate = addMonths(moveIn, body.leaseMonths)
 
+    try {
     await ctx.prisma.$transaction(async (tx) => {
+      // 价格写入前在同一事务重新检查状态及收款，避免覆盖已确认或已收款合同。
+      const current = await tx.order.findUnique({ where: { id: order.id }, include: { contract: true } })
+      if (!current || (current.status !== 'PENDING_REVIEW' && current.status !== 'APPROVED')) throw new Error('ORDER_NOT_EDITABLE_STATUS')
+      if (current.contract?.confirmedAt) throw new Error('TENANT_CONFIRMED_ORDER_LOCKED')
+      if (current.contract && ['ACTIVE', 'TERMINATED', 'VOID'].includes(current.contract.status)) throw new Error('CONTRACT_EFFECTIVE_ORDER_LOCKED')
+      if (priceChanged && current.contract) {
+        const paidBill = await tx.bill.count({ where: { contractId: current.contract.id, OR: [{ amountReceived: { gt: 0 } }, { status: 'PAID' }, { paidAt: { not: null } }] } })
+        const paidPayment = await tx.payment.count({ where: { contractId: current.contract.id, OR: [{ status: 'PAID' }, { paidAt: { not: null } }] } })
+        if (paidBill || paidPayment) throw new Error('ORDER_PRICE_HAS_COLLECTION')
+      }
+      if (body.signingPrices) {
+        for (const price of body.signingPrices) {
+          const line = order.lines.find((item) => item.houseId === price.houseId)
+          if (line) await tx.orderLine.update({ where: { id: line.id }, data: { rentMonthlySnapshot: price.rentMonthly } })
+          else await tx.orderLine.create({ data: { orderId: order.id, houseId: price.houseId, rentMonthlySnapshot: price.rentMonthly, depositSnapshot: order.house.deposit } })
+        }
+      }
       await tx.order.update({
         where: { id: order.id },
         data: { leaseMonths: body.leaseMonths, moveInDate: moveIn },
@@ -3213,11 +3262,19 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         await tx.tenant.update({ where: { id: order.tenantId }, data: tenantData })
       }
       if (order.contract) {
+        if (priceChanged && signedTotal !== undefined) await repriceUnpaidBaseBills(tx, { contractId: order.contract.id, orderId: order.id,
+          startDate: order.contract.startDate, leaseMonths: order.leaseMonths, oldRent: order.contract.rentMonthly,
+          newRent: signedTotal, rentCycle: order.contract.rentCycle, rentDueDay: order.contract.rentDueDay })
         await tx.contract.update({
           where: { id: order.contract.id },
           data: {
             startDate: moveIn,
             endDate,
+            ...(priceChanged && signedTotal !== undefined && body.signingPrices ? {
+              rentMonthly: signedTotal,
+              deposit: Math.round(signedTotal * order.contract.depositMultiple),
+              contractTemplateDataJson: repriceContractTemplateSnapshot(order.contract.contractTemplateDataJson, body.signingPrices),
+            } : {}),
             ...(order.contract.status === 'WAIT_TENANT_SIGN'
               ? {
                   tenantSignDeadlineAt: order.contract.renewedFromId
@@ -3229,6 +3286,11 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         })
       }
     })
+    } catch (error) {
+      const code = error instanceof Error ? error.message : ''
+      if (['ORDER_NOT_EDITABLE_STATUS', 'TENANT_CONFIRMED_ORDER_LOCKED', 'CONTRACT_EFFECTIVE_ORDER_LOCKED', 'ORDER_PRICE_HAS_COLLECTION', 'ORDER_PRICE_BILL_REVIEW_REQUIRED'].includes(code)) return res.status(409).json({ error: code })
+      throw error
+    }
 
     res.json({ ok: true })
   })
@@ -3339,10 +3401,10 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     if (!order) return res.status(404).json({ error: 'NOT_FOUND' })
     if (!canAccessStore(auth, order.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
     if (order.status !== 'APPROVED') return res.status(409).json({ error: 'ORDER_NOT_APPROVED' })
-    if (order.isMergedBundle && order.lines.length > 0) {
-      const sumSnap = order.lines.reduce((s, l) => s + l.rentMonthlySnapshot, 0)
+    if (order.lines.some((line) => !line.releasedAt)) {
+      const sumSnap = order.lines.filter((line) => !line.releasedAt).reduce((sum, line) => sum + line.rentMonthlySnapshot, 0)
       if (sumSnap !== body.rentMonthly) {
-        return res.status(400).json({ error: 'MERGED_RENT_SUM_MISMATCH' })
+        return res.status(400).json({ error: 'ORDER_SIGNING_RENT_MISMATCH' })
       }
     }
     if (order.contract) {
@@ -3417,7 +3479,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
             ? { agreementSignDate: body.agreementSignDate ? new Date(body.agreementSignDate) : null }
             : {}),
           ...(body.contractTemplateDataJson !== undefined
-            ? { contractTemplateDataJson: body.contractTemplateDataJson || null }
+            ? { contractTemplateDataJson: preserveManualFlow(order.contract.contractTemplateDataJson, body.contractTemplateDataJson || null) }
             : {}),
           billPushToTenant,
           billPushStatus: billPushToTenant ? 'PENDING_TENANT' : 'NOT_ENABLED',
@@ -3590,11 +3652,15 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       terminationDaysPastDue: z.union([z.number().int().min(0).max(999), z.null()]).optional(),
       contractTemplateDataJson: z.string().optional(),
       billPushToTenant: z.boolean().optional(),
+      interactionMode: z.enum(['SIGN_AND_PAY', 'BILL_ONLY', 'NONE']).optional(),
+      acknowledgeExistingContracts: z.boolean().optional(),
     })
     const body = Body.parse(req.body)
     const tmplFields = contractTemplateTerminationData(body)
     const deposit = Math.round(body.rentMonthly * body.depositMultiple)
-    const billPushToTenant = tmplFields.contractTemplate === 'NANNING_HOUSING' && Boolean(body.billPushToTenant)
+    const interactionMode = body.interactionMode
+    const billPushToTenant = interactionMode ? false : tmplFields.contractTemplate === 'NANNING_HOUSING' && Boolean(body.billPushToTenant)
+    const initialStage = interactionMode === 'SIGN_AND_PAY' ? 'READY_TO_SEND' : interactionMode === 'BILL_ONLY' ? 'MATERIALS_PENDING' : 'ACTIVE'
 
     const resolvedHouseIds =
       body.houseIds && body.houseIds.length > 0 ? body.houseIds : body.houseId ? [body.houseId] : []
@@ -3607,7 +3673,8 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     if (houses.length !== resolvedHouseIds.length) return res.status(404).json({ error: 'TARGET_NOT_FOUND' })
     for (const h of houses) {
       if (!canAccessStore(auth, h.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
-      if (h.status !== 'VACANT') return res.status(409).json({ error: 'TARGET_NOT_VACANT' })
+      if (h.status !== 'VACANT' && !(interactionMode === 'NONE' && h.status === 'SIGNED')) return res.status(409).json({ error: 'TARGET_NOT_ELIGIBLE_FOR_MODE' })
+      if (h.status === 'SIGNED' && !body.acknowledgeExistingContracts) return res.status(409).json({ error: 'EXISTING_CONTRACT_ACK_REQUIRED' })
     }
     const primaryHouse = houses[0]!
 
@@ -3675,7 +3742,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
           houseId: primaryHouse.id,
           tenantId,
           orderId: order.id,
-          status: 'ACTIVE',
+          status: interactionMode && interactionMode !== 'NONE' ? 'WAIT_TENANT_SIGN' : 'ACTIVE',
           source: 'MANUAL_IMPORT',
           startDate: start,
           endDate: end,
@@ -3689,16 +3756,17 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
           latestRentDueDate: null,
           configRemarkHtml: body.configRemarkHtml === undefined ? null : body.configRemarkHtml,
           agreementSignDate: body.agreementSignDate ? new Date(body.agreementSignDate) : null,
-          contractTemplateDataJson: body.contractTemplateDataJson ?? null,
+          contractTemplateDataJson: interactionMode ? writeManualFlow(body.contractTemplateDataJson, { version: 1, mode: interactionMode, stage: initialStage }) : body.contractTemplateDataJson ?? null,
           billPushToTenant,
           billPushStatus: billPushToTenant ? 'PENDING_TENANT' : 'NOT_ENABLED',
           ...tmplFields,
-          confirmedAt: new Date(),
-          signedAt: new Date(),
-          stampedAt: new Date(),
+          confirmedAt: interactionMode && interactionMode !== 'NONE' ? null : new Date(),
+          signedAt: interactionMode && interactionMode !== 'NONE' ? null : new Date(),
+          stampedAt: interactionMode && interactionMode !== 'NONE' ? null : new Date(),
         },
       })
-      await syncContractBaseRentBills(
+      if (interactionMode === 'NONE') await createManualFlowBills(tx, contract, body.leaseMonths, false)
+      else if (!interactionMode) await syncContractBaseRentBills(
         tx,
         {
           contractId: contract.id,
@@ -3711,9 +3779,9 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         'create',
       )
       for (const h of houses) {
-        await tx.house.update({ where: { id: h.id }, data: { status: 'RESERVED' } })
+        await tx.house.update({ where: { id: h.id }, data: { status: interactionMode === 'NONE' ? 'SIGNED' : 'RESERVED' } })
       }
-      return { contractId: contract.id, contractNo: contract.contractNo, inlineTenantId: inlineTenantCreated ? tenantId : null }
+      return { contractId: contract.id, contractNo: contract.contractNo, status: contract.status, ...manualFlowDto(contract.contractTemplateDataJson, contract.status), inlineTenantId: inlineTenantCreated ? tenantId : null }
     })
 
     if (out.inlineTenantId) {
@@ -3729,6 +3797,29 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     await applyBillPushForContract(ctx.prisma, out.contractId)
 
     res.json({ ok: true, ...out })
+  })
+
+  /** 本地原型三种交互模式的流程演示；不调用契约锁、短信或支付服务。 */
+  app.post('/api/admin/contracts/:id/manual-flow', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const parsed = z.object({ action: z.enum(['PUSH_SIGNATURE', 'COMPLETE_MATERIALS', 'SIMULATE_SIGNED', 'SIMULATE_PAID']) }).safeParse(req.body)
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID_BODY' })
+    const contract = await ctx.prisma.contract.findUnique({ where: { id: String(req.params.id) }, include: { house: { include: { apartment: true } } } })
+    if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, contract.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (parsed.data.action === 'COMPLETE_MATERIALS') {
+      const files = parseContractAttachmentsJson(contract.attachmentsJson)
+      if (!files.length || files.some((file) => !fs.existsSync(path.join(CONTRACT_UPLOAD_ROOT, contract.id, file.file)))) return res.status(409).json({ error: 'SIGNED_CONTRACT_ATTACHMENT_REQUIRED' })
+    }
+    try {
+      const result = await advanceManualFlow(ctx.prisma, contract.id, parsed.data.action)
+      if (parsed.data.action === 'COMPLETE_MATERIALS' || parsed.data.action === 'SIMULATE_SIGNED') await applyBillPushForContract(ctx.prisma, contract.id)
+      return res.json(result)
+    } catch (error) {
+      const code = error instanceof Error ? error.message : ''
+      if (code === 'NOT_FOUND' || code.startsWith('MANUAL_FLOW_') || code === 'SIGNED_CONTRACT_ATTACHMENT_REQUIRED') return res.status(409).json({ error: code })
+      throw error
+    }
   })
 
   app.get('/api/admin/contracts', adminAuth(ctx.prisma), async (req, res) => {
@@ -3826,6 +3917,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
           contractNo: c.contractNo,
           status: c.status,
           source: c.source,
+          ...manualFlowDto(c.contractTemplateDataJson, c.status),
           // 用于列表展示「到期预警」
           endDate: toYmd(c.endDate),
           tenant: { name: c.tenant.name, phone: c.tenant.phone },
@@ -3939,6 +4031,10 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         house: { include: { apartment: { include: { store: true } } } },
         housingReport: true,
         refunds: { orderBy: { createdAt: 'desc' } },
+        bills: {
+          orderBy: [{ dueDate: 'asc' }, { period: 'asc' }],
+          include: { items: { orderBy: { createdAt: 'asc' } } },
+        },
         renewedFrom: { select: { id: true, contractNo: true } },
         changeHouseFrom: { select: { id: true, contractNo: true } },
         order: {
@@ -4028,6 +4124,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       contractNo: contract.contractNo,
       status: contract.status,
       source: contract.source,
+      ...manualFlowDto(contract.contractTemplateDataJson, contract.status),
       tenant: {
         name: contract.tenant.name,
         phone: contract.tenant.phone,
@@ -4101,6 +4198,19 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       billPushToTenant: contract.billPushToTenant,
       billPushStatus: contract.billPushToTenant ? contract.billPushStatus : null,
       billPushStatusLabel: contract.billPushToTenant ? billPushStatusLabel(contract.billPushStatus) : null,
+      bills: contract.bills.map((b) => ({
+        id: b.id,
+        period: b.period,
+        kind: b.kind,
+        dueDate: toYmd(b.dueDate),
+        paidAt: b.paidAt ? b.paidAt.toISOString() : null,
+        totalAmount: b.totalAmount,
+        amountReceived: b.amountReceived,
+        amountRemaining: Math.max(0, b.totalAmount - b.amountReceived),
+        status: b.status,
+        billingRemark: b.billingRemark ?? null,
+        items: billItemsToApi(b.items),
+      })),
     })
   })
 
