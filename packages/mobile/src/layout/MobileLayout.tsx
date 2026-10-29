@@ -33,6 +33,7 @@ export function MobileLayout({ children }: { children: ReactNode }) {
   else if (loc.pathname.startsWith('/me/sublets/')) title = '转租详情'
   else if (loc.pathname.startsWith('/me/sublets')) title = '转租申请'
   else if (loc.pathname.startsWith('/me/verify')) title = '实名认证'
+  else if (/^\/bills\/[^/]+\/receipt$/.test(loc.pathname)) title = '收款收据'
   else if (isBills) title = '我的账单'
   else if (loc.pathname.startsWith('/ledger-pay/')) title = '扫码付款'
   else if (loc.pathname.startsWith('/order/')) title = '在线下单'

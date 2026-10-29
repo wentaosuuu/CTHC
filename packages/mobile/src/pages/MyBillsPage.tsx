@@ -559,16 +559,18 @@ function buildDemoMergedBillsOnly(): MyBillSummary[] {
   const mergedBaseTotal = buildMergedDemoBaseLineItems().totalAmount
   const items: MyBillSummary[] = []
 
-  for (let i = 0; i < 6; i += 1) {
+  // 含当前月前 2 个已支付账期（可查看收据）+ 当前起 6 个待支付账期
+  for (let i = -2; i < 6; i += 1) {
     const monthStart = addMonths(start, i)
     const period = fmtPeriod(monthStart)
     const dueDate = new Date(monthStart.getFullYear(), monthStart.getMonth(), 8)
+    const paid = i < 0
     items.push({
       id: `DEMO-BILL-MRG-${period}-BASE`,
       period,
       dueDate: fmtYmd(dueDate),
       totalAmount: mergedBaseTotal,
-      status: 'UNPAID',
+      status: paid ? 'PAID' : 'UNPAID',
       kind: 'BASE',
       contractId: mergedContractId,
       contractNo: mergedContractNo,
@@ -637,16 +639,17 @@ function buildDemoBills(): MyBillSummary[] {
 
   const items: MyBillSummary[] = []
 
-  for (let i = 0; i < 12; i += 1) {
+  for (let i = -2; i < 12; i += 1) {
     const monthStart = addMonths(start, i)
     const period = fmtPeriod(monthStart)
     const dueDate = new Date(monthStart.getFullYear(), monthStart.getMonth(), 5)
+    const paid = i < 0
     items.push({
       id: `DEMO-BILL-${period}-BASE`,
       period,
       dueDate: fmtYmd(dueDate),
       totalAmount: rentMonthly,
-      status: 'UNPAID',
+      status: paid ? 'PAID' : 'UNPAID',
       kind: 'BASE',
       contractId,
       contractNo,

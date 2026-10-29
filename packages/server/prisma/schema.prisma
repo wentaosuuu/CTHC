@@ -220,6 +220,8 @@ model House {
   waterMeterNosJson     String @default("[]")
   /// 电表号列表 JSON：["EL-001"]
   electricMeterNosJson  String @default("[]")
+  /// 燃气表号列表 JSON：["GS-001"]，与账单导入联动
+  gasMeterNosJson       String @default("[]")
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
 

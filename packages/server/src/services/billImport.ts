@@ -15,11 +15,12 @@ export const BILL_IMPORT_FEE_KEYS = [
   '其他费用',
 ] as const
 
-/** 表头顺序：合同号、水表号、电表号、账期、到期日、各费用列、账单备注 */
+/** 表头顺序：合同号、水表号、电表号、燃气表号、账期、到期日、各费用列、账单备注 */
 export const BILL_IMPORT_TEMPLATE_HEADERS = [
   '合同号',
   '水表号',
   '电表号',
+  '燃气表号',
   '账期',
   '到期日',
   ...BILL_IMPORT_FEE_KEYS,
@@ -40,8 +41,9 @@ export function buildBillImportTemplateBuffer(): Buffer {
   const wb = XLSX.utils.book_new()
   const wsData = [
     BILL_IMPORT_TEMPLATE_HEADERS,
-    ['C202619751738', '', '', '2026-05-01', '2026-05-01', 5000, 50, 120, 80, 20, 30, 0, 0, 0, 15, '示例：可填公摊维修等'],
-    ['', 'WS-DEMO-001', '', '2026-05-01', '2026-05-01', 0, 50, 120, 0, 0, 0, 0, 0, 0, 0, '用水表号关联合同（合同号可留空）'],
+    ['C202619751738', '', '', '', '2026-05-01', '2026-05-01', 5000, 50, 120, 80, 20, 30, 0, 0, 0, 15, '示例：可填公摊维修等'],
+    ['', 'WS-DEMO-001', '', '', '2026-05-01', '2026-05-01', 0, 50, 120, 0, 0, 0, 0, 0, 0, 0, '用水表号关联合同（合同号可留空）'],
+    ['', '', '', 'GS-DEMO-001', '2026-05-01', '2026-05-01', 0, 0, 0, 0, 0, 0, 36, 0, 0, 0, '用燃气表号关联合同（合同号可留空）'],
   ]
   const ws = XLSX.utils.aoa_to_sheet(wsData)
   XLSX.utils.book_append_sheet(wb, ws, '账单导入')
@@ -53,11 +55,19 @@ type ImportRow = {
   contractNo: string
   waterMeterNo: string
   electricMeterNo: string
+  gasMeterNo: string
   period: string
   dueDate: string
   items: { name: string; amount: number }[]
   totalAmount: number
   billingRemark: string | null
+}
+
+export type MeterMatchQuery = {
+  contractNo?: string
+  waterMeterNo?: string
+  electricMeterNo?: string
+  gasMeterNo?: string
 }
 
 function parseCellAmount(val: unknown): number {
@@ -68,27 +78,60 @@ function parseCellAmount(val: unknown): number {
   return Number.isFinite(n) ? Math.round(n) : 0
 }
 
-function parseRow(row: unknown[]): ImportRow | null {
-  const contractNo = String(row[0] ?? '').trim()
-  const waterMeterNo = String(row[1] ?? '').trim()
-  const electricMeterNo = String(row[2] ?? '').trim()
-  const period = String(row[3] ?? '').trim()
-  const dueDate = String(row[4] ?? '').trim()
-  const remarkCol = 5 + BILL_IMPORT_FEE_KEYS.length
-  const billingRemarkRaw = String(row[remarkCol] ?? '').trim()
+type ImportColumns = {
+  contractNo: number
+  water: number
+  electric: number
+  gas: number
+  period: number
+  due: number
+  fees: number[]
+  remark: number
+}
+
+function resolveImportColumns(headerRow: unknown[]): ImportColumns {
+  const headers = headerRow.map((cell) => String(cell ?? '').trim())
+  const at = (name: string) => headers.indexOf(name)
+  const hasGas = at('燃气表号') >= 0
+  const feeStart = at('租金') >= 0 ? at('租金') : hasGas ? 6 : 5
+  return {
+    contractNo: at('合同号') >= 0 ? at('合同号') : 0,
+    water: at('水表号') >= 0 ? at('水表号') : 1,
+    electric: at('电表号') >= 0 ? at('电表号') : 2,
+    gas: hasGas ? at('燃气表号') : -1,
+    period: at('账期') >= 0 ? at('账期') : hasGas ? 4 : 3,
+    due: at('到期日') >= 0 ? at('到期日') : hasGas ? 5 : 4,
+    fees: BILL_IMPORT_FEE_KEYS.map((name, index) => (at(name) >= 0 ? at(name) : feeStart + index)),
+    remark: at('账单备注') >= 0 ? at('账单备注') : feeStart + BILL_IMPORT_FEE_KEYS.length,
+  }
+}
+
+function cellText(row: unknown[], index: number) {
+  if (index < 0) return ''
+  return String(row[index] ?? '').trim()
+}
+
+function parseRow(row: unknown[], columns: ImportColumns): ImportRow | null {
+  const contractNo = cellText(row, columns.contractNo)
+  const waterMeterNo = cellText(row, columns.water)
+  const electricMeterNo = cellText(row, columns.electric)
+  const gasMeterNo = cellText(row, columns.gas)
+  const period = cellText(row, columns.period)
+  const dueDate = cellText(row, columns.due)
+  const billingRemarkRaw = cellText(row, columns.remark)
   const billingRemark = billingRemarkRaw ? billingRemarkRaw.slice(0, 500) : null
   if (!period || !dueDate) return null
   if (!/^\d{4}-\d{2}(-\d{2})?$/.test(period)) return null
-  if (!contractNo && !waterMeterNo && !electricMeterNo) return null
+  if (!contractNo && !waterMeterNo && !electricMeterNo && !gasMeterNo) return null
   const items: { name: string; amount: number }[] = []
   for (let i = 0; i < BILL_IMPORT_FEE_KEYS.length; i++) {
-    const amount = parseCellAmount(row[5 + i])
+    const amount = parseCellAmount(row[columns.fees[i] ?? -1])
     if (amount !== 0) items.push({ name: BILL_IMPORT_FEE_KEYS[i], amount })
   }
   if (items.length === 0) return null
   const totalAmount = items.reduce((s, it) => s + it.amount, 0)
   if (totalAmount === 0) return null
-  return { contractNo, waterMeterNo, electricMeterNo, period, dueDate, items, totalAmount, billingRemark }
+  return { contractNo, waterMeterNo, electricMeterNo, gasMeterNo, period, dueDate, items, totalAmount, billingRemark }
 }
 
 async function appendBillLinesAndRecalcTotal(
@@ -114,78 +157,89 @@ async function appendBillLinesAndRecalcTotal(
   })
 }
 
+function meterLabel(water: string, electric: string, gas: string) {
+  return `水=${water || '—'} 电=${electric || '—'} 燃气=${gas || '—'}`
+}
+
 function houseMatchesMeters(
-  h: { waterMeterNosJson: string; electricMeterNosJson: string },
+  h: { waterMeterNosJson: string; electricMeterNosJson: string; gasMeterNosJson: string },
   water: string,
   electric: string,
+  gas: string,
 ): boolean {
   const w = water.trim()
   const e = electric.trim()
-  if (!w && !e) return false
+  const g = gas.trim()
+  if (!w && !e && !g) return false
   const wList = parseMeterNoListJson(h.waterMeterNosJson)
   const eList = parseMeterNoListJson(h.electricMeterNosJson)
+  const gList = parseMeterNoListJson(h.gasMeterNosJson)
   if (w && !wList.includes(w)) return false
   if (e && !eList.includes(e)) return false
+  if (g && !gList.includes(g)) return false
   return true
 }
 
-async function resolveContractForImportRow(
+const contractInclude = {
+  house: { include: { apartment: { include: { store: true } } } },
+  tenant: true,
+} satisfies Prisma.ContractInclude
+
+export async function resolveContractForMeterMatch(
   prisma: PrismaClient,
-  row: ImportRow,
+  query: MeterMatchQuery,
   canAccessStore: (storeId: string) => boolean,
 ): Promise<
   | {
       ok: true
-      contract: {
-        id: string
-        contractNo: string
-        billingPausedAt: Date | null
-        billingResumeFrom: Date | null
-        house: { apartment: { storeId: string } }
-      }
+      contract: Prisma.ContractGetPayload<{ include: typeof contractInclude }>
     }
   | { ok: false; error: string }
 > {
-  if (row.contractNo) {
+  const waterMeterNo = (query.waterMeterNo ?? '').trim()
+  const electricMeterNo = (query.electricMeterNo ?? '').trim()
+  const gasMeterNo = (query.gasMeterNo ?? '').trim()
+  const contractNo = (query.contractNo ?? '').trim()
+  const hasMeter = Boolean(waterMeterNo || electricMeterNo || gasMeterNo)
+
+  if (contractNo) {
     const contract = await prisma.contract.findFirst({
-      where: { contractNo: row.contractNo },
-      include: { house: { include: { apartment: { include: { store: true } } } } },
+      where: { contractNo },
+      include: contractInclude,
     })
-    if (!contract) return { ok: false, error: `未找到合同号 ${row.contractNo}` }
+    if (!contract) return { ok: false, error: `未找到合同号 ${contractNo}` }
     if (!canAccessStore(contract.house.apartment.storeId)) return { ok: false, error: '无权限操作该合同' }
-    if (row.waterMeterNo || row.electricMeterNo) {
-      const h = contract.house
-      if (!houseMatchesMeters(h, row.waterMeterNo, row.electricMeterNo)) {
-        return { ok: false, error: `合同号与表号不一致：请核对水/电表号是否属于该房源` }
-      }
+    if (hasMeter && !houseMatchesMeters(contract.house, waterMeterNo, electricMeterNo, gasMeterNo)) {
+      return { ok: false, error: '合同号与表号不一致：请核对水表号、电表号、燃气表号是否属于该房源' }
     }
     return { ok: true, contract }
   }
 
-  const w = row.waterMeterNo.trim()
-  const e = row.electricMeterNo.trim()
-  if (!w && !e) return { ok: false, error: '合同号与水表号、电表号不能同时为空' }
+  if (!hasMeter) return { ok: false, error: '合同号与水表号、电表号、燃气表号不能同时为空' }
 
   const houses = await prisma.house.findMany({
     include: { apartment: { include: { store: true } } },
     take: 4000,
   })
   const matched = houses.filter(
-    (h) => canAccessStore(h.apartment.storeId) && houseMatchesMeters(h, row.waterMeterNo, row.electricMeterNo),
+    (h) => canAccessStore(h.apartment.storeId) && houseMatchesMeters(h, waterMeterNo, electricMeterNo, gasMeterNo),
   )
   if (matched.length === 0) {
-    return { ok: false, error: `未找到匹配水/电表号的资产（水=${w || '—'} 电=${e || '—'}）` }
+    return { ok: false, error: `未找到匹配表号的资产（${meterLabel(waterMeterNo, electricMeterNo, gasMeterNo)}）` }
   }
   if (matched.length > 1) {
-    return { ok: false, error: `水/电表号匹配到多套资产（${matched.length} 套），请改用合同号导入或调整表号唯一性` }
+    return {
+      ok: false,
+      error: `表号匹配到多套资产（${matched.length} 套），请改用合同号导入，或保证水/电/燃气表号只对应一套资产`,
+    }
   }
   const houseId = matched[0]!.id
   const contract = await prisma.contract.findFirst({
     where: { houseId, status: 'ACTIVE' },
-    include: { house: { include: { apartment: { include: { store: true } } } } },
+    include: contractInclude,
     orderBy: { createdAt: 'desc' },
   })
-  if (!contract) return { ok: false, error: '匹配到资产但该房源无「已生效」合同，无法用表号导入账单' }
+  if (!contract) return { ok: false, error: '匹配到资产但该房源无「已生效」合同，无法用表号导入账单给租户' }
   return { ok: true, contract }
 }
 
@@ -200,13 +254,14 @@ export async function parseAndImportBills(
   const rows = XLSX.utils.sheet_to_json<unknown[]>(firstSheet, { header: 1, defval: '' })
   if (rows.length < 2) return { created: 0, errors: ['请至少保留表头与一行数据'] }
   const dataRows = rows.slice(1) as unknown[][]
+  const columns = resolveImportColumns((rows[0] ?? []) as unknown[])
   const errors: string[] = []
   let created = 0
   for (let i = 0; i < dataRows.length; i++) {
-    const row = parseRow(dataRows[i])
+    const row = parseRow(dataRows[i], columns)
     if (!row) continue
 
-    const resolved = await resolveContractForImportRow(prisma, row, canAccessStore)
+    const resolved = await resolveContractForMeterMatch(prisma, row, canAccessStore)
     if (!resolved.ok) {
       errors.push(`第 ${i + 2} 行：${resolved.error}`)
       continue

@@ -91,6 +91,7 @@ type HouseItem = {
   houseConfig?: { label: string; on: boolean }[]
   waterMeterNos?: string[]
   electricMeterNos?: string[]
+  gasMeterNos?: string[]
   nearbySubway?: { name: string; distanceMeters?: number }[]
   nearbySchools?: { name: string; type?: string; distanceMeters?: number }[]
   nearbyBusStops?: { name: string; routes: string[] }[]
@@ -534,7 +535,6 @@ export function HousesPage() {
 
   function openConfigModal(h: HouseItem) {
     setConfigTarget(h)
-    setConfigSupplement(readAssetSupplement(h.id, h.storeName))
     setConfigRentMonthly(displayRent(h))
     setConfigImages(h.images)
     setConfigImgIndex(0)
@@ -562,8 +562,14 @@ export function HousesPage() {
     setConfigMgmtDepartment((h.mgmtDepartment ?? '').trim() || DEFAULT_MGMT_DEPARTMENT)
     const wm = (h.waterMeterNos ?? []).map((x) => String(x).trim()).filter(Boolean)
     const em = (h.electricMeterNos ?? []).map((x) => String(x).trim()).filter(Boolean)
+    const gm = (h.gasMeterNos ?? []).map((x) => String(x).trim()).filter(Boolean)
     setConfigWaterMeters(wm.length ? wm : [''])
     setConfigElectricMeters(em.length ? em : [''])
+    const localGas = readAssetSupplement(h.id, h.storeName).gasMeterNo
+    setConfigSupplement({
+      ...readAssetSupplement(h.id, h.storeName),
+      gasMeterNo: gm.length ? gm.join('\n') : localGas,
+    })
     setConfigHouseConfig(mergeHouseConfigWithPresets(h.houseConfig))
     setNewHouseTag('')
     setError('')
@@ -669,7 +675,9 @@ export function HousesPage() {
         externalBrowseUrl: configExternalBrowseUrl.trim(), houseConfig: serializeHouseConfigForApi(configHouseConfig),
         projectName: configProjectName.trim(), assetType: configAssetType.trim(), rentCollectionUnit: configRentCollectionUnit.trim(),
         managerName: configManagerName.trim(), mgmtDepartment: configMgmtDepartment.trim(),
-        waterMeterNos: configWaterMeters.map((text) => text.trim()).filter(Boolean), electricMeterNos: configElectricMeters.map((text) => text.trim()).filter(Boolean),
+        waterMeterNos: configWaterMeters.map((text) => text.trim()).filter(Boolean),
+        electricMeterNos: configElectricMeters.map((text) => text.trim()).filter(Boolean),
+        gasMeterNos: configSupplement.gasMeterNo.split(/[\n,，、]/).map((text) => text.trim()).filter(Boolean),
       })
       if (!r.ok) { setError(r.error); return }
       try {
@@ -1142,7 +1150,7 @@ export function HousesPage() {
                     { k: '房屋配置', v: formatHouseConfigSummary(detail.houseConfig) },
                     { k: '坐落', v: (detail.address ?? '').trim() || '—' },
                     { k: '权属单位', v: readAssetSupplement(detail.id, detail.storeName).ownerName || '—' },
-                    { k: '燃气表号', v: readAssetSupplement(detail.id, detail.storeName).gasMeterNo || '—' },
+                    { k: '燃气表号', v: (detail.gasMeterNos ?? []).filter(Boolean).join('、') || readAssetSupplement(detail.id, detail.storeName).gasMeterNo || '—' },
                     { k: '是否可出租', v: readAssetSupplement(detail.id, detail.storeName).rentable ? '可出租' : '不可出租' },
                     { k: '地图坐标', v: formatGeoText(detail) },
                     { k: '附近地铁', v: formatNearbySubway(detail) },

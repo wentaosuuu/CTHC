@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useParams, useSearchParams } from 'react-router-dom'
+import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { apiGet, apiPost, getTenantPhone, type MyBillDetail } from '../api'
 import { shortPayBlockedHint } from '../billPayHint'
-import { buildMergedDemoBaseLineItems } from '../mergedDemoBill'
+import { buildMergedDemoBaseLineItems, demoPeriodHasReceipt } from '../mergedDemoBill'
 
 export function BillDetailPage() {
   const { id } = useParams()
@@ -141,6 +141,16 @@ export function BillDetailPage() {
               <div>{new Date(data.createdAt).toLocaleString()}</div>
               <div className="m-k">支付时间</div>
               <div>{data.paidAt ? new Date(data.paidAt).toLocaleString() : '-'}</div>
+              {data.receipt?.available ? (
+                <>
+                  <div className="m-k">收据</div>
+                  <div>
+                    <Link className="m-text-link" to={`/bills/${encodeURIComponent(data.id)}/receipt`}>
+                      查看收据
+                    </Link>
+                  </div>
+                </>
+              ) : null}
             </div>
           </div>
 
@@ -245,14 +255,20 @@ export function BillDetailPage() {
           ) : null}
 
           <div ref={paySectionRef}>
-          <button
-            className="m-btn m-btn-block"
-            type="button"
-            onClick={pay}
-            disabled={loading || !canPayOnline(data)}
-          >
-            {canPayOnline(data) ? '立即支付' : data.payBlockedReason ? '请先结清旧欠' : '无需支付'}
-          </button>
+            {data.receipt?.available ? (
+              <Link className="m-btn m-btn-block" to={`/bills/${encodeURIComponent(data.id)}/receipt`}>
+                查看收据
+              </Link>
+            ) : (
+              <button
+                className="m-btn m-btn-block"
+                type="button"
+                onClick={pay}
+                disabled={loading || !canPayOnline(data)}
+              >
+                {canPayOnline(data) ? '立即支付' : data.payBlockedReason ? '请先结清旧欠' : '无需支付'}
+              </button>
+            )}
           </div>
         </>
       ) : null}
@@ -344,6 +360,21 @@ function buildDisplayItems(
   return result
 }
 
+function applyDemoPaidReceipt(
+  detail: MyBillDetail,
+  period: string,
+  paidDay: number,
+): MyBillDetail {
+  if (!demoPeriodHasReceipt(period)) return detail
+  const [yy, mm] = period.split('-').map((x) => parseInt(x, 10))
+  return {
+    ...detail,
+    status: 'PAID',
+    paidAt: new Date(yy, mm - 1, paidDay, 10, 28, 0).toISOString(),
+    receipt: { available: true, count: 1 },
+  }
+}
+
 function buildDemoBillDetail(id: string): MyBillDetail {
   const mergedUnits: { apartmentName: string; houseNo: string }[] = [
     { apartmentName: '江南·梧桐公寓', houseNo: '624' },
@@ -368,13 +399,44 @@ function buildDemoBillDetail(id: string): MyBillDetail {
       const elec = 74
       const property = 44
       const total = water + elec + property
-      return {
+      return applyDemoPaidReceipt(
+        {
+          id,
+          period,
+          dueDate: `${yy}-${String(mm).padStart(2, '0')}-22`,
+          totalAmount: total,
+          status: 'UNPAID',
+          kind: 'ADJUSTMENT',
+          paidAt: null,
+          contractId,
+          contractNo,
+          apartmentName,
+          houseNo,
+          storeName,
+          tenantName,
+          tenantPhone,
+          createdAt: new Date().toISOString(),
+          mergedUnits,
+          items: [
+            { name: '水费', amount: water },
+            { name: '电费', amount: elec },
+            { name: '物业费', amount: property },
+          ],
+        },
+        period,
+        6,
+      )
+    }
+
+    const { items: mergedItems, totalAmount: mergedBaseTotal } = buildMergedDemoBaseLineItems()
+    return applyDemoPaidReceipt(
+      {
         id,
         period,
-        dueDate: `${yy}-${String(mm).padStart(2, '0')}-22`,
-        totalAmount: total,
+        dueDate: `${yy}-${String(mm).padStart(2, '0')}-08`,
+        totalAmount: mergedBaseTotal,
         status: 'UNPAID',
-        kind: 'ADJUSTMENT',
+        kind: 'BASE',
         paidAt: null,
         contractId,
         contractNo,
@@ -385,34 +447,11 @@ function buildDemoBillDetail(id: string): MyBillDetail {
         tenantPhone,
         createdAt: new Date().toISOString(),
         mergedUnits,
-        items: [
-          { name: '水费', amount: water },
-          { name: '电费', amount: elec },
-          { name: '物业费', amount: property },
-        ],
-      }
-    }
-
-    const { items: mergedItems, totalAmount: mergedBaseTotal } = buildMergedDemoBaseLineItems()
-    return {
-      id,
+        items: mergedItems,
+      },
       period,
-      dueDate: `${yy}-${String(mm).padStart(2, '0')}-08`,
-      totalAmount: mergedBaseTotal,
-      status: 'UNPAID',
-      kind: 'BASE',
-      paidAt: null,
-      contractId,
-      contractNo,
-      apartmentName,
-      houseNo,
-      storeName,
-      tenantName,
-      tenantPhone,
-      createdAt: new Date().toISOString(),
-      mergedUnits,
-      items: mergedItems,
-    }
+      6,
+    )
   }
 
   const m = /^DEMO-BILL-(\d{4}-\d{2})-(BASE|ADJ)$/.exec(id)
@@ -435,28 +474,32 @@ function buildDemoBillDetail(id: string): MyBillDetail {
     const elec = 92
     const property = 62
     const total = water + elec + property
-    return {
-      id,
+    return applyDemoPaidReceipt(
+      {
+        id,
+        period,
+        dueDate: `${yy}-${String(mm).padStart(2, '0')}-20`,
+        totalAmount: total,
+        status: 'UNPAID',
+        kind: 'ADJUSTMENT',
+        paidAt: null,
+        contractId,
+        contractNo,
+        apartmentName,
+        houseNo,
+        storeName,
+        tenantName,
+        tenantPhone,
+        createdAt: new Date().toISOString(),
+        items: [
+          { name: '水费', amount: water },
+          { name: '电费', amount: elec },
+          { name: '物业费', amount: property },
+        ],
+      },
       period,
-      dueDate: `${yy}-${String(mm).padStart(2, '0')}-20`,
-      totalAmount: total,
-      status: 'UNPAID',
-      kind: 'ADJUSTMENT',
-      paidAt: null,
-      contractId,
-      contractNo,
-      apartmentName,
-      houseNo,
-      storeName,
-      tenantName,
-      tenantPhone,
-      createdAt: new Date().toISOString(),
-      items: [
-        { name: '水费', amount: water },
-        { name: '电费', amount: elec },
-        { name: '物业费', amount: property },
-      ],
-    }
+      4,
+    )
   }
 
   const rentMonthly = 4200
@@ -470,40 +513,44 @@ function buildDemoBillDetail(id: string): MyBillDetail {
   const late = 0
   const baseTotal =
     rentMonthly + water + elec + property + garbage + sharedElec + gas + net + late
-  return {
-    id,
+  return applyDemoPaidReceipt(
+    {
+      id,
+      period,
+      dueDate,
+      totalAmount: baseTotal,
+      status: 'UNPAID',
+      kind: 'BASE',
+      paidAt: null,
+      contractId,
+      contractNo,
+      apartmentName,
+      houseNo,
+      storeName,
+      tenantName,
+      tenantPhone,
+      createdAt: new Date().toISOString(),
+      items: [
+        {
+          name: `月账单（${period}）`,
+          amount: baseTotal,
+          breakdown: [
+            { label: '月租', amount: rentMonthly },
+            { label: '水费', amount: water },
+            { label: '电费', amount: elec },
+            { label: '物业费', amount: property },
+            { label: '垃圾处理费', amount: garbage },
+            { label: '公摊电费', amount: sharedElec },
+            { label: '燃气费', amount: gas },
+            { label: '网络费', amount: net },
+            ...(late > 0 ? [{ label: '滞纳金' as const, amount: late }] : []),
+          ],
+        },
+      ],
+    },
     period,
-    dueDate,
-    totalAmount: baseTotal,
-    status: 'UNPAID',
-    kind: 'BASE',
-    paidAt: null,
-    contractId,
-    contractNo,
-    apartmentName,
-    houseNo,
-    storeName,
-    tenantName,
-    tenantPhone,
-    createdAt: new Date().toISOString(),
-    items: [
-      {
-        name: `月账单（${period}）`,
-        amount: baseTotal,
-        breakdown: [
-          { label: '月租', amount: rentMonthly },
-          { label: '水费', amount: water },
-          { label: '电费', amount: elec },
-          { label: '物业费', amount: property },
-          { label: '垃圾处理费', amount: garbage },
-          { label: '公摊电费', amount: sharedElec },
-          { label: '燃气费', amount: gas },
-          { label: '网络费', amount: net },
-          ...(late > 0 ? [{ label: '滞纳金' as const, amount: late }] : []),
-        ],
-      },
-    ],
-  }
+    4,
+  )
 }
 
 

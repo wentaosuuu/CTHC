@@ -184,3 +184,54 @@ export async function printTransactionReceipts(
 
   return results
 }
+
+/** 账单关联的交易流水 ID：线上整笔支付 bill_xxx；线下核销 offlog_xxx */
+export async function listTransactionIdsForBill(prisma: PrismaClient, billId: string) {
+  const offlineLogs = await prisma.billOfflineVerifyLog.findMany({
+    where: { billId },
+    select: { id: true },
+    orderBy: { createdAt: 'desc' },
+  })
+  return [`bill_${billId}`, ...offlineLogs.map((l) => `offlog_${l.id}`)]
+}
+
+export type TenantVisibleReceipt = {
+  transactionId: string
+  receiptKind: ReceiptKind | null
+  printedAt: string | null
+}
+
+/** 租户可见：后台已导出且未作废的收据 */
+export async function listTenantVisibleReceiptsForBill(
+  prisma: PrismaClient,
+  billId: string,
+): Promise<TenantVisibleReceipt[]> {
+  const txIds = await listTransactionIdsForBill(prisma, billId)
+  const rows = await prisma.transactionReceipt.findMany({
+    where: {
+      transactionId: { in: txIds },
+      printCount: { gte: 1 },
+      status: 'ACTIVE',
+    },
+  })
+  const order = new Map(txIds.map((id, i) => [id, i]))
+  rows.sort((a, b) => {
+    const ta = a.lastPrintedAt?.getTime() ?? 0
+    const tb = b.lastPrintedAt?.getTime() ?? 0
+    if (tb !== ta) return tb - ta
+    return (order.get(a.transactionId) ?? 0) - (order.get(b.transactionId) ?? 0)
+  })
+  return rows.map((r) => ({
+    transactionId: r.transactionId,
+    receiptKind: r.lastReceiptKind,
+    printedAt: r.lastPrintedAt?.toISOString() ?? null,
+  }))
+}
+
+export function txNoFromTransactionId(transactionId: string) {
+  if (transactionId.startsWith('offlog_')) return `HX${transactionId.slice(-10)}`
+  if (transactionId.startsWith('bill_')) return `TXP${transactionId.slice(-10)}`
+  if (transactionId.startsWith('prepay_')) return `YS${transactionId.slice(-10)}`
+  if (transactionId.startsWith('refund_')) return `TXR${transactionId.slice(-10)}`
+  return transactionId
+}
