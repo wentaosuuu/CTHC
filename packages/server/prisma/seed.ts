@@ -1345,9 +1345,14 @@ async function main() {
     const ext = demoMeterHouses[i].externalId ?? `H${i}`
     const ws = [`WS-${ext}-A`, ...(i % 2 === 0 ? [`WS-${ext}-B`] : [])]
     const es = [`EL-${ext}-1`]
+    const gs = [`GS-${ext}-1`]
     await prisma.house.update({
       where: { id: demoMeterHouses[i].id },
-      data: { waterMeterNosJson: JSON.stringify(ws), electricMeterNosJson: JSON.stringify(es) },
+      data: {
+        waterMeterNosJson: JSON.stringify(ws),
+        electricMeterNosJson: JSON.stringify(es),
+        gasMeterNosJson: JSON.stringify(gs),
+      },
     })
   }
 

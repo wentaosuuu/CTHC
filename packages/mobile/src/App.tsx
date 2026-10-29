@@ -14,6 +14,7 @@ import { MyPage } from './pages/MyPage'
 import { MyOrdersPage } from './pages/MyOrdersPage'
 import { MyBillsPage } from './pages/MyBillsPage'
 import { BillDetailPage } from './pages/BillDetailPage'
+import { BillReceiptPage } from './pages/BillReceiptPage'
 import { MyOrderDetailPage } from './pages/MyOrderDetailPage'
 import { RealNameVerifyPage } from './pages/RealNameVerifyPage'
 import { ProfilePage } from './pages/ProfilePage'
@@ -31,6 +32,7 @@ function App() {
         <Route path="/me/profile" element={<ProfilePage />} />
         <Route path="/me/orders" element={<MyOrdersPage />} />
         <Route path="/bills" element={<MyBillsPage />} />
+        <Route path="/bills/:id/receipt" element={<BillReceiptPage />} />
         <Route path="/bills/:id" element={<BillDetailPage />} />
         <Route path="/me/orders/:id" element={<MyOrderDetailPage />} />
         <Route path="/me/sublets" element={<SubletListPage />} />

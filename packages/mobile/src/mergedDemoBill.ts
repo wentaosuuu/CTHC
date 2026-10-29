@@ -2,6 +2,17 @@ import type { MyBillDetail } from './api'
 
 export type MergedDemoBillLine = MyBillDetail['items'][number]
 
+/** 与账单列表 Demo 一致：当前月之前的 2 个账期视为已支付且已导出收据 */
+export function demoPeriodHasReceipt(period: string) {
+  const now = new Date()
+  const start = new Date(now.getFullYear(), now.getMonth(), 1)
+  const [yy, mm] = period.split('-').map((x) => parseInt(x, 10))
+  const p = new Date(yy, mm - 1, 1)
+  const monthsBack =
+    (start.getFullYear() - p.getFullYear()) * 12 + (start.getMonth() - p.getMonth())
+  return monthsBack >= 1 && monthsBack <= 2
+}
+
 /** 与种子库合并合同示例一致：三套月租 + 按租占比分摊的杂费 */
 const ASSET_LABELS = ['江南·梧桐公寓 · 624', '西乡塘·青年社区 · 927', '邕宁·花园公寓 · 514'] as const
 const ASSET_RENTS = [7600, 5300, 4400] as const

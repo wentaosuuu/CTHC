@@ -94,6 +94,17 @@ type ContractOption = {
   tenant: { name: string; phone: string }
 }
 
+type MeterMatchResult = {
+  contractId: string
+  contractNo: string
+  tenantName: string
+  tenantPhone: string
+  apartmentName: string
+  houseNo: string
+  storeName: string
+  houseBizId: string
+}
+
 type AdminStore = { id: string; name: string }
 
 function formatContractNo(contractNo: string) {
@@ -249,6 +260,12 @@ export function BillsPage() {
   // import (keep existing ability; server will reject if locked)
   const [importOpen, setImportOpen] = useState(false)
   const [contracts, setContracts] = useState<ContractOption[]>([])
+  const [importMatchMode, setImportMatchMode] = useState<'contract' | 'meter'>('meter')
+  const [importWaterMeter, setImportWaterMeter] = useState('')
+  const [importElectricMeter, setImportElectricMeter] = useState('')
+  const [importGasMeter, setImportGasMeter] = useState('')
+  const [meterMatch, setMeterMatch] = useState<MeterMatchResult | null>(null)
+  const [meterMatchLoading, setMeterMatchLoading] = useState(false)
   const [importContractId, setImportContractId] = useState('')
   const [importPeriod, setImportPeriod] = useState('')
   const [importDueDate, setImportDueDate] = useState('')
@@ -644,6 +661,11 @@ export function BillsPage() {
   function openImport() {
     setImportOpen(true)
     setFileImportResult(null)
+    setImportMatchMode('meter')
+    setImportWaterMeter('')
+    setImportElectricMeter('')
+    setImportGasMeter('')
+    setMeterMatch(null)
     setImportContractId('')
     const y = new Date().getFullYear()
     const m = String(new Date().getMonth() + 1).padStart(2, '0')
@@ -657,16 +679,45 @@ export function BillsPage() {
     loadContractsForImport()
   }
 
+  async function matchImportByMeter() {
+    const waterMeterNo = importWaterMeter.trim()
+    const electricMeterNo = importElectricMeter.trim()
+    const gasMeterNo = importGasMeter.trim()
+    if (!waterMeterNo && !electricMeterNo && !gasMeterNo) {
+      setMeterMatch(null)
+      return setError('请至少填写水表号、电表号、燃气表号中的一项')
+    }
+    setMeterMatchLoading(true)
+    setError('')
+    setMsg('')
+    const r = await apiPost<MeterMatchResult>('/api/admin/bills/match-by-meter', {
+      waterMeterNo,
+      electricMeterNo,
+      gasMeterNo,
+    })
+    setMeterMatchLoading(false)
+    if (!r.ok) {
+      setMeterMatch(null)
+      return setError(r.error)
+    }
+    setMeterMatch(r.data)
+    setImportContractId(r.data.contractId)
+    setMsg(`已匹配到 ${r.data.apartmentName} ${r.data.houseNo}，租户 ${r.data.tenantName}`)
+  }
+
   async function submitImport() {
-    const contract = contracts.find((c) => c.id === importContractId)
-    if (!contract) return setError('请选择合同')
+    const contractId = importMatchMode === 'meter' ? meterMatch?.contractId ?? '' : importContractId
+    const contract = importMatchMode === 'meter' ? meterMatch : contracts.find((c) => c.id === importContractId)
+    if (!contract || !contractId) {
+      return setError(importMatchMode === 'meter' ? '请先按表号匹配到在租资产和租户' : '请选择合同')
+    }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(importPeriod)) return setError('请选择正确的账期（精确到日）')
     const itemsToSend = importItems.filter((i) => i.amount > 0)
     if (itemsToSend.length === 0) return setError('请至少填写一项金额大于 0 的收费项目')
     setImportSubmitting(true)
     setError('')
     const r = await apiPost<{ ok: true; id: string }>('/api/admin/bills', {
-      contractId: importContractId,
+      contractId,
       period: importPeriod,
       dueDate: importDueDate,
       items: itemsToSend,
@@ -1567,13 +1618,16 @@ export function BillsPage() {
       {/* 导入账单弹窗（复用原能力） */}
       {importOpen && (
         <div className="a-modal-backdrop" role="dialog" aria-modal="true" onClick={(e) => e.target === e.currentTarget && setImportOpen(false)}>
-          <div className="a-modal" style={{ maxWidth: 520 }} onClick={(e) => e.stopPropagation()}>
+          <div className="a-modal" style={{ maxWidth: 680, maxHeight: '88vh', overflow: 'auto' }} onClick={(e) => e.stopPropagation()}>
             <div className="a-modal-header">
               <div className="a-modal-title">导入账单</div>
               <button className="a-modal-close" onClick={() => setImportOpen(false)}>关闭</button>
             </div>
             <div className="a-modal-body" style={{ display: 'block' }}>
-              <div style={{ fontWeight: 700, color: '#475569', marginBottom: 8 }}>通过 Excel 文件导入</div>
+              <div style={{ fontWeight: 700, color: '#475569', marginBottom: 8 }}>批量导入</div>
+              <div className="a-muted" style={{ marginBottom: 8, fontSize: 13, lineHeight: 1.6 }}>
+                模板按行填写。合同号可以留空，至少填水表号、电表号、燃气表号中的一项。系统用房源里已保存的表号匹配资产，再把账单导入给该房源当前生效合同的租户。同一行如果填了多项表号，这些表号必须属于同一套资产。
+              </div>
               <div className="a-row" style={{ flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
                 <button type="button" className="a-btn ghost" onClick={downloadTemplate}>下载导入模板</button>
                 <input
@@ -1603,22 +1657,119 @@ export function BillsPage() {
               ) : null}
 
               <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: 14, marginTop: 6 }}>
-                <div style={{ fontWeight: 700, color: '#475569', marginBottom: 8 }}>手动填写导入</div>
+                <div style={{ fontWeight: 700, color: '#475569', marginBottom: 8 }}>单条导入</div>
               </div>
               <div className="a-kv">
                 <div className="a-kv-row">
-                  <div className="a-kv-k">选择合同</div>
+                  <div className="a-kv-k">匹配方式</div>
                   <div className="a-kv-v">
-                    <select className="a-filter-select" value={importContractId} onChange={(e) => setImportContractId(e.target.value)} style={{ minWidth: 260 }}>
-                      <option value="">请选择合同</option>
-                      {contracts.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {formatContractNo(c.contractNo)} · {c.house.apartmentName} {c.house.houseNo} · {c.tenant.name}
-                        </option>
-                      ))}
-                    </select>
+                    <label style={{ marginRight: 16 }}>
+                      <input
+                        type="radio"
+                        name="bill-import-match"
+                        checked={importMatchMode === 'meter'}
+                        onChange={() => {
+                          setImportMatchMode('meter')
+                          setError('')
+                        }}
+                      />{' '}
+                      按水电燃气表号
+                    </label>
+                    <label>
+                      <input
+                        type="radio"
+                        name="bill-import-match"
+                        checked={importMatchMode === 'contract'}
+                        onChange={() => {
+                          setImportMatchMode('contract')
+                          setError('')
+                        }}
+                      />{' '}
+                      按合同选择
+                    </label>
                   </div>
                 </div>
+                {importMatchMode === 'meter' ? (
+                  <>
+                    <div className="a-kv-row">
+                      <div className="a-kv-k">水表号</div>
+                      <div className="a-kv-v">
+                        <input
+                          className="a-filter-input"
+                          value={importWaterMeter}
+                          placeholder="与房源配置中的水表号一致"
+                          onChange={(e) => {
+                            setImportWaterMeter(e.target.value)
+                            setMeterMatch(null)
+                          }}
+                          style={{ minWidth: 240 }}
+                        />
+                      </div>
+                    </div>
+                    <div className="a-kv-row">
+                      <div className="a-kv-k">电表号</div>
+                      <div className="a-kv-v">
+                        <input
+                          className="a-filter-input"
+                          value={importElectricMeter}
+                          placeholder="与房源配置中的电表号一致"
+                          onChange={(e) => {
+                            setImportElectricMeter(e.target.value)
+                            setMeterMatch(null)
+                          }}
+                          style={{ minWidth: 240 }}
+                        />
+                      </div>
+                    </div>
+                    <div className="a-kv-row">
+                      <div className="a-kv-k">燃气表号</div>
+                      <div className="a-kv-v">
+                        <input
+                          className="a-filter-input"
+                          value={importGasMeter}
+                          placeholder="与房源配置中的燃气表号一致"
+                          onChange={(e) => {
+                            setImportGasMeter(e.target.value)
+                            setMeterMatch(null)
+                          }}
+                          style={{ minWidth: 240 }}
+                        />
+                        <div style={{ marginTop: 8 }}>
+                          <button type="button" className="a-btn ghost" onClick={() => void matchImportByMeter()} disabled={meterMatchLoading}>
+                            {meterMatchLoading ? '匹配中…' : '匹配资产和租户'}
+                          </button>
+                        </div>
+                        <div className="a-muted" style={{ marginTop: 6, fontSize: 12 }}>
+                          填一项即可。多项同时填写时，必须都落在同一套资产上。
+                        </div>
+                      </div>
+                    </div>
+                    {meterMatch ? (
+                      <div className="a-kv-row">
+                        <div className="a-kv-k">匹配结果</div>
+                        <div className="a-kv-v">
+                          {meterMatch.storeName} · {meterMatch.apartmentName} {meterMatch.houseNo}
+                          <div>租户：{meterMatch.tenantName} {meterMatch.tenantPhone}</div>
+                          <div>合同：{formatContractNo(meterMatch.contractNo)}</div>
+                        </div>
+                      </div>
+                    ) : null}
+                  </>
+                ) : (
+                  <div className="a-kv-row">
+                    <div className="a-kv-k">选择合同</div>
+                    <div className="a-kv-v">
+                      <select className="a-filter-select" value={importContractId} onChange={(e) => setImportContractId(e.target.value)} style={{ minWidth: 260 }}>
+                        <option value="">请选择合同</option>
+                        {contracts.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {formatContractNo(c.contractNo)} · {c.house.apartmentName} {c.house.houseNo} · {c.tenant.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                )}
                 <div className="a-kv-row">
                   <div className="a-kv-k">账期</div>
                   <div className="a-kv-v">

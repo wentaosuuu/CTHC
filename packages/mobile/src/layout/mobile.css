@@ -489,11 +489,42 @@
   color: #fff;
   font-weight: 700;
   cursor: pointer;
+  text-align: center;
+  text-decoration: none;
+  box-sizing: border-box;
 }
 
 .m-btn-block {
   width: 100%;
   display: block;
+}
+
+.m-text-link {
+  color: #2563eb;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.m-text-link:active {
+  opacity: 0.85;
+}
+
+.m-receipt-sheet {
+  border: 1px dashed #cbd5e1;
+}
+
+.m-receipt-title {
+  font-size: 16px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.m-receipt-amount {
+  margin-top: 8px;
+  font-size: 28px;
+  font-weight: 900;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 
 .m-btn.secondary {

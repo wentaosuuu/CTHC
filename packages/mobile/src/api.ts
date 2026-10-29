@@ -390,6 +390,12 @@ export type MyBillSummary = {
   payBlockedReason?: string
 }
 
+export type MyBillReceiptInfo = {
+  /** 后台已导出且未作废的交易收据，租户可查看 */
+  available: boolean
+  count?: number
+}
+
 export type MyBillDetail = {
   id: string
   period: string
@@ -410,5 +416,30 @@ export type MyBillDetail = {
   createdAt: string
   mergedUnits?: { apartmentName: string; houseNo: string }[]
   payBlockedReason?: string
+  receipt?: MyBillReceiptInfo
   items: { name: string; amount: number; breakdown?: { label: string; amount: number }[] }[]
+}
+
+export type MyBillReceiptView = {
+  billId: string
+  period: string
+  dueDate: string
+  totalAmount: number
+  paidAt: string | null
+  contractNo: string
+  apartmentName: string
+  houseNo: string
+  storeName: string
+  tenantName: string
+  tenantPhone: string
+  mergedUnits?: { apartmentName: string; houseNo: string }[]
+  items: { name: string; amount: number; breakdown?: { label: string; amount: number }[] }[]
+  receipts: {
+    transactionId: string
+    txNo: string
+    receiptKind: 'RENT' | 'DEPOSIT' | null
+    receiptKindLabel: string
+    printedAt: string | null
+    channel: 'ONLINE' | 'OFFLINE'
+  }[]
 }

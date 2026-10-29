@@ -53,7 +53,7 @@ import {
   isContractLeaseExpired,
   syncExpiredActiveContractHouses,
 } from './contractExpiry.js'
-import { buildBillImportTemplateBuffer, parseAndImportBills, parseMeterNoListJson } from './services/billImport.js'
+import { buildBillImportTemplateBuffer, parseAndImportBills, parseMeterNoListJson, resolveContractForMeterMatch } from './services/billImport.js'
 import { buildLedgerImportTemplateBuffer, importLedgerPayments } from './services/ledgerImport.js'
 import { listLedgerReceivingAccounts, resolveReceivingAccount } from './services/ledgerReceivingAccounts.js'
 import { buildOfflineVerifyBatchTemplateBuffer, parseAndBatchOfflineVerify } from './services/billOfflineVerifyBatch.js'
@@ -85,8 +85,10 @@ import { houseBizId, numericCodeFromId } from './houseBizId.js'
 import {
   buildReceiptDto,
   isFinanceRole,
+  listTenantVisibleReceiptsForBill,
   loadReceiptMap,
   printTransactionReceipts,
+  txNoFromTransactionId,
 } from './transactionReceipt.js'
 import { parseHouseConfigItems, serializeHouseConfigItems } from './houseConfigJson.js'
 import {
@@ -2071,6 +2073,8 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       totalAmount: bill.totalAmount,
     }
     const payBlockedReason = payBlockedReasonForBill(queue, payRow)
+    const visibleReceipts =
+      bill.status === 'PAID' ? await listTenantVisibleReceiptsForBill(ctx.prisma, bill.id) : []
     res.json({
       id: bill.id,
       period: bill.period,
@@ -2091,7 +2095,70 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       createdAt: bill.createdAt.toISOString(),
       ...(mergedUnits ? { mergedUnits } : {}),
       ...(payBlockedReason ? { payBlockedReason } : {}),
+      receipt: {
+        available: visibleReceipts.length > 0,
+        count: visibleReceipts.length,
+      },
       items: billItemsToApi(bill.items),
+    })
+  })
+
+  /** 租户查看已导出的交易收据（与后台交易流水导出记录对应；套打 PDF 接入前返回结构化预览） */
+  app.get('/api/bills/:id/receipt', async (req, res) => {
+    const phone = req.header('x-tenant-phone')
+    if (!phone) return res.status(401).json({ error: 'NEED_TENANT_PHONE' })
+
+    const bill = await ctx.prisma.bill.findUnique({
+      where: { id: String(req.params.id) },
+      include: {
+        items: { orderBy: { createdAt: 'asc' } },
+        contract: {
+          include: {
+            tenant: true,
+            house: { include: { apartment: { include: { store: true } } } },
+            order: {
+              include: {
+                lines: {
+                  orderBy: { sortOrder: 'asc' },
+                  include: { house: { include: { apartment: true } } },
+                },
+              },
+            },
+          },
+        },
+      },
+    })
+    if (!bill) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!(await tenantCanAccessBill(ctx.prisma, phone, bill))) return res.status(403).json({ error: 'FORBIDDEN' })
+    if (bill.status !== 'PAID') return res.status(409).json({ error: 'BILL_NOT_PAID' })
+
+    const visibleReceipts = await listTenantVisibleReceiptsForBill(ctx.prisma, bill.id)
+    if (visibleReceipts.length === 0) return res.status(404).json({ error: 'RECEIPT_NOT_AVAILABLE' })
+
+    const RECEIPT_KIND_ZH = { RENT: '租金收据', DEPOSIT: '押金收据' } as const
+    const mergedUnits = mergedUnitsFromContract(bill.contract)
+    res.json({
+      billId: bill.id,
+      period: bill.period,
+      dueDate: toYmd(bill.dueDate),
+      totalAmount: bill.totalAmount,
+      paidAt: bill.paidAt ? bill.paidAt.toISOString() : null,
+      contractNo: bill.contract.contractNo,
+      apartmentName: bill.contract.house.apartment.name,
+      houseNo: bill.contract.house.houseNo,
+      storeName: bill.contract.house.apartment.store.name,
+      tenantName: bill.contract.tenant.name,
+      tenantPhone: bill.contract.tenant.phone,
+      ...(mergedUnits ? { mergedUnits } : {}),
+      items: billItemsToApi(bill.items),
+      receipts: visibleReceipts.map((r) => ({
+        transactionId: r.transactionId,
+        txNo: txNoFromTransactionId(r.transactionId),
+        receiptKind: r.receiptKind,
+        receiptKindLabel: r.receiptKind ? RECEIPT_KIND_ZH[r.receiptKind] : '收款收据',
+        printedAt: r.printedAt,
+        channel: r.transactionId.startsWith('offlog_') ? 'OFFLINE' : 'ONLINE',
+      })),
     })
   })
 
@@ -2709,6 +2776,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         houseConfig: parseHouseConfigItems(h.houseConfigJson),
         waterMeterNos: parseMeterNoListJson(h.waterMeterNosJson),
         electricMeterNos: parseMeterNoListJson(h.electricMeterNosJson),
+        gasMeterNos: parseMeterNoListJson(h.gasMeterNosJson),
       })),
     })
   })
@@ -2778,6 +2846,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
       mgmtDepartment: z.union([z.string().max(120), z.literal('')]).optional(),
       waterMeterNos: z.array(z.string()).optional(),
       electricMeterNos: z.array(z.string()).optional(),
+      gasMeterNos: z.array(z.string()).optional(),
     })
     const body = Body.parse(req.body)
 
@@ -2844,6 +2913,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
 
     const nextWaterMeters = body.waterMeterNos !== undefined ? normalizeMeterNosInput(body.waterMeterNos) : undefined
     const nextElectricMeters = body.electricMeterNos !== undefined ? normalizeMeterNosInput(body.electricMeterNos) : undefined
+    const nextGasMeters = body.gasMeterNos !== undefined ? normalizeMeterNosInput(body.gasMeterNos) : undefined
 
     const updated = await ctx.prisma.house.update({
       where: { id: house.id },
@@ -2867,6 +2937,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
         ...(body.mgmtDepartment !== undefined ? { mgmtDepartment: normOptStr(body.mgmtDepartment) } : {}),
         ...(nextWaterMeters !== undefined ? { waterMeterNosJson: JSON.stringify(nextWaterMeters) } : {}),
         ...(nextElectricMeters !== undefined ? { electricMeterNosJson: JSON.stringify(nextElectricMeters) } : {}),
+        ...(nextGasMeters !== undefined ? { gasMeterNosJson: JSON.stringify(nextGasMeters) } : {}),
       },
     })
 
@@ -2911,6 +2982,9 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     }
     if (nextElectricMeters !== undefined) {
       pushDiff('电表号', truncateLogValue(house.electricMeterNosJson), truncateLogValue(updated.electricMeterNosJson))
+    }
+    if (nextGasMeters !== undefined) {
+      pushDiff('燃气表号', truncateLogValue(house.gasMeterNosJson), truncateLogValue(updated.gasMeterNosJson))
     }
 
     const nextAssetType = body.assetType !== undefined ? body.assetType.trim() : house.apartment.assetType
@@ -6146,6 +6220,33 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent('账单导入模板.xlsx')}`)
     res.send(buf)
+  })
+
+  app.post('/api/admin/bills/match-by-meter', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const Body = z.object({
+      waterMeterNo: z.string().max(80).optional(),
+      electricMeterNo: z.string().max(80).optional(),
+      gasMeterNo: z.string().max(80).optional(),
+    })
+    const body = Body.parse(req.body ?? {})
+    const resolved = await resolveContractForMeterMatch(ctx.prisma, body, (storeId) => canAccessStore(auth, storeId))
+    if (!resolved.ok) return res.status(404).json({ error: resolved.error })
+    const contract = resolved.contract
+    const house = contract.house
+    res.json({
+      contractId: contract.id,
+      contractNo: contract.contractNo,
+      tenantName: contract.tenant.name,
+      tenantPhone: contract.tenant.phone,
+      apartmentName: house.apartment.name,
+      houseNo: house.houseNo,
+      storeName: house.apartment.store.name,
+      houseBizId: houseBizId(house.id),
+      waterMeterNos: parseMeterNoListJson(house.waterMeterNosJson),
+      electricMeterNos: parseMeterNoListJson(house.electricMeterNosJson),
+      gasMeterNos: parseMeterNoListJson(house.gasMeterNosJson),
+    })
   })
 
   app.post('/api/admin/bills/import', adminAuth(ctx.prisma), upload.single('file'), async (req, res) => {

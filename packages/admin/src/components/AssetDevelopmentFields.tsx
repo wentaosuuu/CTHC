@@ -38,7 +38,7 @@ export function AssetDevelopmentFields({ section, value, onChange, storeOptions 
     </div></div>
   </>
   if (section === 'certificate') return <div className="a-kv-row"><label className="a-kv-k" htmlFor="asset-supplement-certificate">权证类型</label><div className="a-kv-v"><input id="asset-supplement-certificate" className="a-filter-input" value={value.certificateType} onChange={(event) => patch('certificateType', event.target.value)} /></div></div>
-  if (section === 'gas') return <div className="a-kv-row"><label className="a-kv-k" htmlFor="asset-supplement-gas">燃气表号</label><div className="a-kv-v"><input id="asset-supplement-gas" className="a-filter-input" value={value.gasMeterNo} onChange={(event) => patch('gasMeterNo', event.target.value)} /></div></div>
+  if (section === 'gas') return <div className="a-kv-row"><label className="a-kv-k" htmlFor="asset-supplement-gas">燃气表号</label><div className="a-kv-v"><input id="asset-supplement-gas" className="a-filter-input" value={value.gasMeterNo} placeholder="例如 GS-001，多个可用逗号或换行分隔" onChange={(event) => patch('gasMeterNo', event.target.value)} /><div className="a-muted" style={{ fontSize: 12, marginTop: 4 }}>与水表号、电表号一起保存到资产。导入账单时可按燃气表号匹配这套房，并记到在租租户名下。</div></div></div>
   if (section === 'lease') return <>
     <div className="a-kv-row"><div className="a-kv-k">是否可出租 *</div><div className="a-kv-v">
       <div className="a-row" style={{ gap: 18 }}>
