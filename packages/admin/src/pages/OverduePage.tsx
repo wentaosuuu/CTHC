@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { apiGet, apiPost } from '../api'
 import { Pagination, paginate } from '../components/Pagination'
 
@@ -14,6 +15,7 @@ type OverdueItem = {
   period: string
   dueDate: string
   totalAmount: number
+  amountRemaining?: number
   daysOverdue: number
   penalty: number
 }
@@ -132,13 +134,14 @@ function OverduePeriodAccordion({
 }
 
 export function OverduePage() {
+  const [searchParams] = useSearchParams()
   const [items, setItems] = useState<OverdueItem[]>([])
   const [error, setError] = useState('')
   const [rule, setRule] = useState('')
   const [msg, setMsg] = useState('')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
-  const [q, setQ] = useState('')
+  const [q, setQ] = useState(() => searchParams.get('q') ?? searchParams.get('contractNo') ?? '')
   const [storeFilter, setStoreFilter] = useState('')
   const [apartmentFilter, setApartmentFilter] = useState('')
   const [overdueRange, setOverdueRange] = useState('')
@@ -169,9 +172,9 @@ export function OverduePage() {
   const [smsSubmitting, setSmsSubmitting] = useState(false)
 
   async function load() {
+    const r = await apiGet<{ items: OverdueItem[]; rule: string }>('/api/admin/bills/overdue')
     setError('')
     setMsg('')
-    const r = await apiGet<{ items: OverdueItem[]; rule: string }>('/api/admin/bills/overdue')
     if (!r.ok) return setError(r.error)
     setItems(r.data.items)
     setRule(r.data.rule)
@@ -240,7 +243,12 @@ export function OverduePage() {
   }
 
   useEffect(() => {
-    load()
+    let active = true
+    // 异步启动首次请求；清理已卸载实例尚未开始的任务，手动刷新仍使用原 load。
+    void Promise.resolve().then(() => {
+      if (active) return load()
+    })
+    return () => { active = false }
   }, [])
 
   const filterOptions = useMemo(() => {
@@ -262,7 +270,7 @@ export function OverduePage() {
         if (overdueRange === '90+' && d <= 90) return false
       }
       if (!kw) return true
-      const hay = `${x.contractNo} ${x.houseBizId} ${x.storeName} ${x.apartmentName} ${x.houseNo} ${x.tenantName} ${x.tenantPhone} ${x.period}`.toLowerCase()
+      const hay = `${x.billId} ${x.contractNo} ${x.houseBizId} ${x.storeName} ${x.apartmentName} ${x.houseNo} ${x.tenantName} ${x.tenantPhone} ${x.period}`.toLowerCase()
       return hay.includes(kw)
     })
   }, [items, q, storeFilter, apartmentFilter, overdueRange])
@@ -284,7 +292,7 @@ export function OverduePage() {
   return (
     <div className="a-col">
       <div className="a-card">
-        <div className="a-h1">欠费预警</div>
+        <div className="a-h1">逾期管理</div>
         <div className="a-muted">{rule}</div>
       </div>
 
@@ -358,7 +366,8 @@ export function OverduePage() {
               <th>手机号</th>
               <th>账期</th>
               <th>到期日</th>
-              <th>金额</th>
+              <th>应收金额</th>
+              <th>未付金额</th>
               <th>逾期天数</th>
               <th>滞纳金</th>
               <th className="a-op-col">操作</th>
@@ -379,6 +388,7 @@ export function OverduePage() {
                 <td>{x.period}</td>
                 <td>{x.dueDate}</td>
                 <td>¥{x.totalAmount}</td>
+                <td>{typeof x.amountRemaining === 'number' ? `¥${x.amountRemaining}` : '—'}</td>
                 <td>{x.daysOverdue}</td>
                 <td>¥{x.penalty}</td>
                 <td className="a-op-cell">
@@ -409,7 +419,7 @@ export function OverduePage() {
             ))}
             {items.length === 0 ? (
               <tr>
-                <td colSpan={13} className="a-muted">
+                <td colSpan={14} className="a-muted">
                   暂无逾期账单（你也可以把本机日期往后调来模拟）。
                 </td>
               </tr>

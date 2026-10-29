@@ -213,11 +213,6 @@ function formatCurrencyYuan(n: number): string {
   return `¥${n.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`
 }
 
-function formatAreaSqm(n: number): string {
-  if (!Number.isFinite(n)) return '-'
-  return `${n.toLocaleString('zh-CN', { maximumFractionDigits: 0 })} ㎡`
-}
-
 function formatKpiMoney(n: number): { value: string; unit: string } {
   if (!Number.isFinite(n)) return { value: '-', unit: '' }
   if (n >= 100_000_000) return { value: (n / 100_000_000).toFixed(2), unit: '亿元' }
@@ -231,11 +226,67 @@ function formatKpiArea(n: number): { value: string; unit: string } {
   return { value: n.toLocaleString('zh-CN', { maximumFractionDigits: 0 }), unit: '㎡' }
 }
 
-function HomeIndicatorCard({ label, value, unit }: { label: string; value: string; unit: string }) {
+/** 领导看板指标字段说明（悬浮在左侧图标上展示） */
+const HOME_INDICATOR_HINTS: Record<string, string> = {
+  应收租金: '当前筛选条件下，统计期内应向租客收取的租金总额。',
+  实收租金: '当前筛选条件下，统计期内实际收到的租金总额。',
+  总面积: '当前筛选条件下，纳入统计的房源建筑面积合计。',
+  出租面积: '当前筛选条件下，已出租房源的建筑面积合计。',
+  累计出租率: [
+    '累计出租率 =（1-X 月已出租面积合计）/（1-X 月可出租总面积合计）× 100%',
+    '',
+    '累计考虑本年 1～T 期，不只看单期。',
+  ].join('\n'),
+  出租率: [
+    '出租率 =（T 期已出租面积）/（T 期可出租总面积）× 100%',
+    '',
+    '仅考虑统计期（T 期）当期数据。',
+  ].join('\n'),
+  空置率: '空置率 = 1 − 出租率。反映统计期内未出租面积占比。',
+  收缴率: [
+    '收缴率 =（T 期实收租金合计）/（T 期应收租金合计）× 100%',
+    '',
+    '仅考虑统计期（T 期）当期应收与实收。',
+  ].join('\n'),
+  累计收缴率: [
+    '累计收缴率 =（1-X 月实收租金合计）/（1-X 应收合计 + 收回历年旧欠合计）× 100%',
+    '',
+    '累计考虑本年 1～T 期。',
+  ].join('\n'),
+}
+
+function HomeIndicatorCard({
+  label,
+  value,
+  unit,
+  hint,
+}: {
+  label: string
+  value: string
+  unit: string
+  hint?: string
+}) {
+  const tip = hint ?? HOME_INDICATOR_HINTS[label]
   return (
-    <article className="a-home-ind">
+    <article className={`a-home-ind${tip ? ' has-hint' : ''}`}>
       <div className="a-home-ind-head">
-        <span className="a-home-ind-icon" aria-hidden />
+        {tip ? (
+          <span className="a-home-ind-hint-wrap">
+            <span
+              className="a-home-ind-icon has-hint"
+              tabIndex={0}
+              role="note"
+              aria-label={`${label}说明`}
+            >
+              i
+            </span>
+            <span className="a-home-ind-tip" role="tooltip">
+              {tip}
+            </span>
+          </span>
+        ) : (
+          <span className="a-home-ind-icon" aria-hidden />
+        )}
         <span className="a-home-ind-label">{label}</span>
       </div>
       <div className="a-home-ind-divider" aria-hidden />

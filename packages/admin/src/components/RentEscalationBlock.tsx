@@ -71,6 +71,8 @@ export function RentEscalationBlock({
               className="a-filter-input"
               type="date"
               value={row.periodStart}
+              readOnly={row.yearIndex === 1}
+              title={row.yearIndex === 1 ? '首段起始日由计租时间自动计算' : undefined}
               onChange={(e) => updateRow(row.id, { periodStart: e.target.value })}
               style={{ width: 138, margin: '0 4px' } as CSSProperties}
             />
@@ -115,7 +117,7 @@ export function RentEscalationBlock({
         + 添加递增段
       </button>
       <div className="a-muted" style={{ marginTop: 6, fontSize: 12 }}>
-        {label}：仅填每段起始日，截止日自动计算；新增递增点将重算月租金。
+        {label}：首段起始日由计租时间自动计算；其余段填写起始日，截止日自动计算。新增递增点将重算月租金。
       </div>
     </div>
   )

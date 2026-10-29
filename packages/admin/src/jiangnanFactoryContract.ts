@@ -351,7 +351,7 @@ export function serializeJiangnanFactoryForm(form: JiangnanFactoryFormData): str
 export function parseJiangnanFactoryForm(json: string | null | undefined): JiangnanFactoryFormData | null {
   if (!json?.trim()) return null
   try {
-    const raw = JSON.parse(json) as Partial<JiangnanFactoryFormData> & { houseUser?: string; clause24?: string }
+    const raw = JSON.parse(json) as Partial<JiangnanFactoryFormData> & { template?: string; houseUser?: string; clause24?: string }
     if (raw.template && raw.template !== 'JIANGNAN_FACTORY') return null
     const base = defaultJiangnanFactoryForm()
     const houseUsage = raw.houseUsage ?? raw.houseUser ?? ''

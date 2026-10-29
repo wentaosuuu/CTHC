@@ -1,4 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { MANUAL_MODE_OPTIONS, manualFlowStatusLabel, type ManualInteractionMode, type ManualFlowInfo } from '../manualContractFlow'
+import type { ApiResult } from '../api'
+import { ContractDraftPreview } from '../components/ContractDraftPreview'
+import { withDefaultGrace } from '../contractDraftPreview'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { apiDeleteContractAttachment, apiGet, apiPatch, apiPost, apiUploadContractAttachment, apiUploadMoveOutFile } from '../api'
 import { JiangnanFactoryContractForm } from '../components/JiangnanFactoryContractForm'
 import { NonResidentialContractForm } from '../components/NonResidentialContractForm'
@@ -8,6 +12,7 @@ import { ContractRemarkEditor } from '../components/ContractRemarkEditor'
 import { ContractTemplateSelect } from '../components/ContractTemplateSelect'
 import { contractAttachmentsLockedUntilPaid } from '../contractAttachmentPolicy'
 import {
+  CONTRACT_TEMPLATES,
   contractTemplateUsesRentMultipleTermination,
   contractTemplateZh,
   type ContractTemplateKind,
@@ -109,7 +114,7 @@ type MergedBundleListInfo = {
   }[]
 }
 
-type ContractItem = {
+type ContractItem = ManualFlowInfo & {
   id: string
   contractNo: string
   status: string
@@ -144,6 +149,9 @@ type ContractItem = {
   leaseDaysLeft?: number
   leaseExpired?: boolean
   contractTemplate?: string
+  /** 当前本地列表接口未返回这两项；只显示显式提供的文案，不从其它字段推断。 */
+  tenantInteractionLabel?: string | null
+  userSourceLabel?: string | null
   billPushToTenant?: boolean
   billPushStatus?: string | null
   oaPassedAt?: string | null
@@ -244,6 +252,32 @@ function reportStatusBadgeClass(reportStatus: string | null) {
 function formatContractNo(contractNo: string) {
   const digits = contractNo.replace(/\D/g, '')
   return digits ? `HT${digits}` : contractNo
+}
+
+function listTemplateValue(value: string | undefined) {
+  if (!value?.trim()) return '__unknown__'
+  if (value === 'TRIPARTITE') return 'NON_RESIDENTIAL'
+  if (value === 'APARTMENT') return 'RESIDENTIAL_ASSET'
+  return value
+}
+
+function listTemplateLabel(value: string | undefined) {
+  const key = listTemplateValue(value)
+  if (key === '__unknown__') return '—'
+  return CONTRACT_TEMPLATES.find((template) => template.value === key)?.label ?? value ?? '—'
+}
+
+function listSourceLabel(value: string | undefined) {
+  if (value === 'SYSTEM') return '系统生成'
+  if (value === 'MANUAL_IMPORT') return '手动导入'
+  return value?.trim() || '—'
+}
+
+function contractCsvCell(value: unknown) {
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : ''
+  let text = String(value ?? '')
+  if (/^\s*[=+@-]/.test(text)) text = `'${text}`
+  return `"${text.replace(/"/g, '""')}"`
 }
 
 /** 「修改合同配置」：仅租客已申请修改或管理员已驳回、且合同仍可改配置时展示 */
@@ -362,12 +396,19 @@ function apiErrorZh(code: string) {
     NEED_ACTIVE_CONTRACT: '仅「已生效」合同可暂停/恢复计费',
     ALREADY_PAUSED: '该合同已处于暂停计费状态',
     NOT_PAUSED: '该合同未暂停计费',
+    SIGNED_CONTRACT_ATTACHMENT_REQUIRED: '请上传线下已签合同附件后完成材料',
+    TARGET_NOT_ELIGIBLE_FOR_MODE: '所选资产不符合当前交互方式：仅记录可选空置或已签约，其余方式仅选空置',
+    EXISTING_CONTRACT_ACK_REQUIRED: '所选资产已有合同，请确认不会重复计费',
+    MANUAL_FLOW_INVALID_STAGE: '合同流程状态已变化，请刷新列表后重试',
+    MANUAL_FLOW_NOT_AVAILABLE: '此合同不使用本轮新增交互流程',
+    MANUAL_FLOW_BILLS_REQUIRED: '当前合同尚未生成首期账单',
+    MANUAL_FLOW_PARTIAL_COLLECTION: '账单已有部分收款，请在账单页面继续核销，不使用模拟结清',
   }
   return m[code] ?? code
 }
 
 
-type ContractDetail = {
+type ContractDetail = ManualFlowInfo & {
   id: string
   contractNo: string
   status: string
@@ -454,6 +495,55 @@ type ContractDetail = {
   contractTemplate?: string
   billPushToTenant?: boolean
   billPushStatus?: string | null
+  bills?: ContractBill[]
+}
+
+type ContractBillItem = {
+  name: string
+  amount: number
+  breakdown?: { label: string; amount: number }[]
+}
+
+type ContractBill = {
+  id: string
+  period: string
+  kind: string
+  dueDate: string
+  paidAt: string | null
+  totalAmount: number
+  amountReceived: number
+  amountRemaining: number
+  status: string
+  billingRemark: string | null
+  items: ContractBillItem[]
+}
+
+const BILL_KIND_ZH: Record<string, string> = {
+  BASE: '租金账单',
+  ADJUSTMENT: '补缴',
+}
+
+function billStatusBadgeClass(b: Pick<ContractBill, 'status' | 'amountReceived'>) {
+  if (b.status === 'PAID') return 'a-badge status-paid'
+  if ((b.amountReceived ?? 0) > 0) return 'a-badge status-partial'
+  if (b.status === 'OVERDUE') return 'a-badge status-overdue'
+  if (b.status === 'UNPAID') return 'a-badge status-unpaid'
+  return 'a-badge'
+}
+
+function billStatusLabel(b: Pick<ContractBill, 'status' | 'amountReceived'>) {
+  if (b.status === 'PAID') return '已支付'
+  if ((b.amountReceived ?? 0) > 0) return '部分收款'
+  if (b.status === 'OVERDUE') return '已逾期'
+  if (b.status === 'UNPAID') return '未支付'
+  return b.status
+}
+
+function formatBillPaidAt(iso: string | null) {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '—'
+  return d.toLocaleString('zh-CN', { hour12: false })
 }
 
 function todayYmd() {
@@ -477,10 +567,15 @@ export function ContractsPage() {
   const [msg, setMsg] = useState('')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
-  const [q, setQ] = useState('')
+  const [q, setQ] = useState(() => {
+    const query = new URLSearchParams(window.location.search)
+    return query.get('q') || query.get('contractNo') || ''
+  })
   const [status, setStatus] = useState('')
   const [reportStatusFilter, setReportStatusFilter] = useState('')
   const [sourceFilter, setSourceFilter] = useState('')
+  const [templateFilter, setTemplateFilter] = useState('')
+  const [interactionFilter, setInteractionFilter] = useState('')
   const [storeFilter, setStoreFilter] = useState('')
   const [apartmentFilter, setApartmentFilter] = useState('')
   const [expiryWarnMin, setExpiryWarnMin] = useState('') // 到期预警：最小值（到期日-今天，支持负数）
@@ -491,6 +586,8 @@ export function ContractsPage() {
     setStatus('')
     setReportStatusFilter('')
     setSourceFilter('')
+    setTemplateFilter('')
+    setInteractionFilter('')
     setStoreFilter('')
     setApartmentFilter('')
     setExpiryWarnMin('')
@@ -582,7 +679,7 @@ export function ContractsPage() {
     rentCycle: 'MONTHLY' as RentCycle,
     penaltyFormula: 'amount*0.1%*days',
     rentDueDay: '1',
-    latestRentGraceDays: '',
+    latestRentGraceDays: '0',
   })
   const [renewSubmitting, setRenewSubmitting] = useState(false)
   const [billingResumeModal, setBillingResumeModal] = useState<ContractItem | null>(null)
@@ -610,6 +707,8 @@ export function ContractsPage() {
 
   // 查看详情弹窗
   const [detailContract, setDetailContract] = useState<ContractDetail | null>(null)
+  const [detailTab, setDetailTab] = useState<'contract' | 'bills'>('contract')
+  const [detailBillOpenId, setDetailBillOpenId] = useState<string | null>(null)
   const [detailLoadingId, setDetailLoadingId] = useState<string | null>(null)
 
   // 修改配置合同信息弹窗
@@ -624,7 +723,7 @@ export function ContractsPage() {
     rentCycle: 'MONTHLY' as RentCycle,
     penaltyFormula: 'amount*0.1%*days',
     rentDueDay: '1',
-    latestRentGraceDays: '' as string, // 天数，空表示未设置
+    latestRentGraceDays: '0' as string, // 天数，空表示未设置
   })
   const [editSubmitting, setEditSubmitting] = useState(false)
   const [editRemarkHtml, setEditRemarkHtml] = useState('')
@@ -643,6 +742,12 @@ export function ContractsPage() {
     deposit: number
   }
   const [createModalOpen, setCreateModalOpen] = useState(false)
+  const [draftPreviewOpen, setDraftPreviewOpen] = useState(false)
+  const [createMode, setCreateMode] = useState<ManualInteractionMode>('BILL_ONLY')
+  const [pendingFlowId, setPendingFlowId] = useState<string | null>(null)
+  const [materialsContract, setMaterialsContract] = useState<ContractItem | null>(null)
+  const [materialFiles, setMaterialFiles] = useState<File[]>([])
+  const [materialSaving, setMaterialSaving] = useState(false)
   const [createHouseOptions, setCreateHouseOptions] = useState<HousePick[]>([])
   const [createForm, setCreateForm] = useState({
     houseId: '',
@@ -657,7 +762,7 @@ export function ContractsPage() {
     rentCycle: 'MONTHLY' as RentCycle,
     penaltyFormula: 'amount*0.1%*days',
     rentDueDay: '1',
-    latestRentGraceDays: '',
+    latestRentGraceDays: '0',
     remarkHtml: '',
     contractTemplate: 'RESIDENTIAL_ASSET' as ContractTemplateKind,
     terminationRentMulti: '2',
@@ -666,10 +771,10 @@ export function ContractsPage() {
   })
   const [createPendingFiles, setCreatePendingFiles] = useState<File[]>([])
   const [createSubmitting, setCreateSubmitting] = useState(false)
-  const [jiangnanForm, setJiangnanForm] = useState<JiangnanFactoryFormData>(() => defaultJiangnanFactoryForm())
-  const [nonResidentialForm, setNonResidentialForm] = useState<NonResidentialFormData>(() => defaultNonResidentialForm())
-  const [residentialForm, setResidentialForm] = useState<ResidentialAssetFormData>(() => defaultResidentialAssetForm())
-  const [nanningHousingForm, setNanningHousingForm] = useState<NanningHousingFormData>(() => defaultNanningHousingForm())
+  const [jiangnanForm, setJiangnanForm] = useState<JiangnanFactoryFormData>(() => withDefaultGrace(defaultJiangnanFactoryForm()))
+  const [nonResidentialForm, setNonResidentialForm] = useState<NonResidentialFormData>(() => withDefaultGrace(defaultNonResidentialForm()))
+  const [residentialForm, setResidentialForm] = useState<ResidentialAssetFormData>(() => withDefaultGrace(defaultResidentialAssetForm()))
+  const [nanningHousingForm, setNanningHousingForm] = useState<NanningHousingFormData>(() => withDefaultGrace(defaultNanningHousingForm()))
 
   const [nowTick, setNowTick] = useState(() => Date.now())
 
@@ -723,7 +828,7 @@ export function ContractsPage() {
         rentCycle: normalizeRentCycle(d.rentCycle),
         penaltyFormula: d.penaltyFormula ?? 'amount*0.1%*days',
         rentDueDay: d.rentDueDay != null ? String(d.rentDueDay) : String(rentDueDayFromYmd(d.startDate)),
-        latestRentGraceDays: d.latestRentGraceDays != null ? String(d.latestRentGraceDays) : '',
+        latestRentGraceDays: d.latestRentGraceDays != null ? String(d.latestRentGraceDays) : '0',
       })
       setEditRemarkHtml(d.configRemarkHtml ?? '')
       setEditAttachments(d.attachments ?? [])
@@ -828,7 +933,7 @@ export function ContractsPage() {
             ? String(d.data.rentDueDay)
             : String(rentDueDayFromYmd(nextStart)),
         latestRentGraceDays:
-          d.ok && d.data.latestRentGraceDays != null ? String(d.data.latestRentGraceDays) : '',
+          d.ok && d.data.latestRentGraceDays != null ? String(d.data.latestRentGraceDays) : '0',
       })
     }
   }
@@ -895,7 +1000,15 @@ export function ContractsPage() {
     const r = await apiGet<ContractDetail>('/api/admin/contracts/' + contractId)
     setDetailLoadingId(null)
     if (!r.ok) return setError(r.error)
-    setDetailContract({ ...r.data, mergedBundle: r.data.mergedBundle ?? null })
+    setDetailTab('contract')
+    setDetailBillOpenId(null)
+    setDetailContract({ ...r.data, mergedBundle: r.data.mergedBundle ?? null, bills: r.data.bills ?? [] })
+  }
+
+  function closeDetail() {
+    setDetailContract(null)
+    setDetailTab('contract')
+    setDetailBillOpenId(null)
   }
 
   async function recordOaResult(contractId: string, passed: boolean) {
@@ -1404,14 +1517,25 @@ export function ContractsPage() {
     return { stores, apartments }
   }, [items])
 
+  const templateOptions = Array.from(new Set(items.map((contract) => listTemplateValue(contract.contractTemplate))))
+  const interactionOptions = Array.from(new Set(items.map((contract) => contract.tenantInteractionLabel?.trim() || '__unknown__')))
+  const expiryMin = expiryWarnMin.trim() ? Number(expiryWarnMin.trim()) : -Infinity
+  const expiryMax = expiryWarnMax.trim() ? Number(expiryWarnMax.trim()) : Infinity
+  const expiryFilterError = Number.isNaN(expiryMin) || Number.isNaN(expiryMax)
+    ? '到期天数范围须填写有效数字。'
+    : expiryMin > expiryMax ? '到期天数下限不能大于上限。' : ''
+
   const filtered = useMemo(() => {
+    if (expiryFilterError) return []
     const kw = q.trim().toLowerCase()
     return items.filter((c) => {
       if (status && c.status !== status) return false
       if (sourceFilter) {
-        const cur = (c.source ?? 'SYSTEM') as string
+        const cur = c.source ?? '__unknown__'
         if (cur !== sourceFilter) return false
       }
+      if (templateFilter && listTemplateValue(c.contractTemplate) !== templateFilter) return false
+      if (interactionFilter && (c.tenantInteractionLabel?.trim() || '__unknown__') !== interactionFilter) return false
       if (reportStatusFilter !== '') {
         const key = reportStatusFilter === '__null__' ? null : reportStatusFilter
         const cur = c.housingReportStatus ?? null
@@ -1428,19 +1552,14 @@ export function ContractsPage() {
         const min = expiryWarnMin.trim() ? Number(expiryWarnMin.trim()) : -Infinity
         const max = expiryWarnMax.trim() ? Number(expiryWarnMax.trim()) : Infinity
         const daysLeft = calcDaysTo(c.endDate)
-        if (Number.isNaN(daysLeft) || daysLeft > EXPIRY_WARN_DAYS) return false
+        if (Number.isNaN(daysLeft)) return false
         const low = Math.min(min, max)
         const high = Math.max(min, max)
         if (daysLeft < low || daysLeft > high) return false
       }
 
       if (!kw) return true
-      const srcZh =
-        (c.source ?? 'SYSTEM') === 'MANUAL_IMPORT'
-          ? '手动导入 手动创建'
-          : (c.source ?? 'SYSTEM') === 'SYSTEM'
-            ? '系统生成'
-            : String(c.source ?? '')
+      const srcZh = listSourceLabel(c.source)
       const bundleHay =
         c.mergedBundle?.lines
           ?.map((ln) => `${ln.houseBizId} ${ln.apartmentName} ${ln.houseNo}`)
@@ -1450,23 +1569,12 @@ export function ContractsPage() {
         `${c.contractNo} ${c.house.houseBizId} ${c.tenant.name} ${c.tenant.phone} ${c.house.storeName} ${c.house.apartmentName} ${c.house.houseNo} ${bundleHay} ${srcZh}`.toLowerCase()
       return hay.includes(kw)
     })
-  }, [items, q, status, sourceFilter, reportStatusFilter, storeFilter, apartmentFilter, expiryWarnMin, expiryWarnMax])
+  }, [items, q, status, sourceFilter, templateFilter, interactionFilter, reportStatusFilter, storeFilter, apartmentFilter, expiryWarnMin, expiryWarnMax, expiryFilterError])
 
   const createSelectedHouse = useMemo(
     () => createHouseOptions.find((h) => h.id === createForm.houseId) ?? null,
     [createHouseOptions, createForm.houseId],
   )
-
-  function applyCreateHouseDefaults(houseId: string, prev: typeof createForm) {
-    const h = createHouseOptions.find((x) => x.id === houseId)
-    return {
-      ...prev,
-      houseId,
-      rentMonthly: h?.rentMonthly ?? prev.rentMonthly,
-      depositMultiple:
-        h && h.rentMonthly > 0 ? h.deposit / h.rentMonthly : prev.depositMultiple,
-    }
-  }
 
   async function openCreateModal() {
     setError('')
@@ -1503,7 +1611,7 @@ export function ContractsPage() {
       rentCycle: 'MONTHLY',
       penaltyFormula: 'amount*0.1%*days',
       rentDueDay: String(rentDueDayFromYmd(todayYmd())),
-      latestRentGraceDays: '',
+      latestRentGraceDays: '0',
       remarkHtml: '',
       contractTemplate: 'RESIDENTIAL_ASSET',
       terminationRentMulti: '2',
@@ -1511,11 +1619,86 @@ export function ContractsPage() {
       billPushToTenant: 'yes',
     })
     setCreatePendingFiles([])
-    setJiangnanForm(defaultJiangnanFactoryForm())
-    setNonResidentialForm(defaultNonResidentialForm())
-    setResidentialForm(defaultResidentialAssetForm())
-    setNanningHousingForm(defaultNanningHousingForm())
+    setCreateMode('BILL_ONLY')
+    setJiangnanForm(withDefaultGrace(defaultJiangnanFactoryForm()))
+    setNonResidentialForm(withDefaultGrace(defaultNonResidentialForm()))
+    setResidentialForm(withDefaultGrace(defaultResidentialAssetForm()))
+    setNanningHousingForm(withDefaultGrace(defaultNanningHousingForm()))
     setCreateModalOpen(true)
+  }
+
+  type ManualCreated = { ok: true; contractId: string; contractNo: string; status?: string }
+
+  function currentDraftHouses() {
+    return createForm.contractTemplate === 'JIANGNAN_FACTORY' ? jiangnanForm.houses
+      : createForm.contractTemplate === 'NON_RESIDENTIAL' ? nonResidentialForm.houses
+      : createForm.contractTemplate === 'RESIDENTIAL_ASSET' ? residentialForm.houses : nanningHousingForm.houses
+  }
+
+  async function createManualContract(payload: Record<string, unknown>): Promise<ApiResult<ManualCreated>> {
+    if (createMode === 'BILL_ONLY' && !createPendingFiles.length) return { ok: false, error: 'SIGNED_CONTRACT_ATTACHMENT_REQUIRED' }
+    const hasSigned = currentDraftHouses().some((house) => house.status === 'SIGNED')
+    if (createMode === 'NONE' && hasSigned && !confirm('所选资产已有签约合同。本次将新增另一份生效合同，既有合同保持不变。请确认不会重复计费，是否继续？')) return { ok: false, error: '操作已取消' }
+    try { return await apiPost<ManualCreated>('/api/admin/contracts/manual', { ...payload, interactionMode: createMode, acknowledgeExistingContracts: createMode === 'NONE' && hasSigned }) }
+    catch { return { ok: false, error: '新建请求未完成，请刷新列表核对是否已创建，再决定重试，避免重复创建' } }
+  }
+
+  async function finishCreatedManualContract(created: ManualCreated) {
+    const prefix = `合同 ${formatContractNo(created.contractNo)} 已创建`
+    try {
+    for (const file of createPendingFiles) {
+      let upload
+      try { upload = await apiUploadContractAttachment(created.contractId, file) }
+      catch { upload = { ok: false as const, error: '上传连接中断' } }
+      if (!upload.ok) {
+        setCreateModalOpen(false)
+        setMsg(`${prefix}，附件“${file.name}”上传失败。请在列表中补传附件；不要重复新建合同。${createMode === 'BILL_ONLY' ? '当前为待补合同附件，尚未生成账单。' : ''}`)
+        await load(); return
+      }
+    }
+    if (createMode === 'BILL_ONLY') {
+      const completed = await apiPost<{ ok: true }>(`/api/admin/contracts/${created.contractId}/manual-flow`, { action: 'COMPLETE_MATERIALS' })
+      if (!completed.ok) {
+        setCreateModalOpen(false); setMsg(`${prefix}，材料完成步骤未成功：${apiErrorZh(completed.error)}。请在列表重试材料完成；不要重复新建。`)
+        await load(); return
+      }
+    }
+    setCreateModalOpen(false)
+    setMsg(`${prefix}。${createMode === 'SIGN_AND_PAY' ? '当前待推送签署，尚未生成账单。' : createMode === 'BILL_ONLY' ? '附件已上传，首期租金和押金账单已生成，等待首期款结清。' : '已生效并生成账单，不向租户展示。'}本地原型不调用契约锁、短信或真实支付。`)
+    await load()
+    } catch {
+      setCreateModalOpen(false)
+      setMsg(`${prefix}，后续附件/流程步骤未完成。请刷新列表核对状态并继续补办，不要重复新建。`)
+      await load()
+    } finally { setCreateSubmitting(false) }
+  }
+
+  async function runManualAction(contract: ContractItem, action: 'PUSH_SIGNATURE' | 'COMPLETE_MATERIALS' | 'SIMULATE_SIGNED' | 'SIMULATE_PAID'): Promise<boolean> {
+    const labels = { PUSH_SIGNATURE: '推送签署', COMPLETE_MATERIALS: '完成材料并生成首期账单', SIMULATE_SIGNED: '模拟租户签署完成', SIMULATE_PAID: '模拟首期租金和押金结清' }
+    if (action !== 'COMPLETE_MATERIALS' && !confirm(`${labels[action]}？本操作只推进本地原型状态，不调用契约锁、短信或真实支付。`)) return false
+    setPendingFlowId(contract.id); setError('')
+    try {
+      const result = await apiPost<{ ok: true }>(`/api/admin/contracts/${contract.id}/manual-flow`, { action })
+      if (!result.ok) { setError(apiErrorZh(result.error)); return false }
+      setMsg(`${labels[action]}已完成（本地流程演示）。`); await load()
+      if (detailContract?.id === contract.id) await loadDetail(contract.id)
+      return true
+    } catch { setError('流程操作未完成，请刷新合同状态后重试'); return false }
+    finally { setPendingFlowId(null) }
+  }
+
+  async function saveMaterialFiles() {
+    if (!materialsContract || materialSaving) return
+    if (!materialFiles.length && !materialsContract.attachmentCount) return setError('请选择已签合同附件')
+    setMaterialSaving(true); setError('')
+    try {
+      for (const file of materialFiles) {
+        const upload = await apiUploadContractAttachment(materialsContract.id, file)
+        if (!upload.ok) { setError(`附件上传失败：${upload.error}。合同仍为待补材料，请重试，不要重新新建。`); return }
+      }
+      if (await runManualAction(materialsContract, 'COMPLETE_MATERIALS')) { setMaterialsContract(null); setMaterialFiles([]) }
+    } catch { setError('附件上传连接中断，合同保留为待补材料，请核对后重试') }
+    finally { setMaterialSaving(false) }
   }
 
   async function submitCreateJiangnan() {
@@ -1530,7 +1713,7 @@ export function ContractsPage() {
     const leaseMonths = leaseMonthsFromRange(jiangnanForm.leaseStart, jiangnanForm.leaseEnd)
     if (leaseMonths <= 0) return setError('租赁期限不合法')
 
-    let latestRentGraceDays: number | null = null
+    let latestRentGraceDays: number | null = 0
     if (jiangnanForm.latestRentGraceDays.trim()) {
       latestRentGraceDays = parseInt(jiangnanForm.latestRentGraceDays.trim(), 10)
     }
@@ -1542,7 +1725,7 @@ export function ContractsPage() {
 
     setCreateSubmitting(true)
     setError('')
-    const r = await apiPost<{ ok: true; contractId: string; contractNo: string }>('/api/admin/contracts/manual', {
+    const r = await createManualContract({
       contractTemplate: 'JIANGNAN_FACTORY',
       contractTemplateDataJson: serializeJiangnanFactoryForm(jiangnanForm),
       tenantIds: jiangnanForm.tenantIds,
@@ -1560,23 +1743,8 @@ export function ContractsPage() {
       agreementSignDate: jiangnanForm.agreementSignDate.trim() === '' ? null : jiangnanForm.agreementSignDate,
       terminationDaysPastDue,
     })
-    setCreateSubmitting(false)
-    if (!r.ok) return setError(apiErrorZh(String(r.error)))
-    const newId = r.data.contractId
-    for (const f of createPendingFiles) {
-      const up = await apiUploadContractAttachment(newId, f)
-      if (!up.ok) {
-        setMsg(
-          `新建合同已生成 ${formatContractNo(r.data.contractNo)}，但附件「${f.name}」上传失败，请在合同详情中补传。`,
-        )
-        setCreateModalOpen(false)
-        await load()
-        return
-      }
-    }
-    setCreateModalOpen(false)
-    setMsg(`新建合同成功：${formatContractNo(r.data.contractNo)}（产投江南企业公园厂房租赁，已直接生效）。`)
-    await load()
+    if (!r.ok) { setCreateSubmitting(false); return setError(apiErrorZh(String(r.error))) }
+    await finishCreatedManualContract(r.data)
   }
 
   async function submitCreateNonResidential() {
@@ -1591,7 +1759,7 @@ export function ContractsPage() {
     const leaseMonths = nrLeaseMonthsFromRange(nonResidentialForm.leaseStart, nonResidentialForm.leaseEnd)
     if (leaseMonths <= 0) return setError('租赁期限不合法')
 
-    let latestRentGraceDays: number | null = null
+    let latestRentGraceDays: number | null = 0
     if (nonResidentialForm.latestRentGraceDays.trim()) {
       latestRentGraceDays = parseInt(nonResidentialForm.latestRentGraceDays.trim(), 10)
     }
@@ -1603,7 +1771,7 @@ export function ContractsPage() {
 
     setCreateSubmitting(true)
     setError('')
-    const r = await apiPost<{ ok: true; contractId: string; contractNo: string }>('/api/admin/contracts/manual', {
+    const r = await createManualContract({
       contractTemplate: 'NON_RESIDENTIAL',
       contractTemplateDataJson: serializeNonResidentialForm(nonResidentialForm),
       tenantIds: nonResidentialForm.tenantIds,
@@ -1621,23 +1789,8 @@ export function ContractsPage() {
       agreementSignDate: nonResidentialForm.agreementSignDate.trim() === '' ? null : nonResidentialForm.agreementSignDate,
       terminationRentMultiple,
     })
-    setCreateSubmitting(false)
-    if (!r.ok) return setError(apiErrorZh(String(r.error)))
-    const newId = r.data.contractId
-    for (const f of createPendingFiles) {
-      const up = await apiUploadContractAttachment(newId, f)
-      if (!up.ok) {
-        setMsg(
-          `新建合同已生成 ${formatContractNo(r.data.contractNo)}，但附件「${f.name}」上传失败，请在合同详情中补传。`,
-        )
-        setCreateModalOpen(false)
-        await load()
-        return
-      }
-    }
-    setCreateModalOpen(false)
-    setMsg(`新建合同成功：${formatContractNo(r.data.contractNo)}（非住宅资产租赁，已直接生效）。`)
-    await load()
+    if (!r.ok) { setCreateSubmitting(false); return setError(apiErrorZh(String(r.error))) }
+    await finishCreatedManualContract(r.data)
   }
 
   async function submitCreateResidential() {
@@ -1652,7 +1805,7 @@ export function ContractsPage() {
     const leaseMonths = raLeaseMonthsFromRange(residentialForm.leaseStart, residentialForm.leaseEnd)
     if (leaseMonths <= 0) return setError('租赁期限不合法')
 
-    let latestRentGraceDays: number | null = null
+    let latestRentGraceDays: number | null = 0
     if (residentialForm.latestRentGraceDays.trim()) {
       latestRentGraceDays = parseInt(residentialForm.latestRentGraceDays.trim(), 10)
     }
@@ -1664,7 +1817,7 @@ export function ContractsPage() {
 
     setCreateSubmitting(true)
     setError('')
-    const r = await apiPost<{ ok: true; contractId: string; contractNo: string }>('/api/admin/contracts/manual', {
+    const r = await createManualContract({
       contractTemplate: 'RESIDENTIAL_ASSET',
       contractTemplateDataJson: serializeResidentialAssetForm(residentialForm),
       tenantIds: residentialForm.tenantIds,
@@ -1682,23 +1835,8 @@ export function ContractsPage() {
       agreementSignDate: residentialForm.agreementSignDate.trim() === '' ? null : residentialForm.agreementSignDate,
       terminationDaysPastDue,
     })
-    setCreateSubmitting(false)
-    if (!r.ok) return setError(apiErrorZh(String(r.error)))
-    const newId = r.data.contractId
-    for (const f of createPendingFiles) {
-      const up = await apiUploadContractAttachment(newId, f)
-      if (!up.ok) {
-        setMsg(
-          `新建合同已生成 ${formatContractNo(r.data.contractNo)}，但附件「${f.name}」上传失败，请在合同详情中补传。`,
-        )
-        setCreateModalOpen(false)
-        await load()
-        return
-      }
-    }
-    setCreateModalOpen(false)
-    setMsg(`新建合同成功：${formatContractNo(r.data.contractNo)}（住宅资产租赁，已直接生效）。`)
-    await load()
+    if (!r.ok) { setCreateSubmitting(false); return setError(apiErrorZh(String(r.error))) }
+    await finishCreatedManualContract(r.data)
   }
 
   async function submitCreateNanningHousing() {
@@ -1713,7 +1851,7 @@ export function ContractsPage() {
     const leaseMonths = nhLeaseMonthsFromRange(nanningHousingForm.leaseStart, nanningHousingForm.leaseEnd)
     if (leaseMonths <= 0) return setError('租赁期限不合法')
 
-    let latestRentGraceDays: number | null = null
+    let latestRentGraceDays: number | null = 0
     if (nanningHousingForm.latestRentGraceDays.trim()) {
       latestRentGraceDays = parseInt(nanningHousingForm.latestRentGraceDays.trim(), 10)
     }
@@ -1725,7 +1863,7 @@ export function ContractsPage() {
 
     setCreateSubmitting(true)
     setError('')
-    const r = await apiPost<{ ok: true; contractId: string; contractNo: string }>('/api/admin/contracts/manual', {
+    const r = await createManualContract({
       contractTemplate: 'NANNING_HOUSING',
       contractTemplateDataJson: serializeNanningHousingForm(nanningHousingForm),
       tenantIds: nanningHousingForm.tenantIds,
@@ -1745,23 +1883,8 @@ export function ContractsPage() {
       terminationDaysPastDue,
       billPushToTenant: nanningHousingForm.billPushToTenant === 'yes',
     })
-    setCreateSubmitting(false)
-    if (!r.ok) return setError(apiErrorZh(String(r.error)))
-    const newId = r.data.contractId
-    for (const f of createPendingFiles) {
-      const up = await apiUploadContractAttachment(newId, f)
-      if (!up.ok) {
-        setMsg(
-          `新建合同已生成 ${formatContractNo(r.data.contractNo)}，但附件「${f.name}」上传失败，请在合同详情中补传。`,
-        )
-        setCreateModalOpen(false)
-        await load()
-        return
-      }
-    }
-    setCreateModalOpen(false)
-    setMsg(`新建合同成功：${formatContractNo(r.data.contractNo)}（南宁市房屋租赁合同·泊湾公寓，已直接生效）。`)
-    await load()
+    if (!r.ok) { setCreateSubmitting(false); return setError(apiErrorZh(String(r.error))) }
+    await finishCreatedManualContract(r.data)
   }
 
   async function submitCreate() {
@@ -1808,7 +1931,7 @@ export function ContractsPage() {
 
     setCreateSubmitting(true)
     setError('')
-    const r = await apiPost<{ ok: true; contractId: string; contractNo: string }>('/api/admin/contracts/manual', {
+    const r = await createManualContract({
       houseId: createForm.houseId,
       tenant: {
         name: createForm.tenantName.trim(),
@@ -1830,23 +1953,8 @@ export function ContractsPage() {
       terminationDaysPastDue,
       billPushToTenant: createForm.billPushToTenant === 'yes',
     })
-    setCreateSubmitting(false)
-    if (!r.ok) return setError(apiErrorZh(String(r.error)))
-    const newId = r.data.contractId
-    for (const f of createPendingFiles) {
-      const up = await apiUploadContractAttachment(newId, f)
-      if (!up.ok) {
-        setMsg(
-          `新建合同已生成 ${formatContractNo(r.data.contractNo)}，但附件「${f.name}」上传失败，请在合同详情中补传。`,
-        )
-        setCreateModalOpen(false)
-        await load()
-        return
-      }
-    }
-    setCreateModalOpen(false)
-    setMsg(`新建合同成功：${formatContractNo(r.data.contractNo)}（合同来源：手动导入），已直接生效。`)
-    await load()
+    if (!r.ok) { setCreateSubmitting(false); return setError(apiErrorZh(String(r.error))) }
+    await finishCreatedManualContract(r.data)
   }
 
   const contractNoToChildren = useMemo(() => {
@@ -1868,14 +1976,38 @@ export function ContractsPage() {
 
   const pageData = useMemo(() => paginate(filtered, page, pageSize), [filtered, page, pageSize])
 
+  function exportFilteredContracts() {
+    const rows: unknown[][] = [['合同号', '合同模板', '租户交互', '房源ID', '公寓', '房号', '门店', '租客', '手机号',
+      '状态', '报备', '到期天数', '备注摘要', '附件数量', '关联来源', '合同来源', '用户来源']]
+    for (const contract of filtered) {
+      const associations = [contract.renewedFromContractNo ? `续签自 ${contract.renewedFromContractNo}` : '',
+        contract.changeHouseFromContractNo ? `换房自 ${contract.changeHouseFromContractNo}` : ''].filter(Boolean).join('；')
+      rows.push([formatContractNo(contract.contractNo), listTemplateLabel(contract.contractTemplate), contract.tenantInteractionLabel?.trim() || '—',
+        contract.house.houseBizId, contract.house.apartmentName, contract.house.houseNo, contract.house.storeName,
+        contract.tenant.name, contract.tenant.phone, CONTRACT_STATUS_ZH[contract.status] ?? contract.status,
+        REPORT_STATUS_ZH[contract.housingReportStatus ?? 'null'] ?? contract.housingReportStatus ?? '—',
+        calcDaysTo(contract.endDate), contract.remarkPreview, contract.attachmentCount ?? 0, associations || '—',
+        listSourceLabel(contract.source), contract.userSourceLabel?.trim() || '—'])
+    }
+    const blob = new Blob(['\uFEFF' + rows.map((row) => row.map(contractCsvCell).join(',')).join('\r\n')], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url; link.download = `合同列表-当前筛选-${todayYmd()}.csv`
+    document.body.appendChild(link); link.click(); link.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+    setMsg(`已导出当前已载入数据中的 ${filtered.length} 条筛选结果，未提供的字段以“—”表示。`)
+  }
+
   return (
     <div className="a-col">
       <div className="a-card">
         <div className="a-h1">合同管理</div>
+        <p className="a-muted">租户交互、用户来源仅展示接口明确提供的数据；当前本地接口未提供时显示“—”，不由账单推送或合同来源推断。CSV 导出当前已载入的筛选结果。</p>
       </div>
 
       {error ? <div className="a-card a-error">操作失败：{error}</div> : null}
       {msg ? <div className="a-card a-success">{msg}</div> : null}
+      {expiryFilterError ? <div className="a-card a-error" role="alert">{expiryFilterError}</div> : null}
 
       <div className="a-card">
         <div className="a-row" style={{ justifyContent: 'space-between' }}>
@@ -1931,6 +2063,17 @@ export function ContractsPage() {
               <option value="">全部合同来源</option>
               <option value="SYSTEM">系统生成</option>
               <option value="MANUAL_IMPORT">手动导入</option>
+              {items.some((contract) => !contract.source) ? <option value="__unknown__">未提供（待核对）</option> : null}
+            </select>
+            <select className="a-filter-select" value={templateFilter} aria-label="合同模板" title="合同模板"
+              onChange={(event) => { setTemplateFilter(event.target.value); setPage(1) }}>
+              <option value="">全部合同模板</option>
+              {templateOptions.map((value) => <option key={value} value={value}>{value === '__unknown__' ? '未提供（待核对）' : listTemplateLabel(value)}</option>)}
+            </select>
+            <select className="a-filter-select" value={interactionFilter} aria-label="租户交互" title="租户交互（仅明确提供的数据）"
+              onChange={(event) => { setInteractionFilter(event.target.value); setPage(1) }}>
+              <option value="">全部租户交互</option>
+              {interactionOptions.map((value) => <option key={value} value={value}>{value === '__unknown__' ? '未提供（待核对）' : value}</option>)}
             </select>
             <select
               className="a-filter-select"
@@ -1952,7 +2095,9 @@ export function ContractsPage() {
                   setExpiryWarnMin(e.target.value)
                   setPage(1)
                 }}
-                placeholder="开始（如 0 或 -30）"
+                type="number"
+                aria-label="到期天数下限"
+                placeholder="到期天数≥（可为负数）"
                 style={{ minWidth: 120 }}
                 title="到期日-今天的最小值，支持负数"
               />
@@ -1963,7 +2108,9 @@ export function ContractsPage() {
                   setExpiryWarnMax(e.target.value)
                   setPage(1)
                 }}
-                placeholder="结束（如 30 或 30）"
+                type="number"
+                aria-label="到期天数上限"
+                placeholder="到期天数≤"
                 style={{ minWidth: 120 }}
                 title="到期日-今天的最大值，支持负数"
               />
@@ -1980,6 +2127,9 @@ export function ContractsPage() {
             <button className="a-btn" onClick={openCreateModal}>
               新建合同
             </button>
+            <button type="button" className="a-btn ghost" disabled={!filtered.length || Boolean(expiryFilterError)} onClick={exportFilteredContracts}>
+              导出 CSV
+            </button>
             <button className="a-btn ghost" onClick={load}>
               刷新
             </button>
@@ -1990,6 +2140,8 @@ export function ContractsPage() {
           <thead>
             <tr>
               <th>合同</th>
+              <th>合同模板</th>
+              <th>租户交互</th>
               <th>房源ID</th>
               <th>公寓</th>
               <th>房号</th>
@@ -2003,6 +2155,7 @@ export function ContractsPage() {
               <th>附件</th>
               <th>关联来源</th>
               <th>合同来源</th>
+              <th>用户来源</th>
               <th className="contracts-op-col">操作</th>
             </tr>
           </thead>
@@ -2022,6 +2175,8 @@ export function ContractsPage() {
                     </div>
                   ) : null}
                 </td>
+                <td>{listTemplateLabel(c.contractTemplate)}</td>
+                <td title="当前本地接口未提供时显示—，不从账单推送推断。">{c.tenantInteractionLabel?.trim() || '—'}</td>
                 <td style={{ fontVariantNumeric: 'tabular-nums' }}>
                   <div style={{ fontWeight: 800 }}>{c.house.houseBizId}</div>
                   {c.mergedBundle && c.mergedBundle.lines.length > 0 ? (
@@ -2080,7 +2235,7 @@ export function ContractsPage() {
                 <td>{c.tenant.phone}</td>
                 <td>
                   <span className={statusBadgeClass(c.status)}>
-                    {CONTRACT_STATUS_ZH[c.status] ?? c.status}
+                    {manualFlowStatusLabel(c, CONTRACT_STATUS_ZH[c.status] ?? c.status)}
                   </span>
                 </td>
                 <td>
@@ -2209,8 +2364,9 @@ export function ContractsPage() {
                     : null}
                 </td>
                 <td className="a-muted" style={{ fontSize: 12 }}>
-                  {(c.source ?? 'SYSTEM') === 'MANUAL_IMPORT' ? '手动导入' : '系统生成'}
+                  {listSourceLabel(c.source)}
                 </td>
+                <td title="当前本地列表接口尚未提供用户来源。">{c.userSourceLabel?.trim() || '—'}</td>
                 <td className="contracts-op-cell">
                   <div className="contracts-op-actions">
                     <button
@@ -2222,6 +2378,11 @@ export function ContractsPage() {
                     >
                       {detailLoadingId === c.id ? '加载中…' : '查看详情'}
                     </button>
+                    {c.canPushSignature ? <button type="button" className="a-btn" disabled={pendingFlowId === c.id} onClick={() => void runManualAction(c, 'PUSH_SIGNATURE')}>推送签署</button> : null}
+                    {c.canSimulateSigned ? <button type="button" className="a-btn ghost" disabled={pendingFlowId === c.id} onClick={() => void runManualAction(c, 'SIMULATE_SIGNED')}>模拟租户签署完成</button> : null}
+                    {c.canSimulatePaid ? <button type="button" className="a-btn ghost" disabled={pendingFlowId === c.id} onClick={() => void runManualAction(c, 'SIMULATE_PAID')}>模拟首期款结清</button> : null}
+                    {c.canCompleteMaterials ? <button type="button" className="a-btn" onClick={() => { setMaterialsContract(c); setMaterialFiles([]); setError('') }}>补传合同附件/完成材料</button> : null}
+                    {c.interactionMode ? <span className="a-muted" style={{ fontSize: 11 }}>本地流程演示</span> : null}
                     {c.status === 'WAIT_INTERNAL_OA' ? (
                       <>
                         <button
@@ -2388,7 +2549,7 @@ export function ContractsPage() {
             ))}
             {items.length === 0 ? (
               <tr>
-                <td colSpan={14} className="a-muted">
+                <td colSpan={18} className="a-muted">
                   暂无合同。请先去“订单”页面生成合同。
                 </td>
               </tr>
@@ -3593,7 +3754,7 @@ export function ContractsPage() {
         >
           <div className="a-modal a-modal--change-log">
             <div className="a-modal-header">
-              <div className="a-modal-title">新建合同（管理员手动创建，直接生效）</div>
+              <div className="a-modal-title">新建合同（{MANUAL_MODE_OPTIONS.find((mode) => mode.value === createMode)?.label}）</div>
               <button className="a-modal-close" onClick={() => setCreateModalOpen(false)} disabled={createSubmitting}>
                 关闭
               </button>
@@ -3601,6 +3762,12 @@ export function ContractsPage() {
 
             <div className="a-modal-body">
               <div className="a-kv">
+                {error ? <div className="a-error" role="alert">{error}</div> : null}
+                <div className="a-kv-row"><div className="a-kv-k">租户交互方式</div><div className="a-kv-v">
+                  <div className="a-row" style={{ gap: 14, flexWrap: 'wrap' }}>{MANUAL_MODE_OPTIONS.map((mode) => <label key={mode.value}><input type="radio" name="create-contract-mode" value={mode.value} checked={createMode === mode.value} disabled={createSubmitting} onChange={() => setCreateMode(mode.value)} /> {mode.label}</label>)}</div>
+                  <p className="a-muted">{MANUAL_MODE_OPTIONS.find((mode) => mode.value === createMode)?.description}</p>
+                  <p className="a-muted" style={{ fontSize: 12 }}>本地原型流程演示：签署、短信和支付由演示操作推进，不调用真实外部服务。</p>
+                </div></div>
                 <div className="a-kv-row">
                   <div className="a-kv-k">合同模板</div>
                   <div className="a-kv-v">
@@ -3608,16 +3775,19 @@ export function ContractsPage() {
                       value={createForm.contractTemplate}
                       onChange={(next) => {
                         setCreateForm((f) => ({ ...f, contractTemplate: next }))
-                        if (next === 'JIANGNAN_FACTORY') setJiangnanForm(defaultJiangnanFactoryForm())
-                        if (next === 'NON_RESIDENTIAL') setNonResidentialForm(defaultNonResidentialForm())
-                        if (next === 'RESIDENTIAL_ASSET') setResidentialForm(defaultResidentialAssetForm())
-                        if (next === 'NANNING_HOUSING') setNanningHousingForm(defaultNanningHousingForm())
+                        if (next === 'JIANGNAN_FACTORY') setJiangnanForm(withDefaultGrace(defaultJiangnanFactoryForm()))
+                        if (next === 'NON_RESIDENTIAL') setNonResidentialForm(withDefaultGrace(defaultNonResidentialForm()))
+                        if (next === 'RESIDENTIAL_ASSET') setResidentialForm(withDefaultGrace(defaultResidentialAssetForm()))
+                        if (next === 'NANNING_HOUSING') setNanningHousingForm(withDefaultGrace(defaultNanningHousingForm()))
                       }}
                     />
                   </div>
                 </div>
                 {createForm.contractTemplate === 'JIANGNAN_FACTORY' ? (
                   <JiangnanFactoryContractForm
+                    vacantHouseOnly={createMode !== 'NONE'}
+                    allowedHouseStatuses={createMode === 'NONE' ? ['VACANT', 'SIGNED'] : ['VACANT']}
+                    attachmentRequired={createMode === 'BILL_ONLY'}
                     value={jiangnanForm}
                     onChange={setJiangnanForm}
                     pendingFiles={createPendingFiles}
@@ -3625,6 +3795,9 @@ export function ContractsPage() {
                   />
                 ) : createForm.contractTemplate === 'NON_RESIDENTIAL' ? (
                   <NonResidentialContractForm
+                    vacantHouseOnly={createMode !== 'NONE'}
+                    allowedHouseStatuses={createMode === 'NONE' ? ['VACANT', 'SIGNED'] : ['VACANT']}
+                    attachmentRequired={createMode === 'BILL_ONLY'}
                     value={nonResidentialForm}
                     onChange={setNonResidentialForm}
                     pendingFiles={createPendingFiles}
@@ -3632,6 +3805,9 @@ export function ContractsPage() {
                   />
                 ) : createForm.contractTemplate === 'RESIDENTIAL_ASSET' ? (
                   <ResidentialAssetContractForm
+                    vacantHouseOnly={createMode !== 'NONE'}
+                    allowedHouseStatuses={createMode === 'NONE' ? ['VACANT', 'SIGNED'] : ['VACANT']}
+                    attachmentRequired={createMode === 'BILL_ONLY'}
                     value={residentialForm}
                     onChange={setResidentialForm}
                     pendingFiles={createPendingFiles}
@@ -3639,6 +3815,9 @@ export function ContractsPage() {
                   />
                 ) : createForm.contractTemplate === 'NANNING_HOUSING' ? (
                   <NanningHousingContractForm
+                    vacantHouseOnly={createMode !== 'NONE'}
+                    allowedHouseStatuses={createMode === 'NONE' ? ['VACANT', 'SIGNED'] : ['VACANT']}
+                    attachmentRequired={createMode === 'BILL_ONLY'}
                     value={nanningHousingForm}
                     onChange={setNanningHousingForm}
                     pendingFiles={createPendingFiles}
@@ -3663,8 +3842,9 @@ export function ContractsPage() {
                         >
                           取消
                         </button>
+                        <button type="button" className="a-btn ghost" onClick={() => setDraftPreviewOpen(true)} disabled={createSubmitting}>预览合同</button>
                         <button className="a-btn" onClick={() => void submitCreate()} disabled={createSubmitting}>
-                          {createSubmitting ? '创建中…' : '确认创建并生效'}
+                          {createSubmitting ? '创建中…' : MANUAL_MODE_OPTIONS.find((mode) => mode.value === createMode)?.submitLabel}
                         </button>
                       </div>
                     </div>
@@ -3703,7 +3883,7 @@ export function ContractsPage() {
                       <br />
                       合同模板：{contractTemplateZh(createForm.contractTemplate)}
                       <br />
-                      合同来源：手动导入（创建后直接生效，无需租客签字/支付）
+                      合同来源：手动导入（按所选租户交互方式进入对应流程）
                       <br />
                       {contractTemplateUsesRentMultipleTermination(createForm.contractTemplate) ? (
                         <>
@@ -3729,7 +3909,7 @@ export function ContractsPage() {
                         取消
                       </button>
                       <button className="a-btn" onClick={() => void submitCreate()} disabled={createSubmitting}>
-                        {createSubmitting ? '创建中…' : '确认创建并生效'}
+                        {createSubmitting ? '创建中…' : MANUAL_MODE_OPTIONS.find((mode) => mode.value === createMode)?.submitLabel}
                       </button>
                     </div>
                   </div>
@@ -3749,23 +3929,148 @@ export function ContractsPage() {
           role="dialog"
           aria-modal="true"
           onClick={(e) => {
-            if (e.target === e.currentTarget) setDetailContract(null)
+            if (e.target === e.currentTarget) closeDetail()
           }}
         >
           <div className="a-modal a-modal--contract-detail" onClick={(e) => e.stopPropagation()}>
             <div className="a-modal-header">
               <div className="a-modal-title">合同详情 · {formatContractNo(detailContract.contractNo)}</div>
-              <button className="a-modal-close" onClick={() => setDetailContract(null)}>
+              <button className="a-modal-close" onClick={() => closeDetail()}>
                 关闭
               </button>
             </div>
             <div className="a-modal-body" style={{ display: 'block' }}>
+              <div className="a-report-tabs" role="tablist" aria-label="合同详情" style={{ marginBottom: 12 }}>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={detailTab === 'contract'}
+                  className={`a-report-tab${detailTab === 'contract' ? ' is-active' : ''}`}
+                  onClick={() => setDetailTab('contract')}
+                >
+                  合同详情
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={detailTab === 'bills'}
+                  className={`a-report-tab${detailTab === 'bills' ? ' is-active' : ''}`}
+                  onClick={() => setDetailTab('bills')}
+                >
+                  账单详情
+                </button>
+              </div>
+              {detailTab === 'bills' ? (
+                <div>
+                  {(() => {
+                    const bills = detailContract.bills ?? []
+                    if (bills.length === 0) return <span className="a-muted">本合同暂无账单</span>
+                    const total = bills.reduce((s, b) => s + b.totalAmount, 0)
+                    const received = bills.reduce((s, b) => s + b.amountReceived, 0)
+                    const remaining = bills.reduce((s, b) => s + b.amountRemaining, 0)
+                    return (
+                      <>
+                        <div className="a-muted" style={{ fontSize: 12, marginBottom: 8, lineHeight: 1.5 }}>
+                          共 {bills.length} 笔 · 应收 ¥{total} · 已收 ¥{received} · 待收 ¥{remaining}
+                        </div>
+                        <div className="a-table-wrap a-contract-detail-bills">
+                          <table className="a-table">
+                            <thead>
+                              <tr>
+                                <th>账期</th>
+                                <th>类型</th>
+                                <th style={{ textAlign: 'right' }}>账单金额</th>
+                                <th style={{ textAlign: 'right' }}>已收金额</th>
+                                <th>应收日期</th>
+                                <th>实际支付</th>
+                                <th>备注</th>
+                                <th>状态</th>
+                                <th>操作</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {bills.map((b) => {
+                                const open = detailBillOpenId === b.id
+                                return (
+                                  <Fragment key={b.id}>
+                                    <tr>
+                                      <td style={{ fontVariantNumeric: 'tabular-nums' }}>{b.period}</td>
+                                      <td>{BILL_KIND_ZH[b.kind] ?? b.kind}</td>
+                                      <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                                        ¥{b.totalAmount}
+                                      </td>
+                                      <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                                        ¥{b.amountReceived}
+                                      </td>
+                                      <td style={{ fontVariantNumeric: 'tabular-nums' }}>{b.dueDate}</td>
+                                      <td className="a-muted" style={{ fontSize: 12 }}>
+                                        {formatBillPaidAt(b.paidAt)}
+                                      </td>
+                                      <td style={{ maxWidth: 180, fontSize: 12 }}>
+                                        {(b.billingRemark ?? '').trim() || '—'}
+                                      </td>
+                                      <td>
+                                        <span className={billStatusBadgeClass(b)}>{billStatusLabel(b)}</span>
+                                      </td>
+                                      <td>
+                                        <button
+                                          type="button"
+                                          className="a-btn ghost"
+                                          style={{ padding: '2px 8px', fontSize: 12 }}
+                                          onClick={() => setDetailBillOpenId(open ? null : b.id)}
+                                        >
+                                          {open ? '收起' : '查看详情'}
+                                        </button>
+                                      </td>
+                                    </tr>
+                                    {open ? (
+                                      <tr className="a-contract-detail-bill-open">
+                                        <td colSpan={9}>
+                                          <div className="a-contract-detail-bill-detail">
+                                            <div style={{ fontWeight: 700, marginBottom: 6 }}>收费明细</div>
+                                            {b.items.length === 0 ? (
+                                              <span className="a-muted">无收费明细</span>
+                                            ) : (
+                                              <ul style={{ margin: 0, paddingLeft: 18 }}>
+                                                {b.items.map((it) => (
+                                                  <li key={`${b.id}-${it.name}`} style={{ marginBottom: 4 }}>
+                                                    {it.name}：¥{it.amount}
+                                                    {it.breakdown && it.breakdown.length > 0 ? (
+                                                      <span className="a-muted">
+                                                        {' '}
+                                                        （
+                                                        {it.breakdown.map((x) => `${x.label} ¥${x.amount}`).join('、')}
+                                                        ）
+                                                      </span>
+                                                    ) : null}
+                                                  </li>
+                                                ))}
+                                              </ul>
+                                            )}
+                                            <div style={{ marginTop: 8 }}>
+                                              待收 <strong>¥{b.amountRemaining}</strong>
+                                            </div>
+                                          </div>
+                                        </td>
+                                      </tr>
+                                    ) : null}
+                                  </Fragment>
+                                )
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </>
+                    )
+                  })()}
+                </div>
+              ) : (
               <div className="a-kv a-contract-detail-kv">
                 <div className="a-kv-row">
                   <div className="a-kv-k">当前状态</div>
                   <div className="a-kv-v">
                     <span className={statusBadgeClass(detailContract.status)}>
-                      {CONTRACT_STATUS_ZH[detailContract.status] ?? detailContract.status}
+                      {manualFlowStatusLabel(detailContract, CONTRACT_STATUS_ZH[detailContract.status] ?? detailContract.status)}
                     </span>
                   </div>
                 </div>
@@ -4000,7 +4305,7 @@ export function ContractsPage() {
                     <div className="a-kv-k">换房资金</div>
                     <div className="a-kv-v" style={{ fontSize: 13, lineHeight: 1.65 }}>
                       <div className="a-muted" style={{ marginBottom: 8 }}>
-                        以下为换房生成新合同时的系统快照，便于财务核对；账单列表以「账单」页为准。
+                        以下为换房生成新合同时的系统快照，便于财务核对；当前账单见「账单详情」。
                       </div>
                       <div>
                         旧合同：<strong>{formatContractNo(detailContract.changeHouseMoney.oldContractNo)}</strong>
@@ -4257,10 +4562,21 @@ export function ContractsPage() {
                   </div>
                 )}
               </div>
+              )}
             </div>
           </div>
         </div>
       )}
+      {draftPreviewOpen && createModalOpen ? <ContractDraftPreview template={createForm.contractTemplate}
+        form={createForm.contractTemplate === 'JIANGNAN_FACTORY' ? jiangnanForm : createForm.contractTemplate === 'NON_RESIDENTIAL' ? nonResidentialForm : createForm.contractTemplate === 'RESIDENTIAL_ASSET' ? residentialForm : nanningHousingForm}
+        attachmentNames={createPendingFiles.map((file) => file.name)} onClose={() => setDraftPreviewOpen(false)} /> : null}
+      {materialsContract ? <div className="a-modal-backdrop" role="dialog" aria-modal="true" aria-label="补传已签合同附件"><div className="a-modal" style={{ maxWidth: 620 }}>
+        <div className="a-modal-header"><div className="a-modal-title">补传合同附件：{formatContractNo(materialsContract.contractNo)}</div><button type="button" className="a-modal-close" disabled={materialSaving} onClick={() => setMaterialsContract(null)}>关闭</button></div>
+        <div className="a-modal-body" style={{ display: 'block' }}>{error ? <div className="a-error" role="alert">{error}</div> : null}<p>合同已创建，当前待补材料，尚未生成账单。完成附件后生成首期租金与押金账单；请不要重复新建合同。</p><p className="a-muted">已有附件 {materialsContract.attachmentCount} 个。</p>
+          <input type="file" aria-label="选择已签合同附件" multiple disabled={materialSaving} onChange={(event) => setMaterialFiles(Array.from(event.target.files ?? []))} />
+          <p>{materialFiles.map((file) => file.name).join('；') || '未选择新文件'}</p></div>
+        <div className="a-modal-footer"><button type="button" className="a-btn" disabled={materialSaving} onClick={() => void saveMaterialFiles()}>{materialSaving ? '处理中…' : '上传并完成材料'}</button></div>
+      </div></div> : null}
     </div>
   )
 }

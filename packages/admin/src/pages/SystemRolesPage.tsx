@@ -1,362 +1,89 @@
-import { useState } from 'react'
+import { useState, type FormEvent } from 'react'
+import { ADMIN_MENU_OPTIONS } from '../adminNavigation'
+import { DemoDialog } from '../components/DemoDialog'
+import { Pagination, paginate } from '../components/Pagination'
+import { SystemMenuPermissions } from '../components/SystemMenuPermissions'
+import { useDemoRecords } from '../demoStorage'
+import { INITIAL_DEMO_ROLES, SYSTEM_ROLE_KEY, inCreatedRange, isDemoRole, systemTime, type DemoRole } from '../systemDemoData'
 
-/** 角色 */
-type Role = {
-  id: string
-  name: string
-  code: string
-  description: string
-  /** 可访问的菜单 id 列表 */
-  menuIds: string[]
-}
-
-/** 与侧边栏一致的菜单项（用于权限分配） */
-const MENU_OPTIONS: { id: string; label: string; path: string }[] = [
-  { id: 'home', label: '首页', path: '/' },
-  { id: 'houses', label: '资产管理', path: '/houses' },
-  { id: 'orders', label: '订单管理', path: '/orders' },
-  { id: 'contracts', label: '合同管理', path: '/contracts' },
-  { id: 'sublets', label: '转租管理', path: '/sublets' },
-  { id: 'tenant_profiles', label: '租客档案', path: '/tenant-profiles' },
-  { id: 'transactions', label: '交易记录', path: '/transactions' },
-  { id: 'contract_prepayments', label: '合同预收款', path: '/contract-prepayments' },
-  { id: 'bills', label: '账单管理', path: '/bills' },
-  { id: 'overdue', label: '欠费预警', path: '/overdue' },
-  { id: 'rent_reminders', label: '催租记录', path: '/rent-reminders' },
-  { id: 'reports', label: '报表管理', path: '/reports' },
-  { id: 'ledger_book', label: '记账本', path: '/ledger-book' },
-  { id: 'system_departments', label: '部门管理', path: '/system/departments' },
-  { id: 'system_roles', label: '角色管理', path: '/system/roles' },
-  { id: 'system_users', label: '用户管理', path: '/system/users' },
-]
-
-const initialRoles: Role[] = [
-  {
-    id: 'role_system_admin',
-    name: '系统管理员',
-    code: 'SYSTEM_ADMIN',
-    description: '拥有全量权限，可配置门店、账号、房源同步等',
-    menuIds: MENU_OPTIONS.map((m) => m.id),
-  },
-  {
-    id: 'role_store_manager',
-    name: '店长',
-    code: 'STORE_MANAGER',
-    description: '只能查看和操作自己门店的数据',
-    menuIds: ['home', 'houses', 'orders', 'contracts', 'sublets', 'tenant_profiles', 'transactions', 'contract_prepayments', 'bills', 'overdue', 'rent_reminders', 'reports', 'ledger_book'],
-  },
-  {
-    id: 'role_finance',
-    name: '财务',
-    code: 'FINANCE',
-    description: '可审批收据重打、作废收据，查看全部门店交易与账单',
-    menuIds: ['home', 'transactions', 'contract_prepayments', 'bills', 'overdue', 'rent_reminders', 'reports', 'ledger_book'],
-  },
-]
-
+const emptyFilters = { name: '', code: '', status: '', from: '', to: '' }
 export function SystemRolesPage() {
-  const [roles, setRoles] = useState<Role[]>(initialRoles)
-  const [roleModal, setRoleModal] = useState<{
-    type: 'add' | 'edit'
-    role?: Role
-    form: { name: string; code: string; description: string }
-  } | null>(null)
-  const [menuModalRole, setMenuModalRole] = useState<Role | null>(null)
-  const [menuSelectedIds, setMenuSelectedIds] = useState<Set<string>>(new Set())
-
-  const openAddRole = () => {
-    setRoleModal({
-      type: 'add',
-      form: { name: '', code: '', description: '' },
-    })
+  const { records: roles, commit, storageIssue } = useDemoRecords(SYSTEM_ROLE_KEY, INITIAL_DEMO_ROLES, isDemoRole)
+  const [inputs, setInputs] = useState(emptyFilters)
+  const [filters, setFilters] = useState(emptyFilters)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
+  const [editor, setEditor] = useState<{ isNew: boolean; role: DemoRole } | null>(null)
+  const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
+  const filtered = roles.filter((role) => role.name.includes(filters.name.trim()) && role.code.includes(filters.code.trim()) &&
+    (!filters.status || role.status === filters.status) && inCreatedRange(role.createdAt, filters.from, filters.to))
+    .sort((a, b) => a.sortOrder - b.sortOrder)
+  const paged = paginate(filtered, page, pageSize)
+  function query(event: FormEvent) {
+    event.preventDefault(); setError('')
+    if (inputs.from && inputs.to && inputs.from > inputs.to) { setError('创建时间开始日期不能晚于结束日期'); return }
+    setFilters({ ...inputs }); setPage(1)
   }
-
-  const openEditRole = (role: Role) => {
-    setRoleModal({
-      type: 'edit',
-      role,
-      form: {
-        name: role.name,
-        code: role.code,
-        description: role.description,
-      },
-    })
+  function open(role?: DemoRole) {
+    setError(''); setMessage('')
+    setEditor({ isNew: !role, role: role ? { ...role, menuIds: [...role.menuIds] } : {
+      id: crypto.randomUUID(), number: `ROLE-DEMO-${String(roles.length + 1).padStart(3, '0')}`, name: '', code: '',
+      sortOrder: 0, status: 'normal', description: '', menuIds: [], createdAt: '',
+    } })
   }
-
-  const closeRoleModal = () => setRoleModal(null)
-
-  const setRoleForm = (patch: Partial<{ name: string; code: string; description: string }>) => {
-    if (!roleModal) return
-    setRoleModal({ ...roleModal, form: { ...roleModal.form, ...patch } })
+  function patch(patchValue: Partial<DemoRole>) { if (editor) setEditor({ ...editor, role: { ...editor.role, ...patchValue } }) }
+  function save(event: FormEvent) {
+    event.preventDefault()
+    if (!editor) return
+    if (!editor.role.name.trim()) { setError('请填写角色名称'); return }
+    if (!editor.role.code.trim()) { setError('请填写权限字符'); return }
+    if (!Number.isInteger(editor.role.sortOrder)) { setError('请填写有效的角色顺序整数'); return }
+    const next = { ...editor.role, name: editor.role.name.trim(), code: editor.role.code.trim(), description: editor.role.description.trim(),
+      createdAt: editor.isNew ? new Date().toISOString() : editor.role.createdAt }
+    if (commit(editor.isNew ? [...roles, next] : roles.map((role) => role.id === next.id ? next : role))) {
+      setEditor(null); setError(''); setMessage('角色已保存到本机演示记录，未改变真实权限。')
+    } else setError('本机存储不可用，角色尚未保存。')
   }
-
-  const saveRole = () => {
-    if (!roleModal) return
-    const { name, code, description } = roleModal.form
-    if (!name.trim()) return
-    if (roleModal.type === 'add') {
-      const newId = 'role_' + Date.now()
-      setRoles((prev) => [
-        ...prev,
-        {
-          id: newId,
-          name: name.trim(),
-          code: code.trim() || newId.toUpperCase().replace('ROLE_', ''),
-          description: description.trim(),
-          menuIds: [],
-        },
-      ])
-    } else if (roleModal.role) {
-      setRoles((prev) =>
-        prev.map((r) =>
-          r.id === roleModal.role!.id
-            ? { ...r, name: name.trim(), code: code.trim(), description: description.trim() }
-            : r
-        )
-      )
+  function toggleStatus(role: DemoRole) {
+    if (commit(roles.map((item) => item.id === role.id ? { ...item, status: item.status === 'normal' ? 'disabled' : 'normal' } : item))) {
+      setMessage('已更新本机角色状态，未改变真实授权。')
     }
-    closeRoleModal()
   }
-
-  const openMenuModal = (role: Role) => {
-    setMenuModalRole(role)
-    setMenuSelectedIds(new Set(role.menuIds))
-  }
-
-  const closeMenuModal = () => {
-    setMenuModalRole(null)
-    setMenuSelectedIds(new Set())
-  }
-
-  const toggleMenu = (id: string) => {
-    setMenuSelectedIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }
-
-  const selectAllMenus = () => setMenuSelectedIds(new Set(MENU_OPTIONS.map((m) => m.id)))
-  const clearAllMenus = () => setMenuSelectedIds(new Set())
-
-  const saveMenuPermission = () => {
-    if (!menuModalRole) return
-    const ids = Array.from(menuSelectedIds)
-    setRoles((prev) =>
-      prev.map((r) => (r.id === menuModalRole.id ? { ...r, menuIds: ids } : r))
-    )
-    closeMenuModal()
-  }
-
-  const getMenuLabel = (menuId: string) => MENU_OPTIONS.find((m) => m.id === menuId)?.label ?? menuId
-
-  const roleMenuSummary = (role: Role) => {
-    if (role.menuIds.length === 0) return '未分配'
-    if (role.menuIds.length === MENU_OPTIONS.length) return '全部'
-    return role.menuIds.map(getMenuLabel).join('、')
-  }
-
-  return (
-    <div className="a-col" style={{ width: '100%', minWidth: 0 }}>
-      <div className="a-card">
-        <div className="a-h1">角色管理</div>
-        <div className="a-muted">
-          角色决定功能权限范围，例如“系统管理员、店长”等。可在此新增、修改角色，并为角色分配可访问的菜单，从而控制不同角色能看到哪些功能。
-        </div>
-      </div>
-
-      <div className="a-card" style={{ overflow: 'hidden' }}>
-        <div className="a-row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-          <span className="a-muted">共 {roles.length} 个角色</span>
-          <button type="button" className="a-btn" onClick={openAddRole}>
-            新增角色
-          </button>
-        </div>
-        <div className="a-table-wrap">
-          <table className="a-table a-table-sticky-op" style={{ width: '100%', minWidth: 640, tableLayout: 'fixed' }}>
-            <colgroup>
-              <col style={{ width: '12%' }} />
-              <col style={{ width: '14%' }} />
-              <col style={{ width: '28%' }} />
-              <col style={{ width: '32%' }} />
-              <col style={{ width: '14%' }} />
-            </colgroup>
-            <thead>
-              <tr>
-                <th>角色名称</th>
-                <th>编码</th>
-                <th>说明</th>
-                <th>菜单权限</th>
-                <th className="a-op-col">操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {roles.map((role) => (
-                <tr key={role.id}>
-                  <td>{role.name}</td>
-                  <td><code style={{ fontSize: 12 }}>{role.code}</code></td>
-                  <td className="a-muted">{role.description || '-'}</td>
-                  <td className="a-muted" style={{ wordBreak: 'break-word' }}>
-                    {roleMenuSummary(role)}
-                  </td>
-                  <td className="a-op-cell">
-                    <div className="a-op-actions">
-                      <button type="button" className="a-btn ghost" onClick={() => openEditRole(role)}>
-                        修改
-                      </button>
-                      <button type="button" className="a-btn ghost" onClick={() => openMenuModal(role)}>
-                        分配菜单
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* 新增/编辑角色弹窗 */}
-      {roleModal && (
-        <div
-          className="a-modal-backdrop"
-          role="dialog"
-          aria-modal="true"
-          onClick={(e) => e.target === e.currentTarget && closeRoleModal()}
-        >
-          <div className="a-modal" style={{ maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>
-            <div className="a-modal-header">
-              <div className="a-modal-title">
-                {roleModal.type === 'add' ? '新增角色' : '修改角色信息'}
-              </div>
-              <button type="button" className="a-modal-close" onClick={closeRoleModal}>
-                关闭
-              </button>
-            </div>
-            <div className="a-modal-body" style={{ display: 'block' }}>
-              <div className="a-kv">
-                <div className="a-kv-row">
-                  <div className="a-kv-k">角色名称</div>
-                  <div className="a-kv-v">
-                    <input
-                      type="text"
-                      className="a-filter-input"
-                      value={roleModal.form.name}
-                      onChange={(e) => setRoleForm({ name: e.target.value })}
-                      placeholder="如：系统管理员、店长"
-                      style={{ width: '100%' }}
-                    />
-                  </div>
-                </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">编码</div>
-                  <div className="a-kv-v">
-                    <input
-                      type="text"
-                      className="a-filter-input"
-                      value={roleModal.form.code}
-                      onChange={(e) => setRoleForm({ code: e.target.value })}
-                      placeholder="如：SYSTEM_ADMIN（英文，用于系统识别）"
-                      style={{ width: '100%' }}
-                    />
-                  </div>
-                </div>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">说明</div>
-                  <div className="a-kv-v">
-                    <input
-                      type="text"
-                      className="a-filter-input"
-                      value={roleModal.form.description}
-                      onChange={(e) => setRoleForm({ description: e.target.value })}
-                      placeholder="选填，描述该角色的权限范围"
-                      style={{ width: '100%' }}
-                    />
-                  </div>
-                </div>
-              </div>
-              <div className="a-row" style={{ marginTop: 14, gap: 10 }}>
-                <button type="button" className="a-btn" onClick={saveRole}>
-                  {roleModal.type === 'add' ? '确定新增' : '保存'}
-                </button>
-                <button type="button" className="a-btn ghost" onClick={closeRoleModal}>
-                  取消
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 分配菜单权限弹窗 */}
-      {menuModalRole && (
-        <div
-          className="a-modal-backdrop"
-          role="dialog"
-          aria-modal="true"
-          onClick={(e) => e.target === e.currentTarget && closeMenuModal()}
-        >
-          <div className="a-modal" style={{ maxWidth: 480 }} onClick={(e) => e.stopPropagation()}>
-            <div className="a-modal-header">
-              <div className="a-modal-title">分配菜单权限 · {menuModalRole.name}</div>
-              <button type="button" className="a-modal-close" onClick={closeMenuModal}>
-                关闭
-              </button>
-            </div>
-            <div className="a-modal-body" style={{ display: 'block' }}>
-              <p className="a-muted" style={{ marginBottom: 12 }}>
-                勾选该角色可访问的菜单，未勾选的菜单在侧边栏将不可见。
-              </p>
-              <div className="a-row" style={{ gap: 8, marginBottom: 12 }}>
-                <button type="button" className="a-btn ghost" onClick={selectAllMenus}>
-                  全选
-                </button>
-                <button type="button" className="a-btn ghost" onClick={clearAllMenus}>
-                  清空
-                </button>
-              </div>
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(2, 1fr)',
-                  gap: '8px 16px',
-                  maxHeight: 320,
-                  overflow: 'auto',
-                }}
-              >
-                {MENU_OPTIONS.map((menu) => (
-                  <label
-                    key={menu.id}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      cursor: 'pointer',
-                      fontSize: 14,
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={menuSelectedIds.has(menu.id)}
-                      onChange={() => toggleMenu(menu.id)}
-                    />
-                    <span>{menu.label}</span>
-                  </label>
-                ))}
-              </div>
-              <div className="a-row" style={{ marginTop: 14, gap: 10 }}>
-                <button type="button" className="a-btn" onClick={saveMenuPermission}>
-                  保存
-                </button>
-                <button type="button" className="a-btn ghost" onClick={closeMenuModal}>
-                  取消
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  )
+  return <div className="a-col" style={{ minWidth: 0 }}>
+    <div className="a-card"><div className="a-h1">角色管理</div>
+      <p className="a-muted">虚构演示角色，保存在当前浏览器。菜单勾选、顺序和状态仅用于原型评审，不改变实际登录权限或侧栏；历史创建时间未知时显示“—”。</p></div>
+    {storageIssue ? <div role="alert" className="a-card a-error">{storageIssue}</div> : null}
+    {error && !editor ? <div role="alert" className="a-card a-error">{error}</div> : null}
+    {message ? <div role="status" className="a-card a-success">{message}</div> : null}
+    <form className="a-card a-filterbar" style={{ flexWrap: 'wrap', gap: 10 }} onSubmit={query}>
+      <label>角色名称 <input className="a-filter-input" value={inputs.name} placeholder="请输入角色名称" onChange={(event) => setInputs({ ...inputs, name: event.target.value })} /></label>
+      <label>权限字符 <input className="a-filter-input" value={inputs.code} placeholder="请输入权限字符" onChange={(event) => setInputs({ ...inputs, code: event.target.value })} /></label>
+      <label>状态 <select className="a-filter-select" value={inputs.status} onChange={(event) => setInputs({ ...inputs, status: event.target.value })}><option value="">全部状态</option><option value="normal">正常</option><option value="disabled">停用</option></select></label>
+      <label>创建时间起 <input className="a-filter-input" type="date" value={inputs.from} onChange={(event) => setInputs({ ...inputs, from: event.target.value })} /></label>
+      <label>创建时间止 <input className="a-filter-input" type="date" value={inputs.to} onChange={(event) => setInputs({ ...inputs, to: event.target.value })} /></label>
+      <button className="a-btn" type="submit">搜索</button><button className="a-btn ghost" type="button" onClick={() => { setInputs(emptyFilters); setFilters(emptyFilters); setPage(1); setError('') }}>重置</button>
+    </form>
+    <div className="a-card"><div className="a-row" style={{ justifyContent: 'space-between', marginBottom: 12 }}><span className="a-muted">共 {filtered.length} 个角色</span><button className="a-btn" type="button" onClick={() => open()}>新增角色</button></div>
+      <div className="a-table-wrap"><table className="a-table" style={{ minWidth: 1100 }}><thead><tr>
+        {['角色编号', '角色名称', '权限字符', '显示顺序', '状态', '创建时间', '菜单权限（演示）', '操作'].map((label) => <th key={label}>{label}</th>)}
+      </tr></thead><tbody>{paged.items.map((role) => <tr key={role.id}><td>{role.number}</td><td>{role.name}</td><td>{role.code}</td><td>{role.sortOrder}</td>
+        <td><label className="a-switch"><input type="checkbox" aria-label={`${role.name}状态`} checked={role.status === 'normal'} onChange={() => toggleStatus(role)} /><span className="a-switch-slider" /></label> {role.status === 'normal' ? '正常' : '停用'}</td>
+        <td>{systemTime(role.createdAt)}</td><td style={{ maxWidth: 250, overflowWrap: 'anywhere' }}>{role.menuIds.length ? ADMIN_MENU_OPTIONS.filter((menu) => role.menuIds.includes(menu.id)).map((menu) => menu.label).join('、') || '已选择分组' : '未分配'}</td>
+        <td><div className="a-op-actions"><button type="button" className="a-btn ghost" onClick={() => open(role)}>修改</button><button type="button" className="a-btn ghost" onClick={() => open(role)}>分配菜单</button></div></td></tr>)}
+        {!paged.items.length ? <tr><td colSpan={8} style={{ textAlign: 'center', padding: 32 }} className="a-muted">暂无符合条件的演示角色</td></tr> : null}
+      </tbody></table></div><Pagination total={paged.total} page={paged.page} pageSize={paged.pageSize} onChange={(next) => { setPage(next.page); setPageSize(next.pageSize) }} /></div>
+    {editor ? <DemoDialog title={editor.isNew ? '新增角色' : '修改角色信息'} onClose={() => { setEditor(null); setError('') }}>
+      <form noValidate onSubmit={save} className="a-col" style={{ gap: 14 }}>
+        {error ? <div role="alert" className="a-error">{error}</div> : null}
+        <label className="a-col">角色名称 *<input className="a-filter-input" maxLength={100} aria-required="true" value={editor.role.name} onChange={(event) => patch({ name: event.target.value })} /></label>
+        <label className="a-col">权限字符 *<input className="a-filter-input" maxLength={100} aria-required="true" value={editor.role.code} onChange={(event) => patch({ code: event.target.value })} /></label>
+        <label className="a-col">角色顺序 *<input className="a-filter-input" type="number" step={1} aria-required="true" value={Number.isNaN(editor.role.sortOrder) ? '' : editor.role.sortOrder} onChange={(event) => patch({ sortOrder: event.target.value === '' ? NaN : Number(event.target.value) })} /></label>
+        <div className="a-row" role="group" aria-label="状态">状态 {(['normal', 'disabled'] as const).map((status) => <label key={status}><input type="radio" name="role-status" checked={editor.role.status === status} onChange={() => patch({ status })} /> {status === 'normal' ? '正常' : '停用'}</label>)}</div>
+        <SystemMenuPermissions value={editor.role.menuIds} onChange={(menuIds) => patch({ menuIds })} />
+        <label className="a-col">备注<textarea className="a-filter-input" rows={3} maxLength={500} value={editor.role.description} onChange={(event) => patch({ description: event.target.value })} /></label>
+        <div className="a-row" style={{ justifyContent: 'flex-end' }}><button type="button" className="a-btn ghost" onClick={() => { setEditor(null); setError('') }}>取消</button><button className="a-btn" type="submit">保存</button></div>
+      </form>
+    </DemoDialog> : null}
+  </div>
 }

@@ -9,14 +9,16 @@ type Props = {
   selectedIds: string[]
   /** 手动新建时仅可选空置；配置合同时可含已选中的在租资产 */
   vacantOnly?: boolean
+  allowedStatuses?: readonly string[]
   onClose: () => void
   onConfirm: (houses: JiangnanHousePick[]) => void
 }
 
-export function HouseMultiSelectModal({
+function HouseSelectionSession({
   open,
   selectedIds,
   vacantOnly = true,
+  allowedStatuses,
   onClose,
   onConfirm,
 }: Props) {
@@ -27,7 +29,6 @@ export function HouseMultiSelectModal({
 
   useEffect(() => {
     if (!open) return
-    setPicked(new Set(selectedIds))
     let alive = true
     void apiGet<{ items: ApiHouse[] }>('/api/admin/houses').then((r) => {
       if (!alive) return
@@ -47,12 +48,13 @@ export function HouseMultiSelectModal({
   const filtered = useMemo(() => {
     const kw = q.trim().toLowerCase()
     return items.filter((h) => {
+      if (allowedStatuses && !allowedStatuses.includes(h.status || '')) return false
       if (vacantOnly && h.status !== 'VACANT' && !selectedIds.includes(h.id)) return false
       if (!kw) return true
       const hay = `${h.apartmentName} ${h.houseNo} ${h.storeName} ${h.address ?? ''}`.toLowerCase()
       return hay.includes(kw)
     })
-  }, [items, q, vacantOnly, selectedIds])
+  }, [items, q, vacantOnly, selectedIds, allowedStatuses])
 
   if (!open) return null
 
@@ -73,6 +75,7 @@ export function HouseMultiSelectModal({
             onChange={(e) => setQ(e.target.value)}
             style={{ width: '100%', marginBottom: 10 }}
           />
+          {allowedStatuses?.includes('SIGNED') ? <div className="a-muted" style={{ fontSize: 12, marginBottom: 8 }}>仅显示空置或已签约资产。已签约资产会新增一份合同，请注意重复计费。</div> : null}
           {vacantOnly ? (
             <div className="a-muted" style={{ fontSize: 12, marginBottom: 8 }}>
               默认仅展示空置资产；已选中的资产会保留显示。
@@ -120,7 +123,7 @@ export function HouseMultiSelectModal({
                       <br />
                       <span className="a-muted" style={{ fontSize: 12 }}>
                         {h.address?.trim() || '未录入地址'} · {h.area}㎡ · ¥{h.rentMonthly}/月
-                        {h.status && h.status !== 'VACANT' ? ` · ${h.status}` : ''}
+                        {h.status && h.status !== 'VACANT' ? ` · ${h.status === 'SIGNED' ? '已签约' : h.status}` : ''}
                       </span>
                     </span>
                   </label>
@@ -137,7 +140,7 @@ export function HouseMultiSelectModal({
               className="a-btn"
               onClick={() => {
                 const houses = items
-                  .filter((h) => picked.has(h.id))
+                  .filter((h) => picked.has(h.id) && (!allowedStatuses || allowedStatuses.includes(h.status || '')))
                   .map((h) => ({
                     id: h.id,
                     apartmentName: h.apartmentName,
@@ -160,4 +163,8 @@ export function HouseMultiSelectModal({
       </div>
     </div>
   )
+}
+
+export function HouseMultiSelectModal(props: Props) {
+  return props.open ? <HouseSelectionSession {...props} /> : null
 }

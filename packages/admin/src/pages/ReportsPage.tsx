@@ -1276,7 +1276,7 @@ export function ReportsPage() {
     setParams(current => { const updated = new URLSearchParams(current); updated.set('report', next); return updated }, { replace: true })
   }
   return <div className="a-col a-reports-page">
-    <header className="a-card a-reports-header"><div><h1 className="a-h1">报表管理</h1><p className="a-muted">从基础档案到经营分析，按业务分类查询和导出报表。</p></div><span className="a-reports-count">12 张报表</span></header>
+    <header className="a-card a-reports-header"><div><h1 className="a-h1">报表统计</h1><p className="a-muted">从基础档案到经营分析，按业务分类查询和导出报表。</p></div><span className="a-reports-count">12 张报表</span></header>
     <section className="a-card a-reports-navigation" aria-label="报表导航">
       <div role="tablist" aria-label="报表类型" className="a-reports-groups" onKeyDown={event => {
         const index = ALL_TABS.indexOf(tab)

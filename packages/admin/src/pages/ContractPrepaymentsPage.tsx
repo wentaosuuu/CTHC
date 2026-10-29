@@ -90,7 +90,7 @@ export function ContractPrepaymentsPage() {
   return (
     <div className="a-col">
       <div className="a-card">
-        <div className="a-h1">合同预收款</div>
+        <div className="a-h1">预收余额列表</div>
         <div className="a-muted">
           当线下核销金额<strong>超过</strong>账单剩余应付时，超出部分自动记入对应合同的「预收余额」，用于后续抵扣或人工对账。本页列出<strong>余额大于 0</strong>的合同；点击「流水」查看入账明细。
         </div>

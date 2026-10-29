@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useState, type ChangeEvent } from 'react'
+import { Link } from 'react-router-dom'
 import { apiGet, apiPost } from '../api'
+import { AssetDevelopmentFields } from '../components/AssetDevelopmentFields'
+import { readAssetSupplement, readAssetSupplements, saveAssetSupplement, defaultAssetSupplement, ASSET_SUPPLEMENTS_CHANGED, type AssetSupplement } from '../assetDevelopment'
+import { readEnabledDemoSubMerchants } from '../subMerchantDemoData'
+import { readHousingStatus } from '../housingDemoData'
+import { calculateAssetAreaStats } from '../assetAreaStats'
+import { assetImageUploadError } from '../assetImageValidation'
+import { assetManagerOptions, type AssetManagerDepartment } from '../assetManagerOptions'
 import { getAdminToken } from '../auth'
 import { Pagination, paginate } from '../components/Pagination'
 
@@ -99,6 +107,12 @@ type HouseChangeLogRow = {
   changedAt: string
   operatorName: string
   operatorEmail: string
+}
+
+/** 对外展示价格可含分；原 DEMO 的业务接口按整数元保存，因此独立覆盖展示值。 */
+function displayRent(house: Pick<HouseItem, 'id' | 'storeName' | 'rentMonthly'>) {
+  const price = readAssetSupplement(house.id, house.storeName).displayPrice
+  return typeof price === 'number' && Number.isFinite(price) && price >= 0 ? price : house.rentMonthly
 }
 
 function projectDisplay(h: Pick<HouseItem, 'projectName' | 'storeName'>) {
@@ -287,6 +301,16 @@ function statusBadgeClass(status: string) {
   }
 }
 
+function formatStatArea(n: number): string {
+  if (!Number.isFinite(n)) return '—'
+  return n.toLocaleString('zh-CN', { maximumFractionDigits: 2 })
+}
+
+function formatStatPct(v: number | null): string {
+  if (v == null || !Number.isFinite(v)) return '—'
+  return `${(Math.round(v * 1000) / 10).toFixed(1)}%`
+}
+
 export function HousesPage() {
   const [items, setItems] = useState<HouseItem[]>([])
   const [error, setError] = useState('')
@@ -296,7 +320,9 @@ export function HousesPage() {
   const [q, setQ] = useState('')
   const [status, setStatus] = useState('')
   const [storeFilter, setStoreFilter] = useState('')
-  const [dimProject, setDimProject] = useState('')
+  const [projectFilter, setProjectFilter] = useState('')
+  const [assetSupplements, setAssetSupplements] = useState(readAssetSupplements)
+  const [managerDepartments, setManagerDepartments] = useState<AssetManagerDepartment[]>([])
   const [dimAsset, setDimAsset] = useState('')
   const [dimRentUnit, setDimRentUnit] = useState('')
   const [dimManager, setDimManager] = useState('')
@@ -307,7 +333,7 @@ export function HousesPage() {
     setQ('')
     setStatus('')
     setStoreFilter('')
-    setDimProject('')
+    setProjectFilter('')
     setDimAsset('')
     setDimRentUnit('')
     setDimManager('')
@@ -321,7 +347,9 @@ export function HousesPage() {
 
   // 房源配置弹窗（配置月租 + 图片）
   const [configTarget, setConfigTarget] = useState<HouseItem | null>(null)
-  const [configRentMonthly, setConfigRentMonthly] = useState<number>(0)
+  const [configSupplement, setConfigSupplement] = useState<AssetSupplement>(() => defaultAssetSupplement(''))
+  const [configSaving, setConfigSaving] = useState(false)
+  const [configRentMonthly, setConfigRentMonthly] = useState<number | ''>(0)
   const [configImages, setConfigImages] = useState<string[]>([])
   const [configImgIndex, setConfigImgIndex] = useState<number>(0)
   const [configAddress, setConfigAddress] = useState<string>('')
@@ -361,9 +389,13 @@ export function HousesPage() {
 
   function missingPublishFields(h: HouseItem) {
     const missing: string[] = []
-    if (h.rentMonthly <= 0) missing.push('租金')
+    if (displayRent(h) <= 0) missing.push('价格')
     if ((h.images?.length ?? 0) === 0) missing.push('图片')
-    if (!(h.address ?? '').trim()) missing.push('公寓地址')
+    const supplement = readAssetSupplement(h.id, h.storeName)
+    if (!supplement.rentable) missing.push('可出租条件')
+    if (!supplement.storeName.trim()) missing.push('所属门店')
+    if (!readEnabledDemoSubMerchants().some((merchant) => merchant.id === supplement.merchantId)) missing.push('正常收款子商户')
+    if (!(h.address ?? '').trim()) missing.push('坐落')
     return missing
   }
 
@@ -373,6 +405,7 @@ export function HousesPage() {
 
   /** 后台展示用的“状态标签”，不直接等同于数据库 status（因为未上架时不能显示“可下单”） */
   function adminStatusLabel(h: HouseItem) {
+    if (h.status !== 'VACANT' && h.status !== 'TERMINATED') return statusZh(h.status)
     if (!h.isPublished) {
       const m = missingPublishFields(h)
       if (m.length === 0) return '已配置 · 未上架'
@@ -382,6 +415,7 @@ export function HousesPage() {
   }
 
   function adminStatusBadgeClass(h: HouseItem) {
+    if (h.status !== 'VACANT' && h.status !== 'TERMINATED') return statusBadgeClass(h.status)
     if (!h.isPublished) {
       const ready = isConfigReady(h)
       return ready ? 'a-badge status-not-published' : 'a-badge status-not-configured'
@@ -392,14 +426,28 @@ export function HousesPage() {
   async function load() {
     setError('')
     setImportResult(null)
-    const r = await apiGet<{ items: HouseItem[] }>('/api/admin/houses')
-    if (!r.ok) return setError(r.error)
-    setItems(r.data.items)
+    try {
+      const r = await apiGet<{ items: HouseItem[] }>('/api/admin/houses')
+      if (!r.ok) { setError(r.error); return false }
+      setItems(r.data.items)
+      return true
+    } catch {
+      setError('演示数据加载失败，请检查本地服务后重试')
+      return false
+    }
   }
 
   async function setHousePublished(h: HouseItem, next: boolean) {
     setError('')
     setMsg('')
+    if (next && !isConfigReady(h)) {
+      setError(`上架前请配置：${missingPublishFields(h).join('、')}`)
+      return
+    }
+    if (next && displayRent(h) !== h.rentMonthly) {
+      setError('当前对外展示价格仅保存于本机，原业务租金尚未同步。可继续评审页面；上架演示须先保存与原业务一致的整数元租金。')
+      return
+    }
     const path = next ? `/api/admin/houses/${h.id}/publish` : `/api/admin/houses/${h.id}/unpublish`
     const r = await apiPost<{ ok: true; id: string; isPublished: boolean }>(path, {})
     if (!r.ok) return setError(r.error)
@@ -408,18 +456,24 @@ export function HousesPage() {
   }
 
   useEffect(() => {
-    load()
+    let active = true
+    void apiGet<{ items: HouseItem[] }>('/api/admin/houses').then((result) => {
+      if (!active) return
+      if (result.ok) setItems(result.data.items)
+      else setError(result.error)
+    }).catch(() => {
+      if (active) setError('演示数据加载失败，请检查本地服务后重试')
+    })
+    void apiGet<{ items: AssetManagerDepartment[] }>('/api/admin/departments').then((result) => {
+      if (active && result.ok) setManagerDepartments(result.data.items)
+    }).catch(() => { /* 组织资料缺失时使用已知候选回退，不影响房源加载。 */ })
+    const onSupplementChanged = () => setAssetSupplements(readAssetSupplements())
+    window.addEventListener(ASSET_SUPPLEMENTS_CHANGED, onSupplementChanged)
+    return () => {
+      active = false
+      window.removeEventListener(ASSET_SUPPLEMENTS_CHANGED, onSupplementChanged)
+    }
   }, [])
-
-  async function syncDemo() {
-    setError('')
-    setMsg('')
-    setImportResult(null)
-    const r = await apiPost<{ ok: true; upsertedHouses: number }>('/api/admin/integrations/asset/sync-demo', {})
-    if (!r.ok) return setError(r.error)
-    setMsg(`已完成同步，更新房源数：${r.data.upsertedHouses}`)
-    await load()
-  }
 
   async function downloadHouseImportTemplate() {
     setError('')
@@ -480,7 +534,8 @@ export function HousesPage() {
 
   function openConfigModal(h: HouseItem) {
     setConfigTarget(h)
-    setConfigRentMonthly(h.rentMonthly)
+    setConfigSupplement(readAssetSupplement(h.id, h.storeName))
+    setConfigRentMonthly(displayRent(h))
     setConfigImages(h.images)
     setConfigImgIndex(0)
     setConfigAddress(h.address ? String(h.address) : '')
@@ -574,12 +629,11 @@ export function HousesPage() {
   async function onConfigUploadImages(files: FileList | null) {
     if (!files || files.length === 0) return
     try {
-      const next: string[] = []
-      for (const f of Array.from(files)) {
-        if (!f.type.startsWith('image/')) continue
-        next.push(await readFileAsDataUrl(f))
-      }
-      // 上限：最多 10 张
+      const selectedFiles = Array.from(files)
+      const uploadError = assetImageUploadError(selectedFiles, configImages.length)
+      if (uploadError) { setError(uploadError); return }
+      setError('')
+      const next = await Promise.all(selectedFiles.map(readFileAsDataUrl))
       setConfigImages((prev) => [...prev, ...next].slice(0, 10))
       setConfigImgIndex(0)
     } catch {
@@ -588,89 +642,115 @@ export function HousesPage() {
   }
 
   async function saveConfigModal() {
-    if (!configTarget) return
-    setError('')
-    setMsg('')
-    const rentMonthly = Math.max(0, Math.floor(configRentMonthly))
-    const images = configImages
+    if (!configTarget || configSaving) return
+    setError(''); setMsg('')
+    if (configRentMonthly === '' || !Number.isFinite(configRentMonthly) || configRentMonthly < 0) return setError('请填写有效的对外展示价格')
+    const displayPrice = Math.round(configRentMonthly * 100) / 100
+    if (!readEnabledDemoSubMerchants().some((merchant) => merchant.id === configSupplement.merchantId)) return setError('请选择正常状态的收款子商户')
+    if (!configSupplement.storeName.trim()) return setError('请选择所属门店')
+    if (configTarget.isPublished && !configSupplement.rentable) return setError('请先将房源下架，再设置为不可出租')
+    if ([configSupplement.negotiatedRent, configSupplement.cleaningDeposit, configSupplement.utilityDeposit].some((number) => !Number.isFinite(number) || number < 0)) return setError('协议定价和押金须为大于或等于0的有效金额')
     const address = configAddress.trim()
-    const nearbySubway = parseSubway(configSubwayText)
-    const nearbySchools = parseSchools(configSchoolsText)
-    const nearbyBusStops = parseBusStops(configBusText)
-
-    if (!address) {
-      setError('请填写公寓地址')
-      return
+    if (!address) return setError('请填写坐落')
+    if (!configAssetType.trim()) return setError('请填写资产类型')
+    if (configExternalBrowseUrl.trim()) {
+      try {
+        const url = new URL(configExternalBrowseUrl.trim())
+        if (!['http:', 'https:'].includes(url.protocol)) throw new Error('INVALID_URL')
+      } catch { return setError('H5仅浏览外链须为有效的HTTP或HTTPS链接') }
     }
-
-    if (!configAssetType.trim()) {
-      setError('请填写资产类型')
-      return
-    }
-
-    const houseConfig = serializeHouseConfigForApi(configHouseConfig)
-
-    const r = await apiPost<{ ok: true; id: string }>(`/api/admin/houses/${configTarget.id}/config`, {
-      rentMonthly,
-      images,
-      address,
-      nearbySubway,
-      nearbySchools,
-      nearbyBusStops,
-      externalBrowseUrl: configExternalBrowseUrl.trim() === '' ? '' : configExternalBrowseUrl.trim(),
-      houseConfig,
-      projectName: configProjectName.trim() === '' ? '' : configProjectName.trim(),
-      assetType: configAssetType.trim(),
-      rentCollectionUnit: configRentCollectionUnit.trim() === '' ? '' : configRentCollectionUnit.trim(),
-      managerName: configManagerName.trim() === '' ? '' : configManagerName.trim(),
-      mgmtDepartment: configMgmtDepartment.trim() === '' ? '' : configMgmtDepartment.trim(),
-      waterMeterNos: configWaterMeters.map((s) => s.trim()).filter(Boolean),
-      electricMeterNos: configElectricMeters.map((s) => s.trim()).filter(Boolean),
-    })
-    if (!r.ok) return setError(r.error)
-    setMsg('已保存房源配置（含首页同源维度：项目名称 / 资产类型 / 收租单位 / 管理人 / 管理部门）')
-    setConfigTarget(null)
-    await load()
+    setConfigSaving(true)
+    try {
+      const r = await apiPost<{ ok: true; id: string }>(`/api/admin/houses/${configTarget.id}/config`, {
+        // 保持原整元业务接口兼容；小数展示价格单独保存，绝不隐式截断。
+        ...(Number.isInteger(displayPrice) ? { rentMonthly: displayPrice } : {}),
+        images: configImages, address,
+        nearbySubway: parseSubway(configSubwayText), nearbySchools: parseSchools(configSchoolsText), nearbyBusStops: parseBusStops(configBusText),
+        externalBrowseUrl: configExternalBrowseUrl.trim(), houseConfig: serializeHouseConfigForApi(configHouseConfig),
+        projectName: configProjectName.trim(), assetType: configAssetType.trim(), rentCollectionUnit: configRentCollectionUnit.trim(),
+        managerName: configManagerName.trim(), mgmtDepartment: configMgmtDepartment.trim(),
+        waterMeterNos: configWaterMeters.map((text) => text.trim()).filter(Boolean), electricMeterNos: configElectricMeters.map((text) => text.trim()).filter(Boolean),
+      })
+      if (!r.ok) { setError(r.error); return }
+      try {
+        saveAssetSupplement(configTarget.id, { ...configSupplement, ownerName: configSupplement.ownerName.trim(),
+          displayPrice, updatedAt: new Date().toISOString() })
+      } catch {
+        setError('原有资料已保存，但补充配置保存失败。请保留当前输入并重试。')
+        return
+      }
+      setMsg(Number.isInteger(displayPrice) ? '房源配置已保存。补充资料保留在本机演示副本。'
+        : `房源配置已保存，展示价格为¥${displayPrice}；原业务金额保持不变，补充资料保留在本机演示副本。`)
+      setConfigTarget(null)
+      await load()
+    } catch { setError('房源配置保存失败，请检查本地服务后重试。') }
+    finally { setConfigSaving(false) }
   }
 
   const filterOptions = useMemo(() => {
     const stores = Array.from(new Set(items.map((h) => h.storeName).filter(Boolean))).sort()
-    const projects = Array.from(new Set(items.map((h) => projectDisplay(h)).filter(Boolean))).sort()
     const dimAssets = Array.from(new Set(items.map((h) => h.assetType).filter(Boolean))).sort()
     const rentUnits = Array.from(new Set(items.map((h) => (h.rentCollectionUnit ?? '').trim()).filter(Boolean))).sort()
-    const managers = Array.from(new Set(items.map((h) => (h.managerName ?? '').trim()).filter(Boolean))).sort()
+    const managers = Array.from(new Set(items.flatMap((h) => (h.managerName ?? '').split('、').map((name) => name.trim())).filter(Boolean))).sort()
     const apartments = Array.from(new Set(items.map((h) => h.apartmentName).filter(Boolean))).sort()
     const houseTypes = Array.from(new Set(items.map((h) => h.houseType).filter(Boolean))).sort()
-    return { stores, projects, dimAssets, rentUnits, managers, apartments, houseTypes }
+    return { stores, dimAssets, rentUnits, managers, apartments, houseTypes }
   }, [items])
 
   const filtered = useMemo(() => {
     const kw = q.trim().toLowerCase()
     return items.filter((h) => {
       if (status) {
-        // 这里的状态筛选只面向「已上架」的房源：未上架/未配置的房源不应该再显示为“空置可下单”等状态
-        if (!h.isPublished) return false
         if (h.status !== status) return false
       }
       if (storeFilter && h.storeName !== storeFilter) return false
-      if (dimProject && projectDisplay(h) !== dimProject) return false
+      if (projectFilter.trim() && !projectDisplay(h).toLowerCase().includes(projectFilter.trim().toLowerCase())) return false
       if (dimAsset && h.assetType !== dimAsset) return false
       if (dimRentUnit && (h.rentCollectionUnit?.trim() || '') !== dimRentUnit) return false
-      if (dimManager && (h.managerName?.trim() || '') !== dimManager) return false
+      if (dimManager && !(h.managerName ?? '').split('、').map((name) => name.trim()).includes(dimManager)) return false
       if (apartmentFilter && h.apartmentName !== apartmentFilter) return false
       if (houseTypeFilter && h.houseType !== houseTypeFilter) return false
       if (!kw) return true
       const hay = `${h.houseBizId} ${h.storeName} ${projectDisplay(h)} ${h.apartmentName} ${h.assetType ?? ''} ${(h.rentCollectionUnit ?? '').trim()} ${(h.managerName ?? '').trim()} ${h.houseNo} ${h.houseType}`.toLowerCase()
       return hay.includes(kw)
     })
-  }, [items, q, status, storeFilter, dimProject, dimAsset, dimRentUnit, dimManager, apartmentFilter, houseTypeFilter])
+  }, [items, q, status, storeFilter, projectFilter, dimAsset, dimRentUnit, dimManager, apartmentFilter, houseTypeFilter])
+
+  /** 面积统计随项目等筛选变化；可出租与上架独立，在租面积不因下架消失。 */
+  const assetStats = useMemo(() => calculateAssetAreaStats(filtered,
+    (house) => assetSupplements[house.id]?.rentable ?? true), [filtered, assetSupplements])
+
+  const managerOptions = assetManagerOptions({ storeName: configSupplement.storeName, departments: managerDepartments,
+    existingNames: filterOptions.managers, selectedNames: configManagerName.split('、').filter(Boolean) })
 
   const pageData = useMemo(() => paginate(filtered, page, pageSize), [filtered, page, pageSize])
 
+  async function syncDemoAssets() {
+    if (await load()) setMsg('演示数据已刷新。本次未调用外部资产管理系统；真实同步结果尚未接入。')
+  }
+
+  function exportAssets() {
+    const csvCell = (value: unknown) => {
+      const text = String(value ?? '')
+      const safe = /^[=+@-]/.test(text) ? `'${text}` : text
+      return `"${safe.replace(/"/g, '""')}"`
+    }
+    const rows: unknown[][] = [['房源ID', '门店', '项目名称', '资产类型', '收租单位', '管理人', '管理部门', '公寓', '房号', '房型', '面积(㎡)', '租金', '状态', '住建状态', '资产管理系统状态']]
+    for (const house of filtered) rows.push([house.houseBizId, house.storeName, projectDisplay(house), house.assetType, house.rentCollectionUnit, house.managerName, house.mgmtDepartment, house.apartmentName, house.houseNo, house.houseType, house.area, displayRent(house), adminStatusLabel(house), readHousingStatus(house.id), '未同步'])
+    const blob = new Blob(['\ufeff' + rows.map((row) => row.map(csvCell).join(',')).join('\r\n')], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = '资产列表-演示.csv'
+    anchor.click()
+    URL.revokeObjectURL(url)
+    setMsg(`已导出当前筛选的 ${filtered.length} 条演示资产。`)
+  }
+
   return (
     <div className="a-col">
-      <div className="a-h1">资产管理</div>
-      {error ? <div className="a-card a-error">操作失败：{error}</div> : null}
+      <div className="a-h1">资产列表</div>
+      {error && !configTarget ? <div className="a-card a-error" role="alert">操作失败：{error}</div> : null}
       {msg ? <div className="a-card a-success">{msg}</div> : null}
 
       {importResult?.errors?.length ? (
@@ -687,7 +767,9 @@ export function HousesPage() {
 
       <div className="a-card a-row" style={{ justifyContent: 'space-between' }}>
         <div className="a-filterbar" style={{ flexWrap: 'wrap', gap: 8 }}>
-          <span className="a-filter-label">筛选</span>
+          <span className="a-filter-label">项目筛选</span>
+          <input className="a-filter-input" aria-label="项目名称" placeholder="请输入项目名称" value={projectFilter}
+            onChange={(event) => { setProjectFilter(event.target.value); setPage(1) }} />
           <input
             className="a-filter-input"
             value={q}
@@ -710,20 +792,6 @@ export function HousesPage() {
             <option value="">全部门店</option>
             {filterOptions.stores.map((s) => (
               <option key={s} value={s}>{s}</option>
-            ))}
-          </select>
-          <select
-            className="a-filter-select"
-            value={dimProject}
-            onChange={(e) => {
-              setDimProject(e.target.value)
-              setPage(1)
-            }}
-            title="项目名称（空则沿用门店名）"
-          >
-            <option value="">全部项目</option>
-            {filterOptions.projects.map((p) => (
-              <option key={p} value={p}>{p}</option>
             ))}
           </select>
           <select
@@ -821,12 +889,9 @@ export function HousesPage() {
           <span className="a-muted">共 {filtered.length} 套</span>
         </div>
         <div className="a-row">
-          <button className="a-btn" onClick={syncDemo}>
-            立即同步
-          </button>
-          <button className="a-btn ghost" onClick={load}>
-            刷新
-          </button>
+          <button type="button" className="a-btn ghost" onClick={load}>刷新</button>
+          <button type="button" className="a-btn ghost" onClick={syncDemoAssets} title="仅刷新本地演示数据">立即同步</button>
+          <button type="button" className="a-btn ghost" onClick={exportAssets}>导出</button>
           <button type="button" className="a-btn ghost" onClick={downloadHouseImportTemplate}>
             下载资产维护模板
           </button>
@@ -842,11 +907,44 @@ export function HousesPage() {
         </div>
       </div>
 
+      {/* 数据统计（方框）：展示当前筛选条件下的整体情况，随筛选联动 */}
+      <section className="a-asset-stats" aria-label="资产数据统计">
+        <div className="a-asset-stats-grid">
+          <article className="a-asset-stat-box">
+            <div className="a-asset-stat-label">总面积</div>
+            <div className="a-asset-stat-value">
+              {formatStatArea(assetStats.totalArea)}
+              <span className="a-asset-stat-unit">㎡</span>
+            </div>
+          </article>
+          <article className="a-asset-stat-box">
+            <div className="a-asset-stat-label">可出租面积</div>
+            <div className="a-asset-stat-value">
+              {formatStatArea(assetStats.rentableArea)}
+              <span className="a-asset-stat-unit">㎡</span>
+            </div>
+          </article>
+          <article className="a-asset-stat-box">
+            <div className="a-asset-stat-label">已出租面积</div>
+            <div className="a-asset-stat-value">
+              {formatStatArea(assetStats.rentedArea)}
+              <span className="a-asset-stat-unit">㎡</span>
+            </div>
+          </article>
+          <article className="a-asset-stat-box a-asset-stat-box--highlight">
+            <div className="a-asset-stat-label">出租率</div>
+            <div className="a-asset-stat-value">{formatStatPct(assetStats.occupancyRate)}</div>
+          </article>
+        </div>
+      </section>
+
       <div className="a-card a-muted" style={{ fontSize: 12, lineHeight: 1.55 }}>
         <strong style={{ color: '#334155' }}>状态说明：</strong>
         租客下单 →「下单锁定」（他人不可下单）；店长通过 →「预留锁定」（待签约/待付）；支付成功 →「已签约」。
-        未上架/未配置（缺租金、图片或公寓地址）→ 状态会显示「未配置/未上架」，H5 不可见、不可下单。
+        不可出租的资产不能上架；可出租与当前是否上架独立。上架前须配置价格、图片、坐落、所属门店及正常收款子商户。
+        面积统计按当前筛选计算：可出租面积不依赖上架开关，已出租面积不因下架减少。
         未支付超时、作废待付合同、审核拒绝 → 恢复「空置 · 可下单」（前提是已上架）。
+        资产管理系统状态当前显示「未同步」；原 DEMO 尚未提供该外部状态，不将业务出租状态代替同步状态。
         批量维护：先「下载资产维护模板」，第一列为房源业务编号（与列表「房源ID」FY 开头一致），其余列按需填写后使用「批量资产维护」上传。
       </div>
 
@@ -867,8 +965,10 @@ export function HousesPage() {
               <th>房型</th>
               <th>面积</th>
               <th>租金</th>
-              <th>押金</th>
+              <th>水电押金</th>
               <th>状态</th>
+              <th>住建状态</th>
+              <th>资产管理系统状态</th>
               <th>上架</th>
               <th className="a-op-col">操作</th>
             </tr>
@@ -894,18 +994,20 @@ export function HousesPage() {
                 <td style={{ fontWeight: 900 }}>{h.houseNo}</td>
                 <td>{h.houseType}</td>
                 <td>{h.area}㎡</td>
-                <td>¥{h.rentMonthly}/月</td>
-                <td>¥{h.deposit}</td>
+                <td>¥{displayRent(h)}/月</td>
+                <td>¥{readAssetSupplement(h.id, h.storeName).utilityDeposit}</td>
                 <td>
                   <span className={adminStatusBadgeClass(h)}>{adminStatusLabel(h)}</span>
                 </td>
+                <td><span className="a-badge">{readHousingStatus(h.id)}</span></td>
+                <td><span className="a-muted" title="原型暂未接入外部资产管理系统状态">未同步</span></td>
                 <td>
                   <label
                     className="a-switch"
                     title={
                       h.isPublished
                         ? '已上架（点击下架）'
-                        : `上架校验：租金${h.rentMonthly > 0 ? '已填' : '未填'}，图片${h.images.length > 0 ? '已填' : '未填'}，地址${(h.address ?? '').trim() ? '已填' : '未填'}`
+                        : missingPublishFields(h).length ? `上架前请配置：${missingPublishFields(h).join('、')}` : '配置已完成，可上架' 
                     }
                   >
                     <input
@@ -922,6 +1024,7 @@ export function HousesPage() {
                     <button type="button" className="a-btn" onClick={() => openConfigModal(h)}>
                       房源配置
                     </button>
+                    <Link className="a-btn ghost" to={`/housing-houses?houseId=${encodeURIComponent(h.id)}`}>住建维护</Link>
                     <button type="button" className="a-btn ghost" onClick={() => void openChangeLogModal(h)}>
                       变更记录
                     </button>
@@ -939,10 +1042,10 @@ export function HousesPage() {
                 </td>
               </tr>
             ))}
-            {items.length === 0 ? (
+            {pageData.items.length === 0 ? (
               <tr>
-                <td colSpan={15} className="a-muted">
-                  暂无房源。请先点“立即同步”。
+                <td colSpan={18} className="a-muted">
+                  暂无符合筛选条件的房源。可重置筛选、点击「刷新」重新加载，或使用「批量资产维护」导入。
                 </td>
               </tr>
             ) : null}
@@ -988,7 +1091,7 @@ export function HousesPage() {
                   const more = buildMoreInfo(detail)
                   const configured =
                     detail.images.length > 0 &&
-                    detail.rentMonthly > 0 &&
+                    displayRent(detail) > 0 &&
                     Boolean((detail.address ?? '').trim())
                   return (
                     <>
@@ -1032,12 +1135,15 @@ export function HousesPage() {
                     { k: '房号', v: detail.houseNo },
                     { k: '房型', v: detail.houseType },
                     { k: '面积', v: `${detail.area}㎡` },
-                    { k: '月租', v: `¥${detail.rentMonthly}` },
-                    { k: '押金', v: `¥${detail.deposit}` },
+                    { k: '价格（对外展示）', v: `¥${displayRent(detail)}` },
+                    { k: '水电押金', v: `¥${readAssetSupplement(detail.id, detail.storeName).utilityDeposit}` },
                     { k: '状态', v: adminStatusLabel(detail) },
                     { k: 'H5仅浏览外链', v: detail.externalBrowseUrl?.trim() || '—' },
                     { k: '房屋配置', v: formatHouseConfigSummary(detail.houseConfig) },
-                    { k: '地址', v: more.address },
+                    { k: '坐落', v: (detail.address ?? '').trim() || '—' },
+                    { k: '权属单位', v: readAssetSupplement(detail.id, detail.storeName).ownerName || '—' },
+                    { k: '燃气表号', v: readAssetSupplement(detail.id, detail.storeName).gasMeterNo || '—' },
+                    { k: '是否可出租', v: readAssetSupplement(detail.id, detail.storeName).rentable ? '可出租' : '不可出租' },
                     { k: '地图坐标', v: formatGeoText(detail) },
                     { k: '附近地铁', v: formatNearbySubway(detail) },
                     { k: '附近学校', v: formatNearbySchools(detail) },
@@ -1068,7 +1174,7 @@ export function HousesPage() {
           role="dialog"
           aria-modal="true"
           onClick={(e) => {
-            if (e.target === e.currentTarget) setConfigTarget(null)
+            if (e.target === e.currentTarget && !configSaving) setConfigTarget(null)
           }}
         >
           <div className="a-modal" style={{ maxWidth: 820 }}>
@@ -1076,33 +1182,21 @@ export function HousesPage() {
               <div className="a-modal-title">
                 房源配置：{configTarget.apartmentName} · {configTarget.houseNo}（{configTarget.storeName}）
               </div>
-              <button className="a-modal-close" onClick={() => setConfigTarget(null)}>
+              <button className="a-modal-close" disabled={configSaving} onClick={() => setConfigTarget(null)}>
                 关闭
               </button>
             </div>
 
             <div className="a-modal-body a-house-config-body">
               <div className="a-kv a-house-config-kv" style={{ flex: 1 }}>
-                <div className="a-kv-row">
-                  <div className="a-kv-k">月租（上架必填）</div>
-                  <div className="a-kv-v">
-                    <input
-                      type="number"
-                      className="a-filter-input"
-                      value={configRentMonthly}
-                      min={0}
-                      onChange={(e) => {
-                        const n = Number(e.target.value)
-                        setConfigRentMonthly(Number.isNaN(n) ? 0 : Math.max(0, Math.floor(n)))
-                      }}
-                      style={{ width: 160 }}
-                    />
-                    <span className="a-muted" style={{ marginLeft: 8 }}>
-                      元/月
-                    </span>
-                  </div>
-                </div>
-
+                <div className="a-muted" style={{ fontSize: 12, marginBottom: 14 }}>补充资料保存在本机演示副本；原有业务资料继续保存到原数据服务。本页不执行外部资产同步或调整账号权限。</div>
+                {error ? <div className="a-card a-error" role="alert" style={{ marginBottom: 12 }}>{error}</div> : null}
+                <section aria-label="财务配置" style={{ marginBottom: 22 }}>
+                  <h3 style={{ fontSize: 16, fontWeight: 800, margin: '8px 0 10px', paddingBottom: 8, borderBottom: '1px solid #dbe3ef' }}>财务配置</h3>
+                <AssetDevelopmentFields section="finance" value={configSupplement} onChange={setConfigSupplement} storeOptions={filterOptions.stores} />
+                </section>
+                <section aria-label="基本信息" style={{ marginBottom: 22 }}>
+                  <h3 style={{ fontSize: 16, fontWeight: 800, margin: '8px 0 10px', paddingBottom: 8, borderBottom: '1px solid #dbe3ef' }}>基本信息</h3>
                 <div className="a-kv-row" style={{ borderTop: '1px solid #e2e8f0', paddingTop: 12, marginTop: 4 }}>
                   <div className="a-kv-k">项目名称</div>
                   <div className="a-kv-v">
@@ -1119,8 +1213,9 @@ export function HousesPage() {
                     </div>
                   </div>
                 </div>
+                <AssetDevelopmentFields section="ownership" value={configSupplement} onChange={setConfigSupplement} storeOptions={filterOptions.stores} />
                 <div className="a-kv-row">
-                  <div className="a-kv-k">资产类型</div>
+                  <div className="a-kv-k">资产类型 *</div>
                   <div className="a-kv-v">
                     <input
                       type="text"
@@ -1147,14 +1242,14 @@ export function HousesPage() {
                 <div className="a-kv-row">
                   <div className="a-kv-k">管理人</div>
                   <div className="a-kv-v">
-                    <input
-                      type="text"
-                      className="a-filter-input"
-                      value={configManagerName}
-                      onChange={(e) => setConfigManagerName(e.target.value)}
-                      placeholder="责任人姓名"
-                      style={{ maxWidth: 240 }}
-                    />
+                    <select multiple aria-label="管理人（可多选）" className="a-filter-select"
+                      value={configManagerName.split('、').filter(Boolean)}
+                      onChange={(event) => setConfigManagerName(Array.from(event.target.selectedOptions, (option) => option.value).join('、'))}
+                      style={{ minWidth: 240, minHeight: 88 }}>
+                      {managerOptions.names.map((name) => <option key={name} value={name}>{name}</option>)}
+                    </select>
+                    <div className="a-muted" style={{ fontSize: 12 }}>仅列出所属门店及子部门用户，仅作记录。</div>
+                    {!managerOptions.hasCompleteScope ? <div className="a-muted" style={{ fontSize: 11 }}>组织资料不完整时保留既有候选和已选历史值；不改变签约权限。</div> : null}
                   </div>
                 </div>
                 <div className="a-kv-row">
@@ -1179,6 +1274,7 @@ export function HousesPage() {
                   </div>
                 </div>
 
+                <AssetDevelopmentFields section="certificate" value={configSupplement} onChange={setConfigSupplement} storeOptions={filterOptions.stores} />
                 <div className="a-kv-row">
                   <div className="a-kv-k">水表号</div>
                   <div className="a-kv-v">
@@ -1246,11 +1342,55 @@ export function HousesPage() {
                   </div>
                 </div>
 
+                <AssetDevelopmentFields section="gas" value={configSupplement} onChange={setConfigSupplement} storeOptions={filterOptions.stores} />
+                <div className="a-kv-row">
+                  <div className="a-kv-k">坐落（上架必填）</div>
+                  <div className="a-kv-v">
+                    <input
+                      type="text"
+                      className="a-filter-input"
+                      value={configAddress}
+                      onChange={(e) => setConfigAddress(e.target.value)}
+                      placeholder="例如：南宁市邕宁区龙岗大道88号 花园公寓"
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+                </div>
+
+                </section>
+                <section aria-label="租赁信息" style={{ marginBottom: 22 }}>
+                  <h3 style={{ fontSize: 16, fontWeight: 800, margin: '8px 0 10px', paddingBottom: 8, borderBottom: '1px solid #dbe3ef' }}>租赁信息</h3>
+                <AssetDevelopmentFields section="lease" value={configSupplement} onChange={setConfigSupplement} storeOptions={filterOptions.stores} />
+                <div className="a-kv-row">
+                  <div className="a-kv-k">价格（对外展示）*</div>
+                  <div className="a-kv-v">
+                    <input
+                      type="number"
+                      className="a-filter-input"
+                      value={configRentMonthly}
+                      min={0}
+                      step="0.01"
+                      aria-label="价格（对外展示）"
+                      onChange={(e) => {
+                        const text = e.target.value
+                        setConfigRentMonthly(text === '' ? '' : Number(text))
+                      }}
+                      style={{ width: 160 }}
+                    />
+                    <span className="a-muted" style={{ marginLeft: 8 }}>元/月</span>
+                    <div className="a-muted" style={{ fontSize: 12, marginTop: 4 }}>APP/H5展示的月租价格，与内部协议定价分开维护。</div>
+                  </div>
+                </div>
+
+                <AssetDevelopmentFields section="pricing" value={configSupplement} onChange={setConfigSupplement} storeOptions={filterOptions.stores} />
+                </section>
+                <section aria-label="app展示信息" style={{ marginBottom: 22 }}>
+                  <h3 style={{ fontSize: 16, fontWeight: 800, margin: '8px 0 10px', paddingBottom: 8, borderBottom: '1px solid #dbe3ef' }}>app展示信息</h3>
                 <div className="a-kv-row">
                   <div className="a-kv-k">房源图片（上架必填）</div>
                   <div className="a-kv-v">
                     <div className="a-muted" style={{ marginBottom: 8 }}>
-                      已选 {configImages.length} 张（最多 10 张）；建议 2-3 张即可。
+                      已选 {configImages.length} 张（最多10张）；仅支持png、jpg、jpeg，单张不超过5MB，上架至少1张。
                     </div>
 
                     <div className="a-row" style={{ gap: 10, flexWrap: 'wrap' }}>
@@ -1258,7 +1398,7 @@ export function HousesPage() {
                         上传图片
                         <input
                           type="file"
-                          accept="image/*"
+                          accept=".png,.jpg,.jpeg,image/png,image/jpeg"
                           multiple
                           style={{ display: 'none' }}
                           onChange={(e) => onConfigUploadImages(e.target.files)}
@@ -1319,16 +1459,50 @@ export function HousesPage() {
                 </div>
 
                 <div className="a-kv-row">
-                  <div className="a-kv-k">公寓地址（上架必填）</div>
+                  <div className="a-kv-k">附近地铁（非必填）</div>
                   <div className="a-kv-v">
-                    <input
-                      type="text"
+                    <textarea
                       className="a-filter-input"
-                      value={configAddress}
-                      onChange={(e) => setConfigAddress(e.target.value)}
-                      placeholder="例如：南宁市邕宁区龙岗大道88号 花园公寓"
-                      style={{ width: '100%' }}
+                      value={configSubwayText}
+                      onChange={(e) => setConfigSubwayText(e.target.value)}
+                      placeholder={'每行一条：站名|距离m\n例如：龙岗站|650'}
+                      style={{ width: '100%', height: 84, resize: 'vertical' }}
                     />
+                    <div className="a-muted" style={{ marginTop: 6 }}>
+                      格式：站名|距离m（距离可不填）
+                    </div>
+                  </div>
+                </div>
+
+                <div className="a-kv-row">
+                  <div className="a-kv-k">附近学校（非必填）</div>
+                  <div className="a-kv-v">
+                    <textarea
+                      className="a-filter-input"
+                      value={configSchoolsText}
+                      onChange={(e) => setConfigSchoolsText(e.target.value)}
+                      placeholder={'每行一条：学校名|类型|距离m\n例如：邕宁区实验小学|小学|1100'}
+                      style={{ width: '100%', height: 96, resize: 'vertical' }}
+                    />
+                    <div className="a-muted" style={{ marginTop: 6 }}>
+                      格式：学校名|类型|距离m（后两项可不填）
+                    </div>
+                  </div>
+                </div>
+
+                <div className="a-kv-row">
+                  <div className="a-kv-k">附近公交（非必填）</div>
+                  <div className="a-kv-v">
+                    <textarea
+                      className="a-filter-input"
+                      value={configBusText}
+                      onChange={(e) => setConfigBusText(e.target.value)}
+                      placeholder={'每行一条：站名|线路1,线路2\n例如：龙岗大道·花园公寓站|W12,B02,B15'}
+                      style={{ width: '100%', height: 96, resize: 'vertical' }}
+                    />
+                    <div className="a-muted" style={{ marginTop: 6 }}>
+                      格式：站名|线路1,线路2（线路可留空）
+                    </div>
                   </div>
                 </div>
 
@@ -1484,64 +1658,17 @@ export function HousesPage() {
                   </div>
                 </div>
 
-                <div className="a-kv-row">
-                  <div className="a-kv-k">附近地铁（非必填）</div>
-                  <div className="a-kv-v">
-                    <textarea
-                      className="a-filter-input"
-                      value={configSubwayText}
-                      onChange={(e) => setConfigSubwayText(e.target.value)}
-                      placeholder={'每行一条：站名|距离m\n例如：龙岗站|650'}
-                      style={{ width: '100%', height: 84, resize: 'vertical' }}
-                    />
-                    <div className="a-muted" style={{ marginTop: 6 }}>
-                      格式：站名|距离m（距离可不填）
-                    </div>
-                  </div>
-                </div>
-
-                <div className="a-kv-row">
-                  <div className="a-kv-k">附近学校（非必填）</div>
-                  <div className="a-kv-v">
-                    <textarea
-                      className="a-filter-input"
-                      value={configSchoolsText}
-                      onChange={(e) => setConfigSchoolsText(e.target.value)}
-                      placeholder={'每行一条：学校名|类型|距离m\n例如：邕宁区实验小学|小学|1100'}
-                      style={{ width: '100%', height: 96, resize: 'vertical' }}
-                    />
-                    <div className="a-muted" style={{ marginTop: 6 }}>
-                      格式：学校名|类型|距离m（后两项可不填）
-                    </div>
-                  </div>
-                </div>
-
-                <div className="a-kv-row">
-                  <div className="a-kv-k">附近公交（非必填）</div>
-                  <div className="a-kv-v">
-                    <textarea
-                      className="a-filter-input"
-                      value={configBusText}
-                      onChange={(e) => setConfigBusText(e.target.value)}
-                      placeholder={'每行一条：站名|线路1,线路2\n例如：龙岗大道·花园公寓站|W12,B02,B15'}
-                      style={{ width: '100%', height: 96, resize: 'vertical' }}
-                    />
-                    <div className="a-muted" style={{ marginTop: 6 }}>
-                      格式：站名|线路1,线路2（线路可留空）
-                    </div>
-                  </div>
-                </div>
-
+                </section>
                 <div className="a-muted">
-                  上架校验：租金 {configRentMonthly > 0 ? '已填' : '未填'}，图片 {configImages.length > 0 ? '已填' : '未填'}，地址{' '}
+                  上架校验：价格 {Number(configRentMonthly) > 0 ? '已填' : '未填'}，图片 {configImages.length > 0 ? '已填' : '未填'}，坐落{' '}
                   {configAddress.trim() ? '已填' : '未填'}。
                 </div>
 
                 <div className="a-row" style={{ marginTop: 14, gap: 10 }}>
-                  <button type="button" className="a-btn" onClick={saveConfigModal}>
-                    保存配置
+                  <button type="button" className="a-btn" disabled={configSaving} onClick={saveConfigModal}>
+                    {configSaving ? '保存中…' : '保存配置'}
                   </button>
-                  <button type="button" className="a-btn ghost" onClick={() => setConfigTarget(null)}>
+                  <button type="button" className="a-btn ghost" disabled={configSaving} onClick={() => setConfigTarget(null)}>
                     取消
                   </button>
                 </div>

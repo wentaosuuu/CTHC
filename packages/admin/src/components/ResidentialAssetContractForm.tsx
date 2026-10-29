@@ -1,3 +1,4 @@
+import { normalizeDraftFirstRentDate } from '../contractDraftPreview'
 import { useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import { ContractRemarkEditor } from './ContractRemarkEditor'
 import { HouseMultiSelectModal } from './HouseMultiSelectModal'
@@ -21,6 +22,8 @@ type Props = {
   value: ResidentialAssetFormData
   onChange: (next: ResidentialAssetFormData) => void
   vacantHouseOnly?: boolean
+  allowedHouseStatuses?: readonly string[]
+  attachmentRequired?: boolean
   pendingFiles?: File[]
   onPendingFilesChange?: (files: File[]) => void
   attachments?: CfgAtt[]
@@ -54,17 +57,18 @@ export function ResidentialAssetContractForm({
   value,
   onChange,
   vacantHouseOnly = true,
+  allowedHouseStatuses,
+  attachmentRequired = false,
   pendingFiles = [],
   onPendingFilesChange,
   attachments = [],
-  contractId,
   onDeleteAttachment,
   showAttachmentUpload = true,
 }: Props) {
   const [tenantModal, setTenantModal] = useState(false)
   const [houseModal, setHouseModal] = useState(false)
 
-  const patch = (p: Partial<ResidentialAssetFormData>) => onChange(syncResidentialDerivedFields(value, p))
+  const patch = (p: Partial<ResidentialAssetFormData>) => onChange(normalizeDraftFirstRentDate(syncResidentialDerivedFields(value, p)))
 
   const locationText = useMemo(() => formatHouseLocation(value.houses), [value.houses])
   const totalArea = useMemo(() => sumHouseArea(value.houses), [value.houses])
@@ -348,10 +352,12 @@ export function ResidentialAssetContractForm({
 
       {showAttachmentUpload
         ? kv(
-            '附件上传',
+            attachmentRequired ? '附件上传 *' : '附件上传',
             <>
               <input
                 type="file"
+                aria-label="附件上传"
+                aria-required={attachmentRequired}
                 multiple
                 onChange={(e) => {
                   const files = Array.from(e.target.files ?? [])
@@ -410,6 +416,7 @@ export function ResidentialAssetContractForm({
         onClose={() => setHouseModal(false)}
         selectedIds={value.houseIds}
         vacantOnly={vacantHouseOnly}
+        allowedStatuses={allowedHouseStatuses}
         onConfirm={(houses) =>
           patch({
             houses,

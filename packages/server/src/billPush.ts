@@ -1,3 +1,4 @@
+import { manualFlowVisibleToTenant } from './manualContractFlow.js'
 import type { PrismaClient } from '@prisma/client'
 
 export type BillPushStatus = 'NOT_ENABLED' | 'PENDING_TENANT' | 'ACTIVE'
@@ -124,10 +125,11 @@ export async function tenantCanAccessBill(
   phone: string,
   bill: {
     tenantPushStatus: string
-    contract: { billPushToTenant: boolean; tenant: { phone: string; idNumber: string } }
+    contract: { contractTemplateDataJson?: string | null; billPushToTenant: boolean; tenant: { phone: string; idNumber: string } }
   },
 ): Promise<boolean> {
   const p = phone.trim()
+  if (!manualFlowVisibleToTenant(bill.contract.contractTemplateDataJson)) return false
   if (bill.contract.tenant.phone === p) return true
   if (!bill.contract.billPushToTenant || bill.tenantPushStatus !== 'PUSHED') return false
   const caller = await prisma.tenant.findFirst({
