@@ -443,6 +443,26 @@ model Contract {
   /// 合同维度的线下超额收款等形成的「预收余额」（元，整数），用于抵扣后续账单或人工处理
   contractCredit ContractCredit?
   subletApplications SubletApplication[]
+  performanceChecks ContractPerformanceCheck[]
+}
+
+/// 合同履约情况检查记录（管理员记事本；表单字段随资产类型区分）
+model ContractPerformanceCheck {
+  id         String   @id @default(cuid())
+  contractId String
+  /// SHOP=商铺类经营评价；RESIDENTIAL=住宅类居住情况
+  formKind   String
+  /// 商铺：优/正常/差/停业/其他；住宅：正常/空置/其他
+  rating     String
+  note       String   @default("")
+  adminId    String?
+  adminName  String
+  createdAt  DateTime @default(now())
+
+  contract Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+  admin    Admin?   @relation(fields: [adminId], references: [id])
+
+  @@index([contractId, createdAt])
 }
 
 /// 转租申请：独立申请记录（不改变合同生命周期，仅跟踪审批与备案材料）
@@ -729,6 +749,7 @@ model Admin {
   loginSessions AdminLoginSession[]
   operationLogs AdminOperationLog[]
   noticeReads WorkbenchNoticeRead[]
+  performanceChecks ContractPerformanceCheck[]
 }
 
 /// 管理员登录会话：用于考勤签到、登录次数与在线时长

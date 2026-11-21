@@ -4082,6 +4082,95 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     })
   })
 
+  function performanceCheckFormKind(assetType: string | null | undefined): 'SHOP' | 'RESIDENTIAL' {
+    const t = String(assetType ?? '').trim()
+    if (t === '商铺' || t === '厂房') return 'SHOP'
+    return 'RESIDENTIAL'
+  }
+
+  const SHOP_PERF_RATINGS = ['优', '正常', '差', '停业', '其他'] as const
+  const RESIDENTIAL_PERF_RATINGS = ['正常', '空置', '其他'] as const
+
+  app.get('/api/admin/contracts/:id/performance-checks', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const contract = await ctx.prisma.contract.findUnique({
+      where: { id: String(req.params.id) },
+      include: { house: { include: { apartment: { include: { store: true } } } } },
+    })
+    if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, contract.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+
+    const assetType = contract.house.apartment.assetType
+    const formKind = performanceCheckFormKind(assetType)
+    const items = await ctx.prisma.contractPerformanceCheck.findMany({
+      where: { contractId: contract.id },
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+    })
+    res.json({
+      contractId: contract.id,
+      contractNo: contract.contractNo,
+      assetType,
+      formKind,
+      ratingOptions: formKind === 'SHOP' ? [...SHOP_PERF_RATINGS] : [...RESIDENTIAL_PERF_RATINGS],
+      ratingFieldLabel: formKind === 'SHOP' ? '承租人经营情况评价' : '承租人居住情况',
+      items: items.map((row) => ({
+        id: row.id,
+        formKind: row.formKind,
+        rating: row.rating,
+        note: row.note,
+        adminName: row.adminName,
+        createdAt: row.createdAt.toISOString(),
+      })),
+    })
+  })
+
+  app.post('/api/admin/contracts/:id/performance-checks', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const body = z
+      .object({
+        rating: z.string().trim().min(1).max(20),
+        note: z.string().trim().max(2000).optional().default(''),
+      })
+      .safeParse(req.body)
+    if (!body.success) return res.status(400).json({ error: 'INVALID_BODY' })
+
+    const contract = await ctx.prisma.contract.findUnique({
+      where: { id: String(req.params.id) },
+      include: { house: { include: { apartment: true } } },
+    })
+    if (!contract) return res.status(404).json({ error: 'NOT_FOUND' })
+    if (!canAccessStore(auth, contract.house.apartment.storeId)) return res.status(403).json({ error: 'FORBIDDEN' })
+
+    const formKind = performanceCheckFormKind(contract.house.apartment.assetType)
+    const allowed = formKind === 'SHOP' ? SHOP_PERF_RATINGS : RESIDENTIAL_PERF_RATINGS
+    if (!(allowed as readonly string[]).includes(body.data.rating)) {
+      return res.status(400).json({ error: 'INVALID_RATING' })
+    }
+
+    const row = await ctx.prisma.contractPerformanceCheck.create({
+      data: {
+        contractId: contract.id,
+        formKind,
+        rating: body.data.rating,
+        note: body.data.note,
+        adminId: auth.admin.id,
+        adminName: auth.admin.name,
+      },
+    })
+    res.json({
+      ok: true,
+      item: {
+        id: row.id,
+        formKind: row.formKind,
+        rating: row.rating,
+        note: row.note,
+        adminName: row.adminName,
+        createdAt: row.createdAt.toISOString(),
+      },
+    })
+  })
+
   app.post('/api/admin/contracts/:id/billing-pause', adminAuth(ctx.prisma), async (req, res) => {
     const auth = getAdminAuth(req)
     const contract = await ctx.prisma.contract.findUnique({
