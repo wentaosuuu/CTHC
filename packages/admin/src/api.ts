@@ -1,4 +1,4 @@
-import { clearAdminToken, getAdminToken } from './auth'
+import { clearAdminToken, getAdminSessionId, getAdminToken } from './auth'
 
 export type ApiResult<T> = { ok: true; data: T } | { ok: false; error: string }
 
@@ -36,8 +36,10 @@ async function readAdminError(res: Response): Promise<string> {
 
 function withAuthHeaders(init?: RequestInit) {
   const token = getAdminToken()
+  const sessionId = getAdminSessionId()
   const headers = { ...(init?.headers ?? {}) } as Record<string, string>
   if (token) headers.Authorization = `Bearer ${token}`
+  if (sessionId) headers['X-Admin-Session'] = sessionId
   return { ...init, headers }
 }
 

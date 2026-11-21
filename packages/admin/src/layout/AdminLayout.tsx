@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { clearAdminToken, getAdminToken } from '../auth'
-import { apiGet } from '../api'
+import { apiGet, apiPost } from '../api'
 import { ADMIN_NAVIGATION, isAdminMenuActive } from '../adminNavigation'
 import './admin.css'
 
@@ -23,8 +23,13 @@ export function AdminLayout({ children }: { children: ReactNode }) {
       if (!alive) return
       if (r.ok && r.data.name) setMeName(r.data.name)
     })
+    // 心跳用于累计登录时长；失败不影响页面使用
+    const beat = () => { void apiPost('/api/admin/session/heartbeat', {}) }
+    beat()
+    const timer = window.setInterval(beat, 60_000)
     return () => {
       alive = false
+      window.clearInterval(timer)
     }
   }, [authed])
 
@@ -97,8 +102,10 @@ export function AdminLayout({ children }: { children: ReactNode }) {
                   role="menuitem"
                   onClick={() => {
                     setMenuOpen(false)
-                    clearAdminToken()
-                    nav('/login', { replace: true })
+                    void apiPost('/api/admin/logout', {}).finally(() => {
+                      clearAdminToken()
+                      nav('/login', { replace: true })
+                    })
                   }}
                 >
                   退出

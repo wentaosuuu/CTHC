@@ -17,6 +17,8 @@ export const ADMIN_NAVIGATION: readonly AdminMenuEntry[] = [
   {
     id: 'workbench_group', label: '工作台', children: [
       { id: 'workbench', label: '待办中心', path: '/workbench' },
+      { id: 'attendance', label: '考勤记录表', path: '/workbench/attendance' },
+      { id: 'business_data', label: '业务数据', path: '/workbench/business' },
     ],
   },
   { id: 'home', label: '仪表盘', path: '/' },
@@ -79,5 +81,12 @@ export const ADMIN_MENU_OPTIONS: AdminMenuItem[] = ADMIN_NAVIGATION.flatMap((ent
 )
 
 export function isAdminMenuActive(pathname: string, menuPath: string): boolean {
-  return menuPath === '/' ? pathname === '/' : pathname === menuPath || pathname.startsWith(`${menuPath}/`)
+  if (menuPath === '/') return pathname === '/'
+  if (pathname === menuPath) return true
+  if (!pathname.startsWith(`${menuPath}/`)) return false
+  // 避免 /workbench 把 /workbench/attendance 等子菜单一起点亮
+  const siblings = ADMIN_MENU_OPTIONS.map((item) => item.path)
+  return !siblings.some(
+    (path) => path !== menuPath && (pathname === path || pathname.startsWith(`${path}/`)),
+  )
 }
