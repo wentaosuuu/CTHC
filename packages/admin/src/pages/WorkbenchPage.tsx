@@ -17,7 +17,7 @@ type SourcesState = Record<WorkbenchSourceId, SourceState>
 
 function initialSources(): SourcesState {
   const initial = (): SourceState => ({ status: 'loading', items: [], error: '' })
-  return { orders: initial(), contracts: initial(), refunds: initial(), sublets: initial(), transactions: initial(), overdue: initial() }
+  return Object.fromEntries(WORKBENCH_SOURCES.map((source) => [source.id, initial()])) as SourcesState
 }
 
 export function WorkbenchPage() {
@@ -132,7 +132,13 @@ export function WorkbenchPage() {
     <div className="a-card" style={{ padding: 0 }}>
       <div className="a-row" style={{ justifyContent: 'space-between', padding: '18px 20px', gap: 12, flexWrap: 'wrap' }}>
         <strong>{category.label} {category.available && categoryState.status === 'ready' ? `${selectedRows.length} 项` : ''}</strong>
-        <span className="a-muted">按等待天数倒序，最久未处理的排最前</span>
+        <span className="a-muted">
+          {selected === 'expiring'
+            ? '按到期紧迫程度排序，越临近/越逾期排越前'
+            : selected === 'vacant'
+              ? '当前空置资产列表'
+              : '按等待天数倒序，最久未处理的排最前'}
+        </span>
       </div>
       <div className="a-table-wrap"><table className="a-table" style={{ minWidth: 1050 }}>
         <thead><tr>{['业务编号', '租客', '门店', '项目/房号', '金额', '等待时长', '状态', '操作'].map(label => <th key={label}>{label}</th>)}</tr></thead>

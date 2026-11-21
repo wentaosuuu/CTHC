@@ -127,6 +127,7 @@ type ContractItem = ManualFlowInfo & {
     storeName: string
     apartmentName: string
     houseNo: string
+    assetType?: string | null
   }
   /** 非合并合同为 null；合并时为各子资产快照（合同主房源为 lines[0] 之一） */
   mergedBundle: MergedBundleListInfo | null
@@ -332,6 +333,32 @@ function expiryWarnText(daysLeft: number) {
   return `还有${daysLeft}天到期`
 }
 
+type PerformanceCheckItem = {
+  id: string
+  formKind: string
+  rating: string
+  note: string
+  adminName: string
+  createdAt: string
+}
+
+type PerformanceCheckPayload = {
+  contractId: string
+  contractNo: string
+  assetType: string
+  formKind: 'SHOP' | 'RESIDENTIAL' | string
+  ratingOptions: string[]
+  ratingFieldLabel: string
+  items: PerformanceCheckItem[]
+}
+
+function formatPerfCheckTime(iso: string) {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '—'
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
 // 租客姓名展示（避免因历史数据出现 undefined）
 function formatTenantName(name: string | undefined) {
   if (name == null) return '—'
@@ -390,6 +417,8 @@ function apiErrorZh(code: string) {
     INVALID_MOVEOUT_DATE: '退租日期无效，且当前版本不支持选择未来日期办理结案',
     INVALID_STOP_RENT_DATE: '停止计租日期无效或早于合同起租日期',
     INVALID_APPLICATION_FORM: '《退租申请书》配置不完整，请检查情形及必填字段',
+    INVALID_RATING: '请选择有效的履约评价选项',
+    INVALID_BODY: '提交内容不完整或格式不正确',
     NO_MOVEOUT_PENDING: '当前没有待确认的退租申请',
     TENANT_MOVEOUT_DEADLINE_EXCEEDED: '退租确认已超时，请重新发起或联系管理员',
     CONTRACT_MOVEOUT_PENDING: '当前合同正在等待租客确认退租，暂不可进行此操作（可先「手动办结」或「撤销」）',
@@ -594,6 +623,19 @@ export function ContractsPage() {
     setExpiryWarnMax('')
     setPage(1)
   }
+
+  // 履约情况检查记录（管理员记事本）
+  const [perfCheckContract, setPerfCheckContract] = useState<ContractItem | null>(null)
+  const [perfCheckData, setPerfCheckData] = useState<PerformanceCheckPayload | null>(null)
+  const [perfCheckLoading, setPerfCheckLoading] = useState(false)
+  const [perfCheckSubmitting, setPerfCheckSubmitting] = useState(false)
+  const [perfCheckRating, setPerfCheckRating] = useState('')
+  const [perfCheckNote, setPerfCheckNote] = useState('')
+  const [perfFilterRating, setPerfFilterRating] = useState('')
+  const [perfFilterOperator, setPerfFilterOperator] = useState('')
+  const [perfFilterNote, setPerfFilterNote] = useState('')
+  const [perfFilterFrom, setPerfFilterFrom] = useState('')
+  const [perfFilterTo, setPerfFilterTo] = useState('')
 
   // 退租（原「终止合同」：待支付作废 / 已生效退租）
   const [moveOutModal, setMoveOutModal] = useState<ContractItem | null>(null)
@@ -898,6 +940,88 @@ export function ContractsPage() {
             }
           : prev,
       )
+    }
+  }
+
+  async function openPerfCheckModal(c: ContractItem) {
+    setError('')
+    setPerfCheckContract(c)
+    setPerfCheckData(null)
+    setPerfCheckRating('')
+    setPerfCheckNote('')
+    setPerfFilterRating('')
+    setPerfFilterOperator('')
+    setPerfFilterNote('')
+    setPerfFilterFrom('')
+    setPerfFilterTo('')
+    setPerfCheckLoading(true)
+    const r = await apiGet<PerformanceCheckPayload>(`/api/admin/contracts/${c.id}/performance-checks`)
+    setPerfCheckLoading(false)
+    if (!r.ok) {
+      setPerfCheckContract(null)
+      return setError(apiErrorZh(r.error))
+    }
+    setPerfCheckData(r.data)
+    setPerfCheckRating(r.data.ratingOptions[0] ?? '')
+  }
+
+  function closePerfCheckModal() {
+    setPerfCheckContract(null)
+    setPerfCheckData(null)
+    setPerfCheckRating('')
+    setPerfCheckNote('')
+    setPerfFilterRating('')
+    setPerfFilterOperator('')
+    setPerfFilterNote('')
+    setPerfFilterFrom('')
+    setPerfFilterTo('')
+  }
+
+  function resetPerfCheckFilters() {
+    setPerfFilterRating('')
+    setPerfFilterOperator('')
+    setPerfFilterNote('')
+    setPerfFilterFrom('')
+    setPerfFilterTo('')
+  }
+
+  const filteredPerfCheckItems = useMemo(() => {
+    const items = perfCheckData?.items ?? []
+    const operatorQ = perfFilterOperator.trim().toLowerCase()
+    const noteQ = perfFilterNote.trim().toLowerCase()
+    return items.filter((row) => {
+      if (perfFilterRating && row.rating !== perfFilterRating) return false
+      if (operatorQ && !row.adminName.toLowerCase().includes(operatorQ)) return false
+      if (noteQ && !(row.note || '').toLowerCase().includes(noteQ)) return false
+      const day = row.createdAt.slice(0, 10)
+      if (perfFilterFrom && day < perfFilterFrom) return false
+      if (perfFilterTo && day > perfFilterTo) return false
+      return true
+    })
+  }, [perfCheckData, perfFilterRating, perfFilterOperator, perfFilterNote, perfFilterFrom, perfFilterTo])
+
+  async function submitPerfCheck() {
+    if (!perfCheckContract) return
+    if (!perfCheckRating.trim()) {
+      setError('请选择评价选项')
+      return
+    }
+    setPerfCheckSubmitting(true)
+    setError('')
+    const r = await apiPost<{ ok: true; item: PerformanceCheckItem }>(
+      `/api/admin/contracts/${perfCheckContract.id}/performance-checks`,
+      { rating: perfCheckRating, note: perfCheckNote },
+    )
+    setPerfCheckSubmitting(false)
+    if (!r.ok) return setError(apiErrorZh(r.error))
+    setPerfCheckNote('')
+    setMsg('已新增履约检查记录')
+    const refreshed = await apiGet<PerformanceCheckPayload>(
+      `/api/admin/contracts/${perfCheckContract.id}/performance-checks`,
+    )
+    if (refreshed.ok) {
+      setPerfCheckData(refreshed.data)
+      setPerfCheckRating(refreshed.data.ratingOptions[0] ?? '')
     }
   }
 
@@ -2378,6 +2502,14 @@ export function ContractsPage() {
                     >
                       {detailLoadingId === c.id ? '加载中…' : '查看详情'}
                     </button>
+                    <button
+                      type="button"
+                      className="a-btn ghost"
+                      onClick={() => void openPerfCheckModal(c)}
+                      title="管理员对合同履约情况的记事本"
+                    >
+                      履约情况检查记录
+                    </button>
                     {c.canPushSignature ? <button type="button" className="a-btn" disabled={pendingFlowId === c.id} onClick={() => void runManualAction(c, 'PUSH_SIGNATURE')}>推送签署</button> : null}
                     {c.canSimulateSigned ? <button type="button" className="a-btn ghost" disabled={pendingFlowId === c.id} onClick={() => void runManualAction(c, 'SIMULATE_SIGNED')}>模拟租户签署完成</button> : null}
                     {c.canSimulatePaid ? <button type="button" className="a-btn ghost" disabled={pendingFlowId === c.id} onClick={() => void runManualAction(c, 'SIMULATE_PAID')}>模拟首期款结清</button> : null}
@@ -2568,6 +2700,171 @@ export function ContractsPage() {
           }}
         />
       </div>
+
+      {/* 履约情况检查记录 */}
+      {perfCheckContract && (
+        <div
+          className="a-modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closePerfCheckModal()
+          }}
+        >
+          <div className="a-modal a-modal--change-log" onClick={(e) => e.stopPropagation()}>
+            <div className="a-modal-header">
+              <div>
+                <div className="a-modal-title">
+                  履约情况检查记录 · {formatContractNo(perfCheckContract.contractNo)}
+                </div>
+                <div className="a-muted" style={{ marginTop: 4 }}>
+                  管理员记事本
+                  {perfCheckData
+                    ? ` · ${perfCheckData.assetType || '未标注资产类型'} · ${
+                        perfCheckData.formKind === 'SHOP' ? '商铺类经营评价表' : '住宅类居住情况表'
+                      }`
+                    : ''}
+                </div>
+              </div>
+              <button type="button" className="a-modal-close" onClick={closePerfCheckModal}>
+                关闭
+              </button>
+            </div>
+            <div className="a-modal-body" style={{ display: 'block', overflow: 'auto' }}>
+              {perfCheckLoading || !perfCheckData ? (
+                <div className="a-muted">加载中…</div>
+              ) : (
+                <>
+                  <div className="a-card" style={{ marginBottom: 14, padding: 14 }}>
+                    <div style={{ display: 'grid', gap: 10 }}>
+                      <label style={{ display: 'grid', gap: 6 }}>
+                        <span>{perfCheckData.ratingFieldLabel}</span>
+                        <select
+                          className="a-filter-select"
+                          value={perfCheckRating}
+                          onChange={(e) => setPerfCheckRating(e.target.value)}
+                        >
+                          {perfCheckData.ratingOptions.map((opt) => (
+                            <option key={opt} value={opt}>{opt}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label style={{ display: 'grid', gap: 6 }}>
+                        <span>备注说明</span>
+                        <textarea
+                          className="a-filter-input"
+                          rows={3}
+                          placeholder="补充本次检查说明（选填）"
+                          value={perfCheckNote}
+                          onChange={(e) => setPerfCheckNote(e.target.value)}
+                        />
+                      </label>
+                      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                        <button
+                          type="button"
+                          className="a-btn"
+                          disabled={perfCheckSubmitting}
+                          onClick={() => void submitPerfCheck()}
+                        >
+                          {perfCheckSubmitting ? '保存中…' : '新增记录'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="a-filterbar" style={{ flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+                    <span className="a-filter-label">历史筛选</span>
+                    <select
+                      className="a-filter-select"
+                      aria-label={perfCheckData.ratingFieldLabel}
+                      value={perfFilterRating}
+                      onChange={(e) => setPerfFilterRating(e.target.value)}
+                    >
+                      <option value="">全部评价</option>
+                      {perfCheckData.ratingOptions.map((opt) => (
+                        <option key={opt} value={opt}>{opt}</option>
+                      ))}
+                    </select>
+                    <input
+                      className="a-filter-input"
+                      placeholder="操作人"
+                      value={perfFilterOperator}
+                      onChange={(e) => setPerfFilterOperator(e.target.value)}
+                    />
+                    <input
+                      className="a-filter-input"
+                      placeholder="备注关键词"
+                      value={perfFilterNote}
+                      onChange={(e) => setPerfFilterNote(e.target.value)}
+                    />
+                    <input
+                      className="a-filter-input"
+                      type="date"
+                      aria-label="操作时间起"
+                      value={perfFilterFrom}
+                      max={perfFilterTo || undefined}
+                      onChange={(e) => setPerfFilterFrom(e.target.value)}
+                    />
+                    <input
+                      className="a-filter-input"
+                      type="date"
+                      aria-label="操作时间止"
+                      value={perfFilterTo}
+                      min={perfFilterFrom || undefined}
+                      onChange={(e) => setPerfFilterTo(e.target.value)}
+                    />
+                    <button type="button" className="a-btn ghost" onClick={resetPerfCheckFilters}>
+                      重置筛选
+                    </button>
+                    <span className="a-muted" style={{ alignSelf: 'center' }}>
+                      {filteredPerfCheckItems.length}/{perfCheckData.items.length} 条
+                    </span>
+                  </div>
+
+                  <div className="a-table-wrap a-table-wrap--wide">
+                    <table className="a-table" style={{ minWidth: 720 }}>
+                      <thead>
+                        <tr>
+                          <th style={{ minWidth: 140 }}>{perfCheckData.ratingFieldLabel}</th>
+                          <th style={{ minWidth: 200 }}>备注</th>
+                          <th style={{ minWidth: 100 }}>操作人</th>
+                          <th style={{ minWidth: 150 }}>操作时间</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {perfCheckData.items.length === 0 ? (
+                          <tr>
+                            <td colSpan={4} className="a-muted" style={{ textAlign: 'center' }}>
+                              暂无检查记录，可在上方新增
+                            </td>
+                          </tr>
+                        ) : filteredPerfCheckItems.length === 0 ? (
+                          <tr>
+                            <td colSpan={4} className="a-muted" style={{ textAlign: 'center' }}>
+                              无匹配的历史记录，请调整筛选条件
+                            </td>
+                          </tr>
+                        ) : (
+                          filteredPerfCheckItems.map((row) => (
+                            <tr key={row.id}>
+                              <td>{row.rating}</td>
+                              <td style={{ maxWidth: 320, overflowWrap: 'anywhere' }}>{row.note || '—'}</td>
+                              <td>{row.adminName || '—'}</td>
+                              <td style={{ whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+                                {formatPerfCheckTime(row.createdAt)}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 退租 */}
       {moveOutModal && (

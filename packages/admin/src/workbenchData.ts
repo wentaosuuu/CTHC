@@ -1,3 +1,6 @@
+/** 与合同页到期预警窗口一致：剩余天数 ≤ 90（含已过期仍生效的合同） */
+const EXPIRY_WARN_DAYS = 90
+
 /** 待办只从本地业务记录的明确状态派生，不生成申请、不代替业务页办理。 */
 export const WORKBENCH_SOURCES = [
   { id: 'orders', label: '订单', path: '/api/admin/orders' },
@@ -6,6 +9,7 @@ export const WORKBENCH_SOURCES = [
   { id: 'sublets', label: '转租', path: '/api/admin/sublets' },
   { id: 'transactions', label: '收据申请', path: '/api/admin/transactions' },
   { id: 'overdue', label: '逾期账单', path: '/api/admin/bills/overdue' },
+  { id: 'houses', label: '资产', path: '/api/admin/houses' },
 ] as const
 
 export type WorkbenchSourceId = (typeof WORKBENCH_SOURCES)[number]['id']
@@ -20,6 +24,8 @@ export const WORKBENCH_CATEGORIES = [
   { id: 'modification', label: '合同修改待审核', source: 'contracts', available: true },
   { id: 'reprint', label: '收据补打待审批', source: 'transactions', available: true },
   { id: 'overdue', label: '逾期账单待催收', source: 'overdue', available: true },
+  { id: 'expiring', label: '合同即将到期', source: 'contracts', available: true },
+  { id: 'vacant', label: '空置资产数', source: 'houses', available: true },
 ] as const satisfies readonly { id: string; label: string; source: WorkbenchSourceId; available: boolean }[]
 
 export type WorkbenchCategoryId = (typeof WORKBENCH_CATEGORIES)[number]['id']
@@ -121,8 +127,39 @@ export function deriveWorkbenchRows(source: WorkbenchSourceId, items: WorkbenchR
       if (text(item.modificationRequestedAt) && !text(item.modificationRejectedAt)) {
         rows.push(makeRow(source, item, 'modification', number, '/contracts', '修改待审核', '去审核', item.modificationRequestedAt, now))
       }
+      // 生效合同进入到期预警窗口（≤90 天，含已过期未办结）
+      if (status === 'ACTIVE') {
+        const daysLeft = typeof item.leaseDaysLeft === 'number' && Number.isFinite(item.leaseDaysLeft)
+          ? Math.trunc(item.leaseDaysLeft)
+          : null
+        if (daysLeft !== null && daysLeft <= EXPIRY_WARN_DAYS) {
+          const expiryStatus = daysLeft < 0
+            ? `已过期${Math.abs(daysLeft)}天`
+            : daysLeft === 0
+              ? '当天到期'
+              : `还有${daysLeft}天到期`
+          const row = makeRow(source, item, 'expiring', number, '/contracts', expiryStatus, '去处理', item.endDate, now)
+          // 越临近/越逾期排越前
+          row.waitingDays = daysLeft < 0 ? EXPIRY_WARN_DAYS + Math.abs(daysLeft) : EXPIRY_WARN_DAYS - daysLeft
+          rows.push(row)
+        }
+      }
       // 待租客退租签字不代表待审批，换房历史关系不代表待跟进。
       // 当前合同接口没有这两类申请的明确待办状态，因此保留分类，不把历史合同计为待办。
+    }
+    if (source === 'houses' && status === 'VACANT') {
+      rows.push(makeRow(
+        source,
+        item,
+        'vacant',
+        text(item.houseBizId) || text(item.houseNo),
+        '/houses',
+        '空置',
+        '去查看',
+        null,
+        now,
+        item.rentMonthly,
+      ))
     }
     if (source === 'refunds' && status === 'TERMINATED' && (amount(item.maxRefundable) ?? 0) > 0) {
       rows.push(makeRow(source, item, 'refund', text(item.contractNo), '/contracts',
