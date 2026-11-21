@@ -5,6 +5,8 @@ import { AdminLayout } from './layout/AdminLayout'
 import { LoginPage } from './pages/LoginPage'
 import { HomePage } from './pages/HomePage'
 import { WorkbenchPage } from './pages/WorkbenchPage'
+import { AttendancePage } from './pages/AttendancePage'
+import { BusinessDataPage } from './pages/BusinessDataPage'
 import { OrdersPage } from './pages/OrdersPage'
 import { ContractsPage } from './pages/ContractsPage'
 import { TenantProfilesPage } from './pages/TenantProfilesPage'
@@ -55,6 +57,9 @@ function App() {
         <Route path="/" element={authed ? <HomePage /> : <Navigate to="/login" replace />} />
         <Route path="/workbench" element={authed ? <WorkbenchPage /> : <Navigate to="/login" replace />} />
         <Route path="/workbench/index" element={authed ? <Navigate to="/workbench" replace /> : <Navigate to="/login" replace />} />
+        <Route path="/workbench/attendance" element={authed ? <AttendancePage /> : <Navigate to="/login" replace />} />
+        <Route path="/workbench/reading" element={<Navigate to="/workbench/attendance" replace />} />
+        <Route path="/workbench/business" element={authed ? <BusinessDataPage /> : <Navigate to="/login" replace />} />
         <Route path="/houses" element={authed ? <HousesPage /> : <Navigate to="/login" replace />} />
         <Route path="/orders" element={authed ? <OrdersPage /> : <Navigate to="/login" replace />} />
         <Route path="/contracts" element={authed ? <ContractsPage /> : <Navigate to="/login" replace />} />

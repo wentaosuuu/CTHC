@@ -9,6 +9,15 @@ export function setAdminToken(token: string) {
 
 export function clearAdminToken() {
   localStorage.removeItem('adminToken')
+  localStorage.removeItem('adminSessionId')
   window.dispatchEvent(new Event('admin-auth-changed'))
 }
 
+export function getAdminSessionId() {
+  return localStorage.getItem('adminSessionId') || ''
+}
+
+export function setAdminSessionId(sessionId: string) {
+  if (sessionId) localStorage.setItem('adminSessionId', sessionId)
+  else localStorage.removeItem('adminSessionId')
+}

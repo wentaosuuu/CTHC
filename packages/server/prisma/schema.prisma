@@ -726,6 +726,89 @@ model Admin {
   houseChangeLogs HouseChangeLog[]
   tenantsCreated Tenant[] @relation("TenantCreatedBy")
   tenantProfileLogs TenantProfileLog[]
+  loginSessions AdminLoginSession[]
+  operationLogs AdminOperationLog[]
+  noticeReads WorkbenchNoticeRead[]
+}
+
+/// 管理员登录会话：用于考勤签到、登录次数与在线时长
+model AdminLoginSession {
+  id         String    @id @default(cuid())
+  adminId    String
+  loginAt    DateTime  @default(now())
+  logoutAt   DateTime?
+  lastSeenAt DateTime  @default(now())
+  ip         String?
+  userAgent  String?
+
+  admin Admin @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@index([adminId, loginAt])
+  @@index([loginAt])
+}
+
+/// 管理员操作日志：工作台考勤详情复用
+model AdminOperationLog {
+  id          String   @id @default(cuid())
+  adminId     String
+  actionLabel String
+  detail      String   @default("")
+  method      String?
+  path        String?
+  occurredAt  DateTime @default(now())
+
+  admin Admin @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@index([adminId, occurredAt])
+  @@index([occurredAt])
+}
+
+/// 工作台「阅读数据」：系统公告/制度须知
+model WorkbenchNotice {
+  id          String   @id @default(cuid())
+  title       String
+  summary     String   @default("")
+  publishedAt DateTime @default(now())
+
+  reads WorkbenchNoticeRead[]
+}
+
+/// 管理员阅读公告记录
+model WorkbenchNoticeRead {
+  id          String   @id @default(cuid())
+  noticeId    String
+  adminId     String
+  readAt      DateTime @default(now())
+  durationSec Int      @default(0)
+
+  notice WorkbenchNotice @relation(fields: [noticeId], references: [id], onDelete: Cascade)
+  admin  Admin           @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@unique([noticeId, adminId])
+  @@index([readAt])
+}
+
+/// 工作台「业务数据」：定时点按项目拆分的出租率/收缴率快照（周一、每月21日、月末）
+model BusinessMetricSnapshot {
+  id               String   @id @default(cuid())
+  reportDate       DateTime
+  /// WEEKLY_MON | MONTH_21 | MONTH_END | MANUAL
+  reportKind       String
+  /// 项目名称（一字段一值；按项目各记一行）
+  projectName      String   @default("")
+  occupancyRate    Float
+  collectionRate   Float
+  rentableArea     Float
+  rentedArea       Float
+  receivableAmount Float
+  collectedAmount  Float
+  houseCount       Int
+  signedCount      Int
+  createdAt        DateTime @default(now())
+
+  @@unique([reportDate, reportKind, projectName])
+  @@index([reportDate])
+  @@index([projectName])
 }
 
 model AdminStore {

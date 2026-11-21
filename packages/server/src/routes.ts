@@ -1,4 +1,12 @@
 import { registerWorkbenchRefundRoutes } from './workbenchRefundRoutes.js'
+import { registerWorkbenchInsightRoutes } from './workbenchInsightRoutes.js'
+import {
+  closeAdminSession,
+  describeAdminAction,
+  openAdminSession,
+  touchAdminSession,
+  writeAdminOperationLog,
+} from './adminActivity.js'
 import { readManualFlow, manualFlowVisibleToTenant, writeManualFlow, preserveManualFlow, manualFlowDto, createManualFlowBills, advanceManualFlow } from './manualContractFlow.js'
 import { signingPriceError, repriceContractTemplateSnapshot, repriceUnpaidBaseBills } from './orderSigningPrice.js'
 import type { Express, Request, RequestHandler } from 'express'
@@ -507,6 +515,25 @@ function adminAuth(prisma: PrismaClient): RequestHandler {
         select: { storeId: true },
       })
       ;(req as any).adminAuth = { admin, storeIds: stores.map((s) => s.storeId) } satisfies AdminAuth
+
+      const sessionHeader = req.headers['x-admin-session']
+      const sessionId = typeof sessionHeader === 'string' ? sessionHeader : null
+      void touchAdminSession(prisma, admin.id, sessionId)
+
+      res.on('finish', () => {
+        if (res.statusCode >= 400) return
+        const described = describeAdminAction(req.method, req.originalUrl || req.url)
+        if (!described) return
+        void writeAdminOperationLog(
+          prisma,
+          admin.id,
+          described.actionLabel,
+          described.detail,
+          req.method,
+          (req.originalUrl || req.url).split('?')[0],
+        )
+      })
+
       next()
     } catch {
       return res.status(401).json({ error: 'UNAUTHORIZED' })
@@ -581,6 +608,7 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     const auth = getAdminAuth(req)
     return auth.admin.roleCode === 'SYSTEM_ADMIN' ? null : auth.storeIds
   })
+  registerWorkbenchInsightRoutes(app, prisma, adminAuth(prisma))
 
   ensureDeptQrPublicDir()
   app.get('/api/public/dept-qr/:fileName', (req, res) => {
@@ -2309,10 +2337,30 @@ export function registerRoutes(app: Express, prisma: PrismaClient) {
     if (!ok) return res.status(401).json({ error: 'INVALID_CREDENTIALS' })
 
     const token = signAdminToken({ adminId: admin.id })
+    const session = await openAdminSession(ctx.prisma, admin.id, req)
+    await writeAdminOperationLog(ctx.prisma, admin.id, '登录系统', '账号密码登录成功', 'POST', '/api/admin/login')
     res.json({
       token,
+      sessionId: session.id,
       admin: { id: admin.id, name: admin.name, email: admin.email, roleCode: admin.roleCode },
     })
+  })
+
+  app.post('/api/admin/logout', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const sessionHeader = req.headers['x-admin-session']
+    const sessionId = typeof sessionHeader === 'string' ? sessionHeader : null
+    await closeAdminSession(ctx.prisma, auth.admin.id, sessionId)
+    await writeAdminOperationLog(ctx.prisma, auth.admin.id, '退出系统', '主动退出登录', 'POST', '/api/admin/logout')
+    res.json({ ok: true })
+  })
+
+  app.post('/api/admin/session/heartbeat', adminAuth(ctx.prisma), async (req, res) => {
+    const auth = getAdminAuth(req)
+    const sessionHeader = req.headers['x-admin-session']
+    const sessionId = typeof sessionHeader === 'string' ? sessionHeader : null
+    const id = await touchAdminSession(ctx.prisma, auth.admin.id, sessionId)
+    res.json({ ok: true, sessionId: id })
   })
 
   app.get('/api/admin/me', adminAuth(ctx.prisma), async (req, res) => {

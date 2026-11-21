@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { apiPost } from '../api'
-import { setAdminToken } from '../auth'
+import { setAdminSessionId, setAdminToken } from '../auth'
 
 export function LoginPage() {
   const nav = useNavigate()
@@ -19,13 +19,14 @@ export function LoginPage() {
     }
 
     // 内部实际还是用种子数据里的管理员账号去获取 JWT
-    const r = await apiPost<{ token: string; admin: { name: string; roleCode: string } }>(
+    const r = await apiPost<{ token: string; sessionId?: string; admin: { name: string; roleCode: string } }>(
       '/api/admin/login',
       { email: 'admin@example.com', password: 'admin123' },
       { headers: {} },
     )
     if (!r.ok) return setError(r.error || '登录失败')
     setAdminToken(r.data.token)
+    if (r.data.sessionId) setAdminSessionId(r.data.sessionId)
     nav('/', { replace: true })
   }
 

@@ -9,6 +9,7 @@ import {
 import { ensureHousingReportRecord, performHousingReportNow } from './services/housingReport.js'
 import { shouldClearBillingPause } from './contractBilling.js'
 import { syncExpiredActiveContractHouses } from './contractExpiry.js'
+import { ensureTodayBusinessSnapshots } from './businessMetrics.js'
 
 export function startSchedulers(prisma: PrismaClient) {
   // 每分钟：待签字超时作废、演示电子章自动盖章、盖章后 24h 未付首期作废
@@ -79,6 +80,15 @@ export function startSchedulers(prisma: PrismaClient) {
           ? '续签新合同：未在起租首日起 24 小时内完成首期款，合同已作废'
           : '盖章后24小时内未支付首期款，合同已作废',
       )
+    }
+  })
+
+  // 每天 01:05：若今日为周一/21日/月末，生成业务数据快照行
+  cron.schedule('5 1 * * *', async () => {
+    try {
+      await ensureTodayBusinessSnapshots(prisma)
+    } catch {
+      // 演示库定时任务失败不阻断其它调度
     }
   })
 
